@@ -1,0 +1,13 @@
+logging:
+  level:
+    root: WARN
+    com.si.backend: INFO
+    com.microsoft.cognitiveservices.speech: INFO
+    com.si.backend.integration: DEBUG
+
+spring:
+  datasource:
+    url: jdbc:mysql://${DB_HOST:host.docker.internal}:${DB_PORT:3306}/${DB_NAME:si_backend}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:ysl666}
+    driver-class-name: com.mysql.cj.jdbc.Driver

@@ -1,0 +1,93 @@
+server:
+  port: ${APP_PORT:8080}
+  address: ${APP_HOST:0.0.0.0}
+  tomcat:
+    websocket:
+      max-text-message-size: 10485760
+      max-binary-message-size: 10485760
+
+spring:
+  application:
+    name: si-backend
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:si_backend}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:ysl666}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 300000
+      connection-timeout: 20000
+      max-lifetime: 1200000
+
+mybatis:
+  mapper-locations: classpath:mapper/**/*.xml
+  type-aliases-package: com.si.backend.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    root: INFO
+    com.si.backend: DEBUG
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+  file:
+    name: logs/si-backend.log
+    max-size: 10MB
+    max-history: 7
+
+azure:
+  speech:
+    key: ${AZURE_SPEECH_KEY:}
+    region: ${AZURE_SPEECH_REGION:eastus}
+    asr:
+      model: default
+      # 支持自动语种检测模式：配置为 "auto" 使用 AutoDetectSourceLanguageConfig
+      # 或配置逗号分隔的多语种列表，如 "zh-CN,id-ID"
+      language: ${AZURE_ASR_LANGUAGES:zh-CN,id-ID}
+      sample-rate: 16000
+      format: audio/pcm
+      channels: 1
+      end-silence-timeout-ms: 6000
+    tts:
+      voice: zh-CN-XiaoxiaoMultilingualNeural
+      sample-rate: 24000
+  translator:
+    key: ${AZURE_TRANSLATOR_KEY:}
+    region: ${AZURE_TRANSLATOR_REGION:eastus}
+    timeout-seconds: 30
+
+google:
+  translate:
+    api-key: ${GOOGLE_TRANSLATE_API_KEY:}
+
+cartesia:
+  api-key: ${CARTESIA_API_KEY:}
+  api-url: ${CARTESIA_API_URL:wss://api.cartesia.ai}
+  tts:
+    model: sonic
+    sample-rate: 24000
+    container: raw
+  pool:
+    max-total-per-voice: 10
+    min-idle-per-voice: 2
+    max-wait-millis: 5000
+
+voicemeeter:
+  enabled: ${VOICEMEETER_ENABLED:false}
+  source-channel: ${VOICEMEETER_SOURCE_CHANNEL:1}
+  target-channel: ${VOICEMEETER_TARGET_CHANNEL:2}
+
+jwt:
+  secret: ${JWT_SECRET:change_this_secret_to_random_32_plus_chars}
+  expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+app:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174}

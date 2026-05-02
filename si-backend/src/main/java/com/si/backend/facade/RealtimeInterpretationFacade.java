@@ -1,0 +1,262 @@
+package com.si.backend.facade;
+
+import com.si.backend.common.Constants;
+import com.si.backend.config.CartesiaProperties;
+import com.si.backend.entity.InterpretationSession;
+import com.si.backend.service.AsrService;
+import com.si.backend.service.AudioRoutingService;
+import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.TtsService;
+import com.si.backend.service.TranslationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+/**
+ * 实时同传门面层，协调 ASR、翻译、TTS 的实时处理流程。
+ * 所有业务逻辑委托给 AsrService / TtsService，禁止直接调用 Integration 层。
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class RealtimeInterpretationFacade {
+
+    private final AsrService asrService;
+    private final TtsService ttsService;
+    private final TranslationService translationService;
+    private final InterpretationSessionService sessionService;
+    private final AudioRoutingService audioRoutingService;
+    private final CartesiaProperties cartesiaProperties;
+
+    // ---------- WebSocket session lifecycle ----------
+
+    /**
+     * 启动实时 ASR 识别与翻译。
+     *
+     * @param sessionId   WebSocket 会话 ID
+     * @param sourceLang  源语言（传 "auto" 启用自动检测）
+     * @param targetLang  目标语言
+     * @param voiceId     音色 ID（可为空）
+     * @param onRecognizing  识别回调（isFinal=false）
+     * @param onRecognized   最终识别回调（isFinal=true）
+     * @param onError        错误回调
+     */
+    public void startInterpretation(
+            String sessionId,
+            String sourceLang,
+            String targetLang,
+            String voiceId,
+            AsrRecognitionCallback onRecognizing,
+            AsrRecognitionCallback onRecognized,
+            AsrErrorCallback onError
+    ) {
+        log.info("[RealtimeInterpretationFacade] startInterpretation start, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
+                sessionId, sourceLang, targetLang, voiceId);
+
+        // 初始化 VoiceMeeter 源音直通
+        if (audioRoutingService.isEnabled()) {
+            audioRoutingService.writeSourceAudio(new byte[0]);
+        }
+
+        // 启动 ASR（自动检测语种或指定语种）
+        asrService.startRecognition(
+                sessionId,
+                sourceLang,
+                (text, lang) -> onRecognizing.accept(text, lang),
+                (text, lang) -> {
+                    onRecognized.accept(text, lang);
+                    processFinalRecognition(text, lang, sessionId, voiceId);
+                },
+                errorMessage -> onError.accept(errorMessage)
+        );
+
+        log.info("[RealtimeInterpretationFacade] startInterpretation end, sessionId={}", sessionId);
+    }
+
+    /**
+     * 推送音频帧到 ASR，并透传原音到 VoiceMeeter。
+     *
+     * @param sessionId WebSocket 会话 ID
+     * @param pcmFrame PCM 音频帧
+     */
+    public void pushAudioAndPassthrough(String sessionId, byte[] pcmFrame) {
+        log.info("[RealtimeInterpretationFacade] pushAudioAndPassthrough start, sessionId={}, bytes={}",
+                sessionId, pcmFrame.length);
+        asrService.pushAudio(sessionId, pcmFrame);
+
+        if (audioRoutingService.isEnabled()) {
+            audioRoutingService.writeSourceAudio(pcmFrame);
+        }
+        log.info("[RealtimeInterpretationFacade] pushAudioAndPassthrough end, sessionId={}, bytes={}",
+                sessionId, pcmFrame.length);
+    }
+
+    /**
+     * 停止实时 ASR 识别。
+     *
+     * @param sessionId WebSocket 会话 ID
+     */
+    public void stopInterpretation(String sessionId) {
+        log.info("[RealtimeInterpretationFacade] stopInterpretation start, sessionId={}", sessionId);
+        asrService.stopRecognition(sessionId);
+        sessionService.stopSession(sessionId);
+        log.info("[RealtimeInterpretationFacade] stopInterpretation end, sessionId={}", sessionId);
+    }
+
+    // ---------- Recognition → Translation → TTS pipeline ----------
+
+    /**
+     * 处理最终识别结果：根据检测到的语种自动选择翻译方向，然后 TTS 播报。
+     *
+     * @param text        识别的原文
+     * @param detectedLang ASR 自动检测出的语种（zh / id 等）
+     * @param sessionId   WebSocket 会话 ID
+     * @param voiceId     音色 ID
+     */
+    public void processFinalRecognition(String text, String detectedLang, String sessionId, String voiceId) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        String sourceLang = normalizeAsrLang(detectedLang);
+        String targetLang = Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
+                ? Constants.LANG_ID_SHORT
+                : Constants.LANG_ZH_CN;
+
+        log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, textLen={}, detected={}, {}→{}",
+                sessionId, text.length(), detectedLang, sourceLang, targetLang);
+
+        String resolvedVoiceId = voiceId;
+        if (resolvedVoiceId == null || resolvedVoiceId.isBlank()) {
+            resolvedVoiceId = sessionService.getSession(sessionId)
+                    .map(InterpretationSession::getVoiceId)
+                    .orElse(null);
+        }
+
+        translateAndStreamTts(text, sourceLang, targetLang, resolvedVoiceId, sessionId);
+    }
+
+    private String normalizeAsrLang(String asrLang) {
+        if (asrLang == null) return Constants.LANG_ZH_CN;
+        String lower = asrLang.toLowerCase();
+        if (lower.startsWith("zh") || lower.startsWith("zh-hans")) return Constants.LANG_ZH_CN;
+        if (lower.startsWith("id")) return Constants.LANG_ID_SHORT;
+        // 未覆盖的语种默认当中文处理
+        return Constants.LANG_ZH_CN;
+    }
+
+    // ---------- Translation + TTS ----------
+
+    /**
+     * 翻译文本并流式合成 TTS 音频。
+     *
+     * @param text        原文
+     * @param sourceLang  源语言
+     * @param targetLang  目标语言
+     * @param voiceId     音色 ID（可为空，使用默认音色）
+     * @param sessionId   WebSocket 会话 ID
+     */
+    public void translateAndStreamTts(String text, String sourceLang, String targetLang, String voiceId, String sessionId) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        log.info("[RealtimeInterpretationFacade] translateAndStreamTts start, sessionId={}, textLen={}, {}→{}, voiceId={}",
+                sessionId, text.length(), sourceLang, targetLang, voiceId);
+
+        // 翻译
+        long translateStart = System.currentTimeMillis();
+        String translated = translationService.translate(text, sourceLang, targetLang);
+        long translateCost = System.currentTimeMillis() - translateStart;
+
+        if (translated == null || translated.isBlank()) {
+            log.warn("[RealtimeInterpretationFacade] translateAndStreamTts skip, empty translation, sessionId={}", sessionId);
+            return;
+        }
+        log.info("[RealtimeInterpretationFacade] translate cost, sessionId={}, costMs={}, translatedLen={}",
+                sessionId, translateCost, translated.length());
+
+        // 解析音色 ID
+        String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
+
+        // TTS 流式合成
+        long ttsStart = System.currentTimeMillis();
+        log.info("[RealtimeInterpretationFacade] TTS stream start, sessionId={}, textLen={}, voiceId={}",
+                sessionId, translated.length(), resolvedVoiceId);
+
+        ttsService.synthesizeStream(
+                resolvedVoiceId,
+                translated,
+                cartesiaProperties.getTts().getSampleRate(),
+                pcm -> {
+                    if (audioRoutingService.isEnabled()) {
+                        audioRoutingService.writeTargetAudio(pcm);
+                    }
+                },
+                () -> {
+                    long cost = System.currentTimeMillis() - ttsStart;
+                    log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}", sessionId, cost);
+                },
+                err -> log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err)
+        );
+
+        log.info("[RealtimeInterpretationFacade] translateAndStreamTts end, sessionId={}", sessionId);
+    }
+
+    private String resolveVoiceId(String voiceId, String targetLang) {
+        if (voiceId != null && !voiceId.isBlank()) {
+            return voiceId;
+        }
+        if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
+            return Constants.DEFAULT_VOICE_ID_CHINESE;
+        }
+        if (Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)) {
+            return Constants.DEFAULT_VOICE_ID_INDONESIAN;
+        }
+        return Constants.DEFAULT_VOICE_ID_INDONESIAN;
+    }
+
+    // ---------- Cleanup ----------
+
+    /**
+     * 清理指定 WebSocket 会话的资源。
+     *
+     * @param sessionId WebSocket 会话 ID
+     */
+    public void cleanupSession(String sessionId) {
+        log.info("[RealtimeInterpretationFacade] cleanupSession, sessionId={}", sessionId);
+        asrService.stopRecognition(sessionId);
+        if (sessionService.isSessionActive(sessionId)) {
+            sessionService.stopSession(sessionId);
+        }
+    }
+
+    /**
+     * 纯文本翻译（不触发 TTS），供 WebSocket 翻译文本消息使用。
+     *
+     * @param text       待翻译文本
+     * @param targetLang 目标语言
+     * @return 译文
+     */
+    public String translateText(String text, String targetLang) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        log.info("[RealtimeInterpretationFacade] translateText, textLen={}, targetLang={}",
+                text.length(), targetLang);
+        long start = System.currentTimeMillis();
+        String translated = translationService.translate(text, Constants.LANG_AUTO, targetLang);
+        long cost = System.currentTimeMillis() - start;
+        log.info("[RealtimeInterpretationFacade] translateText end, textLen={}, targetLang={}, costMs={}, resultLen={}",
+                text.length(), targetLang, cost, translated != null ? translated.length() : 0);
+        return translated;
+    }
+
+    @FunctionalInterface
+    public interface AsrRecognitionCallback {
+        void accept(String text, String language);
+    }
+
+    @FunctionalInterface
+    public interface AsrErrorCallback {
+        void accept(String errorMessage);
+    }
+}
