@@ -56,35 +56,57 @@ public class TtsService {
 
         GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool(voiceId);
 
-        CartesiaWsClient client = null;
+        CartesiaWsClient borrowedClient = null;
         try {
-            client = pool.borrowObject();
+            borrowedClient = pool.borrowObject();
             log.debug("[TtsService] borrowed client, voiceId={}, active={}, idle={}",
                     voiceId, pool.getNumActive(), pool.getNumIdle());
 
-            client.setVoiceId(voiceId);
-            client.streamSynthesize(text, sampleRate, onChunk, onComplete, onError);
+            borrowedClient.setVoiceId(voiceId);
+
+            // Use a holder array to allow lambda to reference the client
+            // while still being able to check for null in catch block
+            @SuppressWarnings("unchecked")
+            final CartesiaWsClient[] clientHolder = new CartesiaWsClient[] { borrowedClient };
+
+            // streamSynthesize 是异步的（newWebSocket 非阻塞，立即返回）。
+            // 必须在 onComplete / onError 里归还 client，不能在 finally 里立即归还。
+            clientHolder[0].streamSynthesize(
+                    text,
+                    sampleRate,
+                    onChunk,
+                    () -> {
+                        returnClient(pool, clientHolder[0], voiceId);
+                        onComplete.run();
+                    },
+                    err -> {
+                        returnClient(pool, clientHolder[0], voiceId);
+                        onError.accept(err);
+                    }
+            );
 
         } catch (Exception e) {
-            log.error("[TtsService] synthesizeStream error, voiceId={}", voiceId, e);
-            if (client != null) {
+            log.error("[TtsService] synthesizeStream borrow error, voiceId={}", voiceId, e);
+            if (borrowedClient != null) {
                 try {
-                    pool.invalidateObject(client);
+                    pool.invalidateObject(borrowedClient);
                 } catch (Exception invalidEx) {
                     log.warn("[TtsService] invalidateObject error, voiceId={}", voiceId, invalidEx);
                 }
             }
             onError.accept("TTS 合成失败: " + e.getMessage());
-        } finally {
-            if (client != null) {
-                try {
-                    pool.returnObject(client);
-                    log.debug("[TtsService] returned client, voiceId={}, active={}, idle={}",
-                            voiceId, pool.getNumActive(), pool.getNumIdle());
-                } catch (Exception returnEx) {
-                    log.warn("[TtsService] returnObject error, voiceId={}", voiceId, returnEx);
-                }
-            }
+        }
+        // 注意：不在 finally 归还 client。client 在 onComplete / onError 回调里归还。
+    }
+
+    private void returnClient(GenericObjectPool<CartesiaWsClient> pool, CartesiaWsClient client, String voiceId) {
+        if (client == null) return;
+        try {
+            pool.returnObject(client);
+            log.debug("[TtsService] returned client, voiceId={}, active={}, idle={}",
+                    voiceId, pool.getNumActive(), pool.getNumIdle());
+        } catch (Exception returnEx) {
+            log.warn("[TtsService] returnObject error, voiceId={}", voiceId, returnEx);
         }
     }
 
@@ -229,7 +251,7 @@ public class TtsService {
                 @Override
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
                     open = true;
-                    log.debug("[CartesiaWsClient] WebSocket opened");
+                    log.info("[CartesiaWsClient] WebSocket opened, voiceId={}", currentVoiceId);
 
                     String contextId = java.util.UUID.randomUUID().toString();
                     Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
@@ -248,21 +270,24 @@ public class TtsService {
 
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, String msg) {
+                    log.info("[CartesiaWsClient] text message, len={}, preview={}", msg.length(),
+                            msg.length() > 120 ? msg.substring(0, 120) : msg);
                     try {
                         JsonNode node = objectMapper.readTree(msg);
                         String type = node.path(Constants.CARTESIA_FIELD_TYPE).asText();
                         switch (type) {
                             case Constants.CARTESIA_MSG_TYPE_CHUNK -> {
-                                boolean done = node.path(Constants.CARTESIA_FIELD_DONE).asBoolean(false);
                                 String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
                                 if (!audioData.isBlank()) {
                                     byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
+                                    log.info("[CartesiaWsClient] chunk received, bytes={}", pcm.length);
                                     onChunk.accept(pcm);
                                 }
-                                if (done) {
-                                    onComplete.run();
-                                    ws.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_DONE);
-                                }
+                            }
+                            case Constants.CARTESIA_MSG_TYPE_DONE -> {
+                                log.info("[CartesiaWsClient] TTS synthesis done");
+                                onComplete.run();
+                                ws.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_DONE);
                             }
                             case Constants.CARTESIA_MSG_TYPE_ERROR -> {
                                 String errMsg = node.path(Constants.CARTESIA_FIELD_MESSAGE).asText(Constants.TTS_ERROR_UNKNOWN);
@@ -270,11 +295,18 @@ public class TtsService {
                                 onError.accept(errMsg);
                                 ws.close(Constants.CARTESIA_CLOSE_SERVER_ERROR, Constants.CARTESIA_CLOSE_REASON_REUSE);
                             }
-                            default -> log.trace("[CartesiaWsClient] unknown message type: {}", type);
+                            default -> log.warn("[CartesiaWsClient] unknown message type={}", type);
                         }
                     } catch (Exception e) {
                         log.warn("[CartesiaWsClient] failed to parse message: {}", e.getMessage());
                     }
+                }
+
+                // 二进制帧：Cartesia 部分版本直接发原始 PCM 而非 base64 JSON
+                @Override
+                public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
+                    log.info("[CartesiaWsClient] binary frame received, bytes={}", bytes.size());
+                    onChunk.accept(bytes.toByteArray());
                 }
 
                 @Override
@@ -288,7 +320,7 @@ public class TtsService {
                 @Override
                 public void onClosed(okhttp3.WebSocket ws, int code, String reason) {
                     open = false;
-                    log.debug("[CartesiaWsClient] WebSocket closed, code={}, reason={}", code, reason);
+                    log.warn("[CartesiaWsClient] WebSocket closed, code={}, reason={}", code, reason);
                 }
             });
         }

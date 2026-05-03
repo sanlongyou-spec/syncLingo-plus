@@ -86,6 +86,7 @@ public final class Constants {
     public static final String WS_MSG_TYPE_STOPPED = "stopped";
     public static final String WS_MSG_TYPE_ERROR = "error";
     public static final String WS_MSG_TYPE_TRANSLATE_TEXT = "translate_text";
+    public static final String WS_MSG_TYPE_TTS_AUDIO = "tts_audio";
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 错误码
@@ -107,6 +108,8 @@ public final class Constants {
     public static final String CARTESIA_MSG_TYPE_CHUNK = "chunk";
     /** Cartesia TTS WebSocket 消息类型：error（错误） */
     public static final String CARTESIA_MSG_TYPE_ERROR = "error";
+    /** Cartesia TTS WebSocket 消息类型：done（合成完成，独立消息而非 chunk.done=true） */
+    public static final String CARTESIA_MSG_TYPE_DONE = "done";
     /** Cartesia TTS WebSocket JSON 字段：model_id */
     public static final String CARTESIA_FIELD_MODEL_ID = "model_id";
     /** Cartesia TTS WebSocket JSON 字段：transcript */
@@ -123,8 +126,8 @@ public final class Constants {
     public static final String CARTESIA_FIELD_SAMPLE_RATE = "sample_rate";
     /** Cartesia TTS WebSocket JSON 字段：context_id */
     public static final String CARTESIA_FIELD_CONTEXT_ID = "context_id";
-    /** Cartesia TTS WebSocket JSON 字段：audio（base64） */
-    public static final String CARTESIA_FIELD_AUDIO = "audio";
+    /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
+    public static final String CARTESIA_FIELD_AUDIO = "data";
     /** Cartesia TTS WebSocket JSON 字段：done */
     public static final String CARTESIA_FIELD_DONE = "done";
     /** Cartesia TTS WebSocket JSON 字段：message */

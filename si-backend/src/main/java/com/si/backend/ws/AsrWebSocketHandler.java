@@ -99,6 +99,16 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setTargetLanguage(tLang);
                     sendMessage(session, out);
                 },
+                // onTtsAudio：将 TTS PCM 数据推送给前端
+                (pcmData, tLang) -> {
+                    String audioBase64 = java.util.Base64.getEncoder().encodeToString(pcmData);
+                    WsMessage out = new WsMessage();
+                    out.setType(Constants.WS_MSG_TYPE_TTS_AUDIO);
+                    out.setSessionId(sessionId);
+                    out.setAudioBase64(audioBase64);
+                    out.setTargetLanguage(tLang);
+                    sendMessage(session, out);
+                },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)
         );
@@ -160,13 +170,37 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         realtimeFacade.cleanupSession(sessionIdToRemove);
     }
 
+    /**
+     * 发送 WebSocket 文本消息。
+     * 注意：Spring WebSocket Session 本身非线程安全，sendMessage 必须在持有 session 锁的情况下执行，
+     * 且只捕获 IOException（线程安全相关的 IllegalStateException 由调用方处理）。
+     */
     private void sendMessage(WebSocketSession session, WsMessage msg) {
+        String type = msg.getType();
+        boolean isTtsAudio = Constants.WS_MSG_TYPE_TTS_AUDIO.equals(type);
+        boolean isOpen = false;
+        synchronized (session) {
+            isOpen = session.isOpen();
+        }
+        if (!isOpen) {
+            log.warn("[AsrWebSocketHandler] session closed, skip send, sessionId={}, type={}",
+                    session.getId(), type);
+            return;
+        }
         try {
-            if (session.isOpen()) {
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(msg)));
+            String json = objectMapper.writeValueAsString(msg);
+            synchronized (session) {
+                session.sendMessage(new TextMessage(json));
+            }
+            if (isTtsAudio) {
+                log.info("[AsrWebSocketHandler] sent tts_audio, sessionId={}, jsonLen={}",
+                        session.getId(), json.length());
             }
         } catch (IOException e) {
-            log.error("[AsrWebSocketHandler] send message error, sessionId={}", session.getId(), e);
+            log.error("[AsrWebSocketHandler] send IO error, sessionId={}, type={}", session.getId(), type, e);
+        } catch (IllegalStateException e) {
+            log.error("[AsrWebSocketHandler] send state error (concurrent access?), sessionId={}, type={}",
+                    session.getId(), type, e);
         }
     }
 

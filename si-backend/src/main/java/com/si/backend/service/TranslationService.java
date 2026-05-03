@@ -1,13 +1,17 @@
 package com.si.backend.service;
 
-import com.si.backend.integration.GoogleTranslateIntegration;
 import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.config.GoogleTranslateProperties;
+import com.si.backend.integration.GoogleTranslateIntegration;
+import com.si.backend.integration.LlmIntegration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
+import java.io.IOException;
 import java.util.List;
 
 /**
@@ -19,6 +23,8 @@ import java.util.List;
 public class TranslationService {
 
     private final GoogleTranslateIntegration translator;
+    private final LlmIntegration llmIntegration;
+    private final GoogleTranslateProperties googleProperties;
 
     /**
      * 检测文本语种（使用 Google Translate 自动检测）。
@@ -70,6 +76,32 @@ public class TranslationService {
         long start = System.currentTimeMillis();
         String result = translator.translate(text, sourceLang, targetLang);
         long cost = System.currentTimeMillis() - start;
+
+        // 中文 → 印尼语：压缩
+        if (result != null && !result.isBlank()
+                && Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
+                && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)) {
+            log.info("[TranslationService] compress start, textLen={}", result.length());
+            try {
+                String compressed = llmIntegration.compress(
+                        result,
+                        googleProperties.getDashscopeApiKey(),
+                        googleProperties.getBaseUrl(),
+                        googleProperties.getCompressionModel()
+                );
+                if (compressed != null && !compressed.isBlank()) {
+                    long compMs = System.currentTimeMillis() - start;
+                    log.info("[TranslationService] compress end, originalLen={}, compressedLen={}, ratio={}%, totalMs={}",
+                            result.length(), compressed.length(),
+                            String.format("%.1f", (double) compressed.length() / result.length() * 100),
+                            compMs);
+                    result = compressed.trim();
+                }
+            } catch (IOException e) {
+                log.warn("[TranslationService] compress failed, use original translation: {}", e.getMessage());
+            }
+        }
+
         log.info("[TranslationService] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
                 text.length(), targetLang, cost, result != null ? result.length() : 0);
         return result;

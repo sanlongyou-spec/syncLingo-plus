@@ -12,6 +12,7 @@ export class AsrWebSocket {
   private socket: WebSocket | null = null
   private url: string
   private sessionId: string | null = null
+  private startParams: { sessionId: string; sourceLang: string; targetLang: string; voiceId?: string } | null = null
   private messageHandler: MessageHandler | null = null
   private reconnectAttempts = 0
   private destroyed = false
@@ -65,6 +66,7 @@ export class AsrWebSocket {
   }
 
   start(params: { sessionId: string; sourceLang: string; targetLang: string; voiceId?: string }): void {
+    this.startParams = params
     this.send({ type: 'start', ...params })
   }
 
@@ -83,6 +85,7 @@ export class AsrWebSocket {
     this.socket?.close()
     this.socket = null
     this.sessionId = null
+    this.startParams = null
     this.messageHandler = null
   }
 
@@ -106,9 +109,16 @@ export class AsrWebSocket {
 
     setTimeout(() => {
       if (!this.destroyed && this.sessionId) {
-        this.connect(this.sessionId).catch(() => {
-          // 连接失败交给 onclose 继续重试
-        })
+        this.connect(this.sessionId)
+          .then(() => {
+            // 重连成功后重新发送 start 消息，让后端重新初始化识别器
+            if (this.startParams) {
+              this.send({ type: 'start', ...this.startParams })
+            }
+          })
+          .catch(() => {
+            // 连接失败交给 onclose 继续重试
+          })
       }
     }, WS_DEFAULTS.RECONNECT_DELAY_MS)
   }

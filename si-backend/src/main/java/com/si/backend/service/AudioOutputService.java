@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
-import com.si.backend.integration.VoiceMeeterIntegration;
+import com.si.backend.audio.VoiceMeeterAudioOutput;
+import com.si.backend.config.VoiceMeeterProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,35 +14,32 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class AudioOutputService {
 
-    private final VoiceMeeterIntegration voicemeeter;
+    private final VoiceMeeterAudioOutput voiceMeeterAudioOutput;
+    private final VoiceMeeterProperties properties;
 
     /**
-     * 透传源语言音频（将 ASR 采集到的原始音频写入 VoiceMeeter Strip）。
+     * 透传源语言音频（将 ASR 采集到的原始音频写入 VoiceMeeter）。
      *
      * @param pcmFrame 16-bit PCM 音频数据
      */
     public void passthroughSourceAudio(byte[] pcmFrame) {
-        log.info("[AudioOutputService] passthroughSourceAudio start, bytes={}",
-                pcmFrame != null ? pcmFrame.length : 0);
-        if (voicemeeter.isInstalled()) {
-            voicemeeter.writeSourceAudio(pcmFrame);
+        if (!properties.isEnabled() || pcmFrame == null || pcmFrame.length == 0) {
+            return;
         }
-        log.info("[AudioOutputService] passthroughSourceAudio end, bytes={}",
-                pcmFrame != null ? pcmFrame.length : 0);
+        voiceMeeterAudioOutput.writeAudio("zh", 16000, pcmFrame);
+        log.debug("[AudioOutputService] passthroughSourceAudio, bytes={}", pcmFrame.length);
     }
 
     /**
-     * 输出目标语言音频（TTS 合成音写入 VoiceMeeter Bus）。
+     * 输出目标语言音频（TTS 合成音写入 VoiceMeeter）。
      *
      * @param pcmFrame 16-bit PCM 音频数据
      */
     public void outputTargetAudio(byte[] pcmFrame) {
-        log.info("[AudioOutputService] outputTargetAudio start, bytes={}",
-                pcmFrame != null ? pcmFrame.length : 0);
-        if (voicemeeter.isInstalled()) {
-            voicemeeter.writeTargetAudio(pcmFrame);
+        if (!properties.isEnabled() || pcmFrame == null || pcmFrame.length == 0) {
+            return;
         }
-        log.info("[AudioOutputService] outputTargetAudio end, bytes={}",
-                pcmFrame != null ? pcmFrame.length : 0);
+        voiceMeeterAudioOutput.writeAudio("id", 24000, pcmFrame);
+        log.debug("[AudioOutputService] outputTargetAudio, bytes={}", pcmFrame.length);
     }
 }

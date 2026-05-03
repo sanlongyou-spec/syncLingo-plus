@@ -13,4 +13,13 @@ import org.springframework.stereotype.Component;
 public class GoogleTranslateProperties {
 
     private String apiKey;
+
+    /** DashScope API Key（用于印尼语翻译压缩） */
+    private String dashscopeApiKey;
+
+    /** 压缩模型（默认 qwen3-max） */
+    private String compressionModel = "qwen3-max";
+
+    /** DashScope Base URL */
+    private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 }

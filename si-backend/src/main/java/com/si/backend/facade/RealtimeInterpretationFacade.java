@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -36,6 +37,12 @@ public class RealtimeInterpretationFacade {
     /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
 
+    /** 缓存每个会话的 TTS 音频回调，用于将 PCM 数据推送给前端 */
+    private final ConcurrentHashMap<String, TtsAudioCallback> sessionTtsAudioCallbackMap = new ConcurrentHashMap<>();
+
+    /** 每个会话最后一个 TTS 任务的 Future，串行化多段 TTS 防止声音混叠 */
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
+
     // ---------- WebSocket session lifecycle ----------
 
     /**
@@ -47,6 +54,8 @@ public class RealtimeInterpretationFacade {
      * @param voiceId     音色 ID（可为空）
      * @param onRecognizing  识别回调（isFinal=false）
      * @param onRecognized   最终识别回调（isFinal=true）
+     * @param onTranslated   翻译结果回调
+     * @param onTtsAudio     TTS 音频块回调（将 PCM 推送给前端）
      * @param onError        错误回调
      */
     public void startInterpretation(
@@ -57,16 +66,19 @@ public class RealtimeInterpretationFacade {
             AsrRecognitionCallback onRecognizing,
             AsrRecognitionCallback onRecognized,
             TranslationResultCallback onTranslated,
+            TtsAudioCallback onTtsAudio,
             AsrErrorCallback onError
     ) {
         log.info("[RealtimeInterpretationFacade] startInterpretation start, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
 
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
+        sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
 
         // 初始化 VoiceMeeter 源音直通
         if (audioRoutingService.isEnabled()) {
-            audioRoutingService.writeSourceAudio(new byte[0]);
+            // 发送一个静音帧初始化设备
+            audioRoutingService.writeSourceAudio(new byte[320], 16000, "zh");
         }
 
         // 启动 ASR（自动检测语种或指定语种）
@@ -97,11 +109,7 @@ public class RealtimeInterpretationFacade {
 
         if (audioRoutingService.isEnabled()) {
             String cachedLang = sessionDetectedLangCache.get(sessionId);
-            if (cachedLang != null) {
-                audioRoutingService.writeSourceAudioByLang(pcmFrame, cachedLang);
-            } else {
-                audioRoutingService.writeSourceAudio(pcmFrame);
-            }
+            audioRoutingService.writeSourceAudio(pcmFrame, 16000, cachedLang != null ? cachedLang : "zh");
         }
         log.info("[RealtimeInterpretationFacade] pushAudioAndPassthrough end, sessionId={}, bytes={}",
                 sessionId, pcmFrame.length);
@@ -118,6 +126,8 @@ public class RealtimeInterpretationFacade {
         sessionService.stopSession(sessionId);
         sessionDetectedLangCache.remove(sessionId);
         sessionTranslatedCallbackMap.remove(sessionId);
+        sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionTtsChain.remove(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation end, sessionId={}", sessionId);
     }
 
@@ -213,40 +223,51 @@ public class RealtimeInterpretationFacade {
         }
 
         // 解析音色 ID
-        String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
+        final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
+        final String finalTranslated = translated;
+        final String finalTargetLang = targetLang;
 
-        // TTS 流式合成
-        long ttsStart = System.currentTimeMillis();
-        log.info("[RealtimeInterpretationFacade] TTS stream start, sessionId={}, textLen={}, voiceId={}",
-                sessionId, translated.length(), resolvedVoiceId);
+        // 串行化 TTS：原子替换链尾，等待上一个 TTS 完成后再开始本次
+        CompletableFuture<Void> thisFuture = new CompletableFuture<>();
+        @SuppressWarnings("unchecked")
+        CompletableFuture<Void>[] prevHolder = new CompletableFuture[1];
+        sessionTtsChain.compute(sessionId, (k, prev) -> {
+            prevHolder[0] = (prev != null) ? prev : CompletableFuture.completedFuture(null);
+            return thisFuture;
+        });
 
-        if (audioRoutingService.isEnabled()) {
-            audioRoutingService.markTtsStart(targetLang);
-        }
+        log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, textLen={}, voiceId={}, prevDone={}",
+                sessionId, finalTranslated.length(), resolvedVoiceId, prevHolder[0].isDone());
 
-        ttsService.synthesizeStream(
-                resolvedVoiceId,
-                translated,
-                cartesiaProperties.getTts().getSampleRate(),
-                pcm -> {
-                    if (audioRoutingService.isEnabled()) {
-                        audioRoutingService.writeTargetAudioByLang(pcm, targetLang);
+        prevHolder[0].thenRunAsync(() -> {
+            long ttsStart = System.currentTimeMillis();
+            log.info("[RealtimeInterpretationFacade] TTS stream start, sessionId={}, textLen={}, voiceId={}",
+                    sessionId, finalTranslated.length(), resolvedVoiceId);
+
+            ttsService.synthesizeStream(
+                    resolvedVoiceId,
+                    finalTranslated,
+                    cartesiaProperties.getTts().getSampleRate(),
+                    pcm -> {
+                        if (audioRoutingService.isEnabled()) {
+                            audioRoutingService.writeTargetAudio(pcm, 24000, finalTargetLang);
+                        }
+                        TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
+                        if (onTtsAudio != null) {
+                            onTtsAudio.accept(pcm, finalTargetLang);
+                        }
+                    },
+                    () -> {
+                        long cost = System.currentTimeMillis() - ttsStart;
+                        log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}", sessionId, cost);
+                        thisFuture.complete(null);
+                    },
+                    err -> {
+                        log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
+                        thisFuture.complete(null); // 出错也完成，防止后续 TTS 永久阻塞
                     }
-                },
-                () -> {
-                    if (audioRoutingService.isEnabled()) {
-                        audioRoutingService.markTtsEnd(targetLang);
-                    }
-                    long cost = System.currentTimeMillis() - ttsStart;
-                    log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}", sessionId, cost);
-                },
-                err -> {
-                    if (audioRoutingService.isEnabled()) {
-                        audioRoutingService.markTtsEnd(targetLang);
-                    }
-                    log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
-                }
-        );
+            );
+        });
 
         log.info("[RealtimeInterpretationFacade] translateAndStreamTts end, sessionId={}", sessionId);
     }
@@ -280,6 +301,8 @@ public class RealtimeInterpretationFacade {
         }
         sessionDetectedLangCache.remove(sessionId);
         sessionTranslatedCallbackMap.remove(sessionId);
+        sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionTtsChain.remove(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession end, sessionId={}", sessionId);
     }
 
@@ -317,5 +340,10 @@ public class RealtimeInterpretationFacade {
     @FunctionalInterface
     public interface TranslationResultCallback {
         void accept(String originalText, String translatedText, String targetLang);
+    }
+
+    @FunctionalInterface
+    public interface TtsAudioCallback {
+        void accept(byte[] pcmData, String targetLang);
     }
 }

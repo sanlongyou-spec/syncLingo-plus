@@ -1,6 +1,7 @@
 /**
  * 音频采集模块
  * 使用 getDisplayMedia 捕获系统音频（标签页/窗口音频）
+ * 采集器本身静音（setSinkId none），所有路由由调用方通过 onData 回调处理。
  */
 import { AUDIO_DEFAULTS, PCM } from '../api/constants'
 
@@ -58,6 +59,15 @@ export class AudioCapture {
 
       this.audioContext = new AudioContext({ sampleRate: this.sampleRate })
       console.log('[AudioCapture] AudioContext 创建完成, 采样率:', this.audioContext.sampleRate)
+
+      // 静音本采集器的默认输出，由调用方通过 onData 负责路由
+      if ('setSinkId' in this.audioContext) {
+        try {
+          await (this.audioContext as any).setSinkId({ type: 'none' })
+        } catch (err) {
+          console.warn('[AudioCapture] setSinkId(none) 失败，音频可能播放到默认设备:', err)
+        }
+      }
 
       this.sourceNode = this.audioContext.createMediaStreamSource(this.stream)
 
