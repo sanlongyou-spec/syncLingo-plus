@@ -280,9 +280,6 @@ export default function InterpretationView() {
                 {/* 历史记录块 */}
                 {transcripts.map(item => (
                   <div key={item.id} className="si-tri-block">
-                    <div className="si-tri-block-latency">
-                      {langLabel(item.language)}
-                    </div>
                     <div className="si-tri-block-line">
                       <span className={`si-tri-line-lang-badge ${langBadgeClass(item.language)}`}>
                         {langLabel(item.language)}
