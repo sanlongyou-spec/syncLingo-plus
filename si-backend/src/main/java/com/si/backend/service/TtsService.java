@@ -124,9 +124,6 @@ public class TtsService {
             config.setMaxTotal(properties.getPool().getMaxTotalPerVoice());
             config.setMinIdle(properties.getPool().getMinIdlePerVoice());
             config.setMaxWait(java.time.Duration.ofMillis(properties.getPool().getMaxWaitMillis()));
-            config.setTestOnBorrow(true);
-            config.setTestOnReturn(true);
-            config.setTestWhileIdle(true);
 
             CartesiaPooledObjectFactory factory = new CartesiaPooledObjectFactory(properties, objectMapper, id);
             GenericObjectPool<CartesiaWsClient> pool = new GenericObjectPool<>(factory, config);
@@ -166,7 +163,8 @@ public class TtsService {
 
         @Override
         public boolean validateObject(PooledObject<CartesiaWsClient> p) {
-            return p.getObject().isOpen();
+            // 客户端对象本身始终有效，WebSocket 连接由 streamSynthesize 内部按需建立
+            return p.getObject() != null;
         }
 
         @Override

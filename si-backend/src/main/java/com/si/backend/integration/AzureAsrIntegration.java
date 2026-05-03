@@ -64,8 +64,9 @@ public class AzureAsrIntegration {
 
         AsrSession session;
         if (Constants.LANG_AUTO.equalsIgnoreCase(sourceLang) || sourceLang == null || sourceLang.isBlank()) {
-            log.info("[AzureAsrIntegration] creating session with AutoDetectSourceLanguageConfig, sessionId={}", sessionId);
+            log.info("[AzureAsrIntegration] creating session with AutoDetectSourceLanguageConfig (Continuous LID), sessionId={}", sessionId);
             String[] languages = parseLanguages(asrProperties.getAsr().getLanguage());
+            config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
             session = new AsrSession(config, autoConfig, pushStream);
         } else {

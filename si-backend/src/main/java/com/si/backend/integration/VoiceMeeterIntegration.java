@@ -1,7 +1,5 @@
 package com.si.backend.integration;
 
-import com.si.backend.common.BizException;
-import com.si.backend.common.ErrorCode;
 import com.si.backend.config.VoiceMeeterProperties;
 import com.sun.jna.Library;
 import com.sun.jna.Memory;
@@ -142,7 +140,7 @@ public class VoiceMeeterIntegration {
             return;
         }
 
-        int channel = properties.getSourceChannel();
+        int channel = properties.getZhChannel();
         log.trace("[VoiceMeeterIntegration] writeSourceAudio, channel={}, bytes={}", channel, pcmFrame.length);
 
         // VoiceMeeter Remote API 不支持直接写入 PCM。
@@ -152,7 +150,25 @@ public class VoiceMeeterIntegration {
     }
 
     /**
-     * 将 TTS 合成音频帧写入 VoiceMeeter Bus 声道。
+     * 将音频帧写入指定 VoiceMeeter 声道。
+     * 原声与 TTS 均通过此方法路由，由调用方按语种决定目标通道。
+     *
+     * @param pcmFrame 16-bit PCM 音频数据
+     * @param channel  目标声道索引
+     */
+    public void writeAudioToChannel(byte[] pcmFrame, int channel) {
+        if (!properties.isEnabled() || !installed || !loggedIn) {
+            return;
+        }
+        if (pcmFrame == null || pcmFrame.length == 0) {
+            return;
+        }
+        log.trace("[VoiceMeeterIntegration] writeAudioToChannel, channel={}, bytes={}", channel, pcmFrame.length);
+        writeToSharedMemory(channel, pcmFrame);
+    }
+
+    /**
+     * 将 TTS 合成音频帧写入默认 VoiceMeeter 声道（语种未知时使用）。
      *
      * @param pcmFrame 16-bit PCM 音频数据
      */
@@ -164,7 +180,7 @@ public class VoiceMeeterIntegration {
             return;
         }
 
-        int channel = properties.getTargetChannel();
+        int channel = properties.getZhChannel();
         log.trace("[VoiceMeeterIntegration] writeTargetAudio, channel={}, bytes={}", channel, pcmFrame.length);
         writeToSharedMemory(channel, pcmFrame);
     }

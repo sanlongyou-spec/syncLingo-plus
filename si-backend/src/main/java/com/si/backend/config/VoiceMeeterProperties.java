@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 public class VoiceMeeterProperties {
 
     private boolean enabled = false;
-    private int sourceChannel = 1;
-    private int targetChannel = 2;
+    /** 中文通道（中文原声 + 中文 TTS，语种未知时也走此通道） */
+    private int zhChannel = 1;
+    /** 印尼语通道（印尼语原声 + 印尼语 TTS） */
+    private int idChannel = 2;
 }

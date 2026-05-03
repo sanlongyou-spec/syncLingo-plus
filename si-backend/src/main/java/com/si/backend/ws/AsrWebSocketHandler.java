@@ -80,7 +80,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setLanguage(language);
                     sendMessage(session, out);
                 },
-                // onRecognized
+                // onRecognized：仅推送 WebSocket 消息，翻译/TTS 由 facade 内部管道处理
                 (text, language) -> {
                     WsMessage out = new WsMessage();
                     out.setType(Constants.WS_MSG_TYPE_RECOGNIZED);
@@ -88,8 +88,16 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setText(text);
                     out.setLanguage(language);
                     sendMessage(session, out);
-
-                    realtimeFacade.processFinalRecognition(text, language, sessionId, msg.getVoiceId());
+                },
+                // onTranslated：将译文推送给前端展示
+                (originalText, translatedText, tLang) -> {
+                    WsMessage out = new WsMessage();
+                    out.setType(Constants.WS_MSG_TYPE_TRANSLATED);
+                    out.setSessionId(sessionId);
+                    out.setText(originalText);
+                    out.setTranslatedText(translatedText);
+                    out.setTargetLanguage(tLang);
+                    sendMessage(session, out);
                 },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)

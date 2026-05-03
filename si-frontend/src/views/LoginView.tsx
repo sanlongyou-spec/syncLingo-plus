@@ -37,7 +37,7 @@ export default function LoginView() {
   return (
     <div className="login-container">
       <form className="login-form" onSubmit={handleLogin}>
-        <h1 className="login-title">同声传译系统</h1>
+        <h1 className="login-title">聚龙同传系统</h1>
         <p className="login-subtitle">Simultaneous Interpretation System</p>
 
         <div className="form-group">

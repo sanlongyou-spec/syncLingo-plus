@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * 实时同传门面层，协调 ASR、翻译、TTS 的实时处理流程。
  * 所有业务逻辑委托给 AsrService / TtsService，禁止直接调用 Integration 层。
@@ -27,6 +29,12 @@ public class RealtimeInterpretationFacade {
     private final InterpretationSessionService sessionService;
     private final AudioRoutingService audioRoutingService;
     private final CartesiaProperties cartesiaProperties;
+
+    /** 缓存每个会话最近一次 ASR 检测到的归一化语种，用于原声通道路由 */
+    private final ConcurrentHashMap<String, String> sessionDetectedLangCache = new ConcurrentHashMap<>();
+
+    /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
+    private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
 
     // ---------- WebSocket session lifecycle ----------
 
@@ -48,10 +56,13 @@ public class RealtimeInterpretationFacade {
             String voiceId,
             AsrRecognitionCallback onRecognizing,
             AsrRecognitionCallback onRecognized,
+            TranslationResultCallback onTranslated,
             AsrErrorCallback onError
     ) {
         log.info("[RealtimeInterpretationFacade] startInterpretation start, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
+
+        sessionTranslatedCallbackMap.put(sessionId, onTranslated);
 
         // 初始化 VoiceMeeter 源音直通
         if (audioRoutingService.isEnabled()) {
@@ -85,7 +96,12 @@ public class RealtimeInterpretationFacade {
         asrService.pushAudio(sessionId, pcmFrame);
 
         if (audioRoutingService.isEnabled()) {
-            audioRoutingService.writeSourceAudio(pcmFrame);
+            String cachedLang = sessionDetectedLangCache.get(sessionId);
+            if (cachedLang != null) {
+                audioRoutingService.writeSourceAudioByLang(pcmFrame, cachedLang);
+            } else {
+                audioRoutingService.writeSourceAudio(pcmFrame);
+            }
         }
         log.info("[RealtimeInterpretationFacade] pushAudioAndPassthrough end, sessionId={}, bytes={}",
                 sessionId, pcmFrame.length);
@@ -100,6 +116,8 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] stopInterpretation start, sessionId={}", sessionId);
         asrService.stopRecognition(sessionId);
         sessionService.stopSession(sessionId);
+        sessionDetectedLangCache.remove(sessionId);
+        sessionTranslatedCallbackMap.remove(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation end, sessionId={}", sessionId);
     }
 
@@ -114,13 +132,17 @@ public class RealtimeInterpretationFacade {
      * @param voiceId     音色 ID
      */
     public void processFinalRecognition(String text, String detectedLang, String sessionId, String voiceId) {
+        log.info("[RealtimeInterpretationFacade] processFinalRecognition start, sessionId={}, detectedLang={}", sessionId, detectedLang);
         if (text == null || text.isBlank()) {
+            log.info("[RealtimeInterpretationFacade] processFinalRecognition skip, empty text, sessionId={}", sessionId);
             return;
         }
         String sourceLang = normalizeAsrLang(detectedLang);
         String targetLang = Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
                 ? Constants.LANG_ID_SHORT
                 : Constants.LANG_ZH_CN;
+
+        sessionDetectedLangCache.put(sessionId, sourceLang);
 
         log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, textLen={}, detected={}, {}→{}",
                 sessionId, text.length(), detectedLang, sourceLang, targetLang);
@@ -133,15 +155,26 @@ public class RealtimeInterpretationFacade {
         }
 
         translateAndStreamTts(text, sourceLang, targetLang, resolvedVoiceId, sessionId);
+        log.info("[RealtimeInterpretationFacade] processFinalRecognition end, sessionId={}", sessionId);
     }
 
     private String normalizeAsrLang(String asrLang) {
-        if (asrLang == null) return Constants.LANG_ZH_CN;
+        log.debug("[RealtimeInterpretationFacade] normalizeAsrLang start, asrLang={}", asrLang);
+        if (asrLang == null) {
+            log.debug("[RealtimeInterpretationFacade] normalizeAsrLang end, result={}", Constants.LANG_ZH_CN);
+            return Constants.LANG_ZH_CN;
+        }
         String lower = asrLang.toLowerCase();
-        if (lower.startsWith("zh") || lower.startsWith("zh-hans")) return Constants.LANG_ZH_CN;
-        if (lower.startsWith("id")) return Constants.LANG_ID_SHORT;
-        // 未覆盖的语种默认当中文处理
-        return Constants.LANG_ZH_CN;
+        String result;
+        if (lower.startsWith("zh") || lower.startsWith("zh-hans")) {
+            result = Constants.LANG_ZH_CN;
+        } else if (lower.startsWith("id")) {
+            result = Constants.LANG_ID_SHORT;
+        } else {
+            result = Constants.LANG_ZH_CN;
+        }
+        log.debug("[RealtimeInterpretationFacade] normalizeAsrLang end, asrLang={}, result={}", asrLang, result);
+        return result;
     }
 
     // ---------- Translation + TTS ----------
@@ -174,6 +207,11 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] translate cost, sessionId={}, costMs={}, translatedLen={}",
                 sessionId, translateCost, translated.length());
 
+        TranslationResultCallback onTranslated = sessionTranslatedCallbackMap.get(sessionId);
+        if (onTranslated != null) {
+            onTranslated.accept(text, translated, targetLang);
+        }
+
         // 解析音色 ID
         String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
 
@@ -182,36 +220,49 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] TTS stream start, sessionId={}, textLen={}, voiceId={}",
                 sessionId, translated.length(), resolvedVoiceId);
 
+        if (audioRoutingService.isEnabled()) {
+            audioRoutingService.markTtsStart(targetLang);
+        }
+
         ttsService.synthesizeStream(
                 resolvedVoiceId,
                 translated,
                 cartesiaProperties.getTts().getSampleRate(),
                 pcm -> {
                     if (audioRoutingService.isEnabled()) {
-                        audioRoutingService.writeTargetAudio(pcm);
+                        audioRoutingService.writeTargetAudioByLang(pcm, targetLang);
                     }
                 },
                 () -> {
+                    if (audioRoutingService.isEnabled()) {
+                        audioRoutingService.markTtsEnd(targetLang);
+                    }
                     long cost = System.currentTimeMillis() - ttsStart;
                     log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}", sessionId, cost);
                 },
-                err -> log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err)
+                err -> {
+                    if (audioRoutingService.isEnabled()) {
+                        audioRoutingService.markTtsEnd(targetLang);
+                    }
+                    log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
+                }
         );
 
         log.info("[RealtimeInterpretationFacade] translateAndStreamTts end, sessionId={}", sessionId);
     }
 
     private String resolveVoiceId(String voiceId, String targetLang) {
+        log.debug("[RealtimeInterpretationFacade] resolveVoiceId start, voiceId={}, targetLang={}", voiceId, targetLang);
+        String resolved;
         if (voiceId != null && !voiceId.isBlank()) {
-            return voiceId;
+            resolved = voiceId;
+        } else if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
+            resolved = Constants.DEFAULT_VOICE_ID_CHINESE;
+        } else {
+            resolved = Constants.DEFAULT_VOICE_ID_INDONESIAN;
         }
-        if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
-            return Constants.DEFAULT_VOICE_ID_CHINESE;
-        }
-        if (Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)) {
-            return Constants.DEFAULT_VOICE_ID_INDONESIAN;
-        }
-        return Constants.DEFAULT_VOICE_ID_INDONESIAN;
+        log.debug("[RealtimeInterpretationFacade] resolveVoiceId end, resolved={}", resolved);
+        return resolved;
     }
 
     // ---------- Cleanup ----------
@@ -222,11 +273,14 @@ public class RealtimeInterpretationFacade {
      * @param sessionId WebSocket 会话 ID
      */
     public void cleanupSession(String sessionId) {
-        log.info("[RealtimeInterpretationFacade] cleanupSession, sessionId={}", sessionId);
+        log.info("[RealtimeInterpretationFacade] cleanupSession start, sessionId={}", sessionId);
         asrService.stopRecognition(sessionId);
         if (sessionService.isSessionActive(sessionId)) {
             sessionService.stopSession(sessionId);
         }
+        sessionDetectedLangCache.remove(sessionId);
+        sessionTranslatedCallbackMap.remove(sessionId);
+        log.info("[RealtimeInterpretationFacade] cleanupSession end, sessionId={}", sessionId);
     }
 
     /**
@@ -258,5 +312,10 @@ public class RealtimeInterpretationFacade {
     @FunctionalInterface
     public interface AsrErrorCallback {
         void accept(String errorMessage);
+    }
+
+    @FunctionalInterface
+    public interface TranslationResultCallback {
+        void accept(String originalText, String translatedText, String targetLang);
     }
 }

@@ -13,7 +13,7 @@ if %errorlevel%==0 (
 )
 
 echo 正在停止后端服务...
-taskkill /f /im java.exe 2>nul
+docker rm -f si-backend >nul 2>&1
 if %errorlevel%==0 (
     echo 后端服务已停止
 ) else (
