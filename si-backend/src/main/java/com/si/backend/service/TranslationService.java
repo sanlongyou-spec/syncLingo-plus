@@ -77,10 +77,11 @@ public class TranslationService {
         String result = translator.translate(text, sourceLang, targetLang);
         long cost = System.currentTimeMillis() - start;
 
-        // 中文 → 印尼语：压缩
+        // 中文 → 印尼语：压缩（源文本过短时跳过，节省 LLM 延迟）
         if (result != null && !result.isBlank()
                 && Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
-                && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)) {
+                && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
+                && text.length() > 40) {
             log.info("[TranslationService] compress start, textLen={}", result.length());
             try {
                 String compressed = llmIntegration.compress(

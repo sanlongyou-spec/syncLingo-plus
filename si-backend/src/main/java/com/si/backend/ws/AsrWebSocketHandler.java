@@ -126,7 +126,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         byte[] pcm = java.util.Base64.getDecoder().decode(data);
-        realtimeFacade.pushAudioAndPassthrough(sessionId, pcm);
+        realtimeFacade.pushAudio(sessionId, pcm);
     }
 
     private void handleStop(WebSocketSession session, WsMessage msg) {

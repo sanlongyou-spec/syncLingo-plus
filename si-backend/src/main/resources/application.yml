@@ -54,7 +54,7 @@ azure:
       sample-rate: 16000
       format: audio/pcm
       channels: 1
-      end-silence-timeout-ms: 6000
+      end-silence-timeout-ms: 2500
     tts:
       voice: zh-CN-XiaoxiaoMultilingualNeural
       sample-rate: 24000
@@ -85,12 +85,6 @@ cartesia:
     min-idle-per-voice: 2
     max-wait-millis: 5000
 
-voicemeeter:
-  enabled: ${VOICEMEETER_ENABLED:true}
-  # 中文声道设备关键字（默认 VoiceMeeter Input，对应 B1）
-  zh-device: ${VOICEMEETER_ZH_DEVICE:VoiceMeeter Input}
-  # 印尼语声道设备关键字（默认 VoiceMeeter Aux Input，对应 B2）
-  id-device: ${VOICEMEETER_ID_DEVICE:VoiceMeeter Aux Input}
 
 jwt:
   secret: ${JWT_SECRET:change_this_secret_to_random_32_plus_chars}

@@ -1,24 +1,16 @@
 /**
  * 聚龙同传主页面
  * 音频采集 → ASR 自动语种检测 → 翻译 → TTS，全自动双向同传
+ * 音频路由：中文原音 + 中文TTS → VoiceMeeter Input；印尼语TTS → VoiceMeeter Aux Input
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { startInterpretation, stopInterpretation, getUserVoice } from '../api'
 import { AsrWebSocket } from '../lib/websocket'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
-import { AUDIO_DEFAULTS } from '../api/constants'
+import { AUDIO_DEFAULTS, VOICEMEETER } from '../api/constants'
 import { STORAGE_KEYS, ROUTES, LANGUAGE } from '../constants'
 import type { WsMessage } from '../types'
 import './InterpretationView.css'
-
-// 音频设备配置（中文声道 / 印尼语声道，原音和 TTS 共用同一套设备）
-interface AudioDeviceConfig {
-  zhDeviceId: string | null
-  idDeviceId: string | null
-}
-
-const STORAGE_KEY_ZH_DEVICE = 'si-tts-zh-device'
-const STORAGE_KEY_ID_DEVICE = 'si-tts-id-device'
 
 interface TranscriptItem {
   id: string
@@ -50,17 +42,6 @@ function IconHeadset() {
   )
 }
 
-function IconSettings() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.09 7.09 0 00-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87a.49.49 0 00.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
-        fill="currentColor"
-      />
-    </svg>
-  )
-}
-
 export default function InterpretationView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
 
@@ -74,12 +55,6 @@ export default function InterpretationView() {
   const [error, setError] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
   const [captureSilentWarn, setCaptureSilentWarn] = useState(false)
-  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
-  const [audioConfig, setAudioConfig] = useState<AudioDeviceConfig>({
-    zhDeviceId: localStorage.getItem(STORAGE_KEY_ZH_DEVICE) || null,
-    idDeviceId: localStorage.getItem(STORAGE_KEY_ID_DEVICE) || null,
-  })
-  const [showDeviceSettings, setShowDeviceSettings] = useState(false)
 
   const wsRef = useRef<AsrWebSocket | null>(null)
   const audioRef = useRef<AudioCapture | null>(null)
@@ -94,36 +69,20 @@ export default function InterpretationView() {
   const scheduleTimeZhRef = useRef(0)
   const scheduleTimeIdRef = useRef(0)
   const detectedLangRef = useRef('')
-  const audioConfigRef = useRef(audioConfig)
   const capturePipelineStartedAtRef = useRef(0)
   const lastLoudAudioAtRef = useRef(0)
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // 保持 ref 与 state 同步，让 onData/onChunk 等闭包能读到最新值
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
-  useEffect(() => { audioConfigRef.current = audioConfig }, [audioConfig])
 
   useEffect(() => {
     getUserVoice(userId)
       .then(res => {
-        if (res.data?.voiceId) {
-          setVoiceId(res.data.voiceId)
-        }
+        if (res.data?.voiceId) setVoiceId(res.data.voiceId)
       })
       .catch((err: unknown) => {
         console.warn('[InterpretationView] getUserVoice failed:', err)
       })
-
-    // 枚举音频输出设备
-    const enumerateDevices = async () => {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices()
-        setAudioDevices(devices.filter(d => d.kind === 'audiooutput'))
-      } catch (err) {
-        console.warn('[InterpretationView] enumerateDevices failed:', err)
-      }
-    }
-    enumerateDevices()
 
     return () => {
       wsRef.current?.close()
@@ -153,61 +112,88 @@ export default function InterpretationView() {
     if (el) el.scrollTop = el.scrollHeight
   }, [transcripts, currentSource])
 
-  // 初始化流式播放用的 AudioElement（每个语言独立）
-  const initStreamAudio = useCallback(async (config: AudioDeviceConfig) => {
-    // VoiceMeeter Input (中文)
+  // 按设备标签匹配 VoiceMeeter 设备并设置 sinkId
+  const applyVoiceMeeterSinks = useCallback(async () => {
+    const setSink = async (el: HTMLAudioElement | null, deviceId: string) => {
+      if (!el || !('setSinkId' in el)) return
+      try { await (el as any).setSinkId(deviceId) } catch (e) {
+        console.warn('[InterpretationView] setSinkId failed:', e)
+      }
+    }
+    try {
+      // Chrome 在没有麦克风授权时 audiooutput 设备的 label 为空字符串，
+      // 无法按名称匹配 VoiceMeeter。临时申请麦克风权限解锁标签，然后立即释放。
+      let tempStream: MediaStream | null = null
+      try {
+        tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      } catch {
+        console.warn('[InterpretationView] 麦克风授权失败，设备标签可能为空')
+      } finally {
+        tempStream?.getTracks().forEach(t => t.stop())
+      }
+
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      const outputs = devices.filter(d => d.kind === 'audiooutput')
+      console.log('[InterpretationView] 可用输出设备:\n' + outputs.map(d => `  ${d.label || '(无标签)'} [${d.deviceId}]`).join('\n'))
+
+      const zhDevice = outputs.find(d =>
+        d.label.toLowerCase().includes(VOICEMEETER.ZH_DEVICE_LABEL.toLowerCase()) &&
+        !d.label.toLowerCase().includes('aux')
+      )
+      const idDevice = outputs.find(d =>
+        d.label.toLowerCase().includes(VOICEMEETER.ID_DEVICE_LABEL.toLowerCase())
+      )
+
+      if (zhDevice) {
+        await setSink(streamAudioElZhRef.current, zhDevice.deviceId)
+        console.log('[InterpretationView] 中文声道 →', zhDevice.label)
+      } else {
+        console.warn('[InterpretationView] 未找到', VOICEMEETER.ZH_DEVICE_LABEL, '，中文原音将输出到默认设备')
+      }
+      if (idDevice) {
+        await setSink(streamAudioElIdRef.current, idDevice.deviceId)
+        console.log('[InterpretationView] 印尼语声道 →', idDevice.label)
+      } else {
+        console.warn('[InterpretationView] 未找到', VOICEMEETER.ID_DEVICE_LABEL, '，印尼语TTS将输出到默认设备')
+      }
+    } catch (err) {
+      console.warn('[InterpretationView] enumerateDevices failed:', err)
+    }
+  }, [])
+
+  // 初始化流式播放用的 AudioElement（中文 / 印尼语独立声道）
+  const initStreamAudio = useCallback(async () => {
+    if (!streamContextRef.current) {
+      streamContextRef.current = new AudioContext()
+    }
+    const ctx = streamContextRef.current
+
     if (!streamDestZhRef.current) {
-      streamContextRef.current = streamContextRef.current || new AudioContext()
-      streamDestZhRef.current = streamContextRef.current.createMediaStreamDestination()
+      streamDestZhRef.current = ctx.createMediaStreamDestination()
       streamAudioElZhRef.current = new Audio()
       streamAudioElZhRef.current.srcObject = streamDestZhRef.current.stream
       streamAudioElZhRef.current.volume = 1.0
       await streamAudioElZhRef.current.play().catch(console.warn)
     }
-    // Voice Aux Input (印尼语)
     if (!streamDestIdRef.current) {
-      if (!streamContextRef.current) {
-        streamContextRef.current = new AudioContext()
-        streamDestIdRef.current = streamContextRef.current.createMediaStreamDestination()
-        streamAudioElIdRef.current = new Audio()
-        streamAudioElIdRef.current.srcObject = streamDestIdRef.current.stream
-        streamAudioElIdRef.current.volume = 1.0
-        await streamAudioElIdRef.current.play().catch(console.warn)
-      } else {
-        streamDestIdRef.current = streamContextRef.current.createMediaStreamDestination()
-        streamAudioElIdRef.current = new Audio()
-        streamAudioElIdRef.current.srcObject = streamDestIdRef.current.stream
-        streamAudioElIdRef.current.volume = 1.0
-        await streamAudioElIdRef.current.play().catch(console.warn)
-      }
+      streamDestIdRef.current = ctx.createMediaStreamDestination()
+      streamAudioElIdRef.current = new Audio()
+      streamAudioElIdRef.current.srcObject = streamDestIdRef.current.stream
+      streamAudioElIdRef.current.volume = 1.0
+      await streamAudioElIdRef.current.play().catch(console.warn)
     }
-    // 设置 setSinkId
-    const setSink = async (el: HTMLAudioElement | null, deviceId: string | null) => {
-      if (!el || !('setSinkId' in el)) return
-      try {
-        await (el as any).setSinkId(deviceId ?? '')
-      } catch (err) {
-        console.warn('[InterpretationView] setSinkId failed:', err)
-      }
-    }
-    await setSink(streamAudioElZhRef.current, config.zhDeviceId)
-    await setSink(streamAudioElIdRef.current, config.idDeviceId)
-    console.log('[InterpretationView] 流式音频元素初始化完成, zhDeviceId=', config.zhDeviceId, ', idDeviceId=', config.idDeviceId)
+    console.log('[InterpretationView] 流式音频元素初始化完成')
   }, [])
 
   // 流式播放 PCM（实时播放，使用两个独立的 AudioElement 分别对应中文/印尼语）
-  const playStreamPcm = useCallback(async (pcmData: Int16Array, sampleRate: number, lang: string, config: AudioDeviceConfig) => {
+  const playStreamPcm = useCallback(async (pcmData: Int16Array, sampleRate: number, lang: string) => {
     const isZh = !lang.startsWith('id')
-
-    // 确保流式音频元素已初始化
     if (!streamDestZhRef.current || !streamDestIdRef.current) {
-      await initStreamAudio(config)
+      await initStreamAudio()
     }
-
     const dest = isZh ? streamDestZhRef.current : streamDestIdRef.current
     const ctx = streamContextRef.current
     if (!dest || !ctx) return
-
     const scheduleRef = isZh ? scheduleTimeZhRef : scheduleTimeIdRef
     playStreamPcmDirect(pcmData, sampleRate, ctx, dest, scheduleRef)
   }, [initStreamAudio])
@@ -229,24 +215,24 @@ export default function InterpretationView() {
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.connect(dest)
-    // 在前一个 chunk 结束后才开始，消除 chunk 并发导致的双音色
     const startAt = Math.max(ctx.currentTime, scheduleRef.current)
+    const queueWaitMs = Math.round((startAt - ctx.currentTime) * 1000)
+    console.log('[TTS] schedule chunk: queueWait=', queueWaitMs, 'ms, duration=', Math.round(buffer.duration * 1000), 'ms')
     source.start(startAt)
     scheduleRef.current = startAt + buffer.duration
   }
 
   // TTS 播放（24000Hz，语言由后端 targetLanguage 字段确定）
   const playPcm = useCallback(async (pcmData: Int16Array, targetLang: string) => {
-    const config = audioConfigRef.current
-    console.log('[InterpretationView] playPcm called, targetLang=', targetLang, ', config=', config)
-    await playStreamPcm(pcmData, 24000, targetLang, config)
+    console.log('[InterpretationView] playPcm, targetLang=', targetLang)
+    await playStreamPcm(pcmData, 24000, targetLang)
   }, [playStreamPcm])
 
   // 原音播放（16000Hz，语言从 detectedLangRef 读取，默认中文声道）
   const playSourcePcm = useCallback(async (pcmData: Int16Array) => {
     const lang = detectedLangRef.current || 'zh'
-    console.log('[InterpretationView] playSourcePcm called, lang=', lang, ', pcmLen=', pcmData.length)
-    await playStreamPcm(pcmData, AUDIO_DEFAULTS.SAMPLE_RATE, lang, audioConfigRef.current)
+    console.log('[SRC] playSourcePcm, lang=', lang, 'samples=', pcmData.length, 'zhEl.paused=', streamAudioElZhRef.current?.paused)
+    await playStreamPcm(pcmData, AUDIO_DEFAULTS.SAMPLE_RATE, lang)
   }, [playStreamPcm])
 
   // 处理 WebSocket 消息
@@ -282,8 +268,8 @@ export default function InterpretationView() {
         })
         break
       case 'tts_audio': {
-        // 收到 TTS PCM 数据，播放
-        console.log('[InterpretationView] received tts_audio, audioBase64 length=', msg.audioBase64 ? msg.audioBase64.length : 0, ', targetLanguage=', msg.targetLanguage)
+        const ttsReceiveMs = performance.now()
+        console.log('[TTS] chunk received, audioBase64 length=', msg.audioBase64 ? msg.audioBase64.length : 0, ', lang=', msg.targetLanguage)
         if (msg.audioBase64 && msg.targetLanguage) {
           try {
             const binaryStr = atob(msg.audioBase64)
@@ -291,9 +277,8 @@ export default function InterpretationView() {
             for (let i = 0; i < binaryStr.length; i++) {
               bytes[i] = binaryStr.charCodeAt(i)
             }
-            // 转换为 Int16Array（假设是小端序）
             const pcmData = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2)
-            console.log('[InterpretationView] decoded pcm, length=', pcmData.length)
+            console.log('[TTS] decoded pcm, samples=', pcmData.length, ', decodeMs=', Math.round(performance.now() - ttsReceiveMs), 'ms')
             playPcm(pcmData, msg.targetLanguage)
           } catch (err) {
             console.error('[InterpretationView] Failed to play TTS audio:', err)
@@ -335,15 +320,15 @@ export default function InterpretationView() {
       ws.onMessage(handleWsMessage)
       ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.ID_ID, voiceId: voiceId || undefined })
 
-      // 初始化流式音频播放器（VoiceMeeter Input / Voice Aux Input）
-      await initStreamAudio(audioConfigRef.current)
+      // 初始化流式音频播放器，然后路由到 VoiceMeeter
+      await initStreamAudio()
+      await applyVoiceMeeterSinks()
 
       const audio = new AudioCapture({
         sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
         onData: pcm => {
           ws.sendAudio(sid, pcmToBase64(pcm))
           playSourcePcm(pcm)
-          // 简单的 RMS 检测
           let sumSq = 0
           for (let i = 0; i < pcm.length; i++) sumSq += pcm[i] * pcm[i]
           const rms = Math.sqrt(sumSq / pcm.length)
@@ -352,6 +337,9 @@ export default function InterpretationView() {
       })
       audioRef.current = audio
       await audio.start()
+
+      // getDisplayMedia 授权后重新枚举，标签此时通常可见，再次应用路由
+      await applyVoiceMeeterSinks()
 
       capturePipelineStartedAtRef.current = Date.now()
       lastLoudAudioAtRef.current = 0
@@ -370,7 +358,6 @@ export default function InterpretationView() {
       console.warn('[InterpretationView] stopInterpretation failed:', err)
     })
     wsRef.current?.close()
-    // 清理流式音频
     streamAudioElZhRef.current?.pause()
     streamAudioElIdRef.current?.pause()
     streamAudioElZhRef.current = null
@@ -435,61 +422,8 @@ export default function InterpretationView() {
             <IconLightbulb />
             音色克隆
           </button>
-          <button
-            className="si-pill-btn"
-            onClick={() => setShowDeviceSettings(!showDeviceSettings)}
-          >
-            <IconSettings />
-            音频设备
-          </button>
         </div>
       </header>
-
-      {/* 设备设置面板 */}
-      {showDeviceSettings && (
-        <div className="si-device-settings">
-          <div className="si-device-settings-panel">
-            <div className="si-device-settings-row">
-              <label>中文声道（原音 + TTS）：</label>
-              <select
-                value={audioConfig.zhDeviceId || ''}
-                onChange={e => {
-                  const newConfig = { ...audioConfig, zhDeviceId: e.target.value || null }
-                  setAudioConfig(newConfig)
-                  if (e.target.value) localStorage.setItem(STORAGE_KEY_ZH_DEVICE, e.target.value)
-                  else localStorage.removeItem(STORAGE_KEY_ZH_DEVICE)
-                }}
-              >
-                <option value="">默认设备</option>
-                {audioDevices.map(d => (
-                  <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>
-                ))}
-              </select>
-            </div>
-            <div className="si-device-settings-row">
-              <label>印尼语声道（原音 + TTS）：</label>
-              <select
-                value={audioConfig.idDeviceId || ''}
-                onChange={e => {
-                  const newConfig = { ...audioConfig, idDeviceId: e.target.value || null }
-                  setAudioConfig(newConfig)
-                  if (e.target.value) localStorage.setItem(STORAGE_KEY_ID_DEVICE, e.target.value)
-                  else localStorage.removeItem(STORAGE_KEY_ID_DEVICE)
-                }}
-              >
-                <option value="">默认设备</option>
-                {audioDevices.map(d => (
-                  <option key={d.deviceId} value={d.deviceId}>{d.label || d.deviceId}</option>
-                ))}
-              </select>
-            </div>
-            <p className="si-device-settings-hint">
-              中文原音 + 中文 TTS → 中文声道；印尼语原音 + 印尼语 TTS → 印尼语声道。<br />
-              语言未识别时默认走中文声道。建议分别选择 VoiceMeeter Input 和 VoiceMeeter Aux Input。
-            </p>
-          </div>
-        </div>
-      )}
 
       <main className="si-main">
         <div className="si-trilingual">
