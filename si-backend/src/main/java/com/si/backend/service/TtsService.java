@@ -39,6 +39,7 @@ public class TtsService {
      * @param voiceId    音色 ID（也是连接池 key）
      * @param text       待合成文本
      * @param sampleRate 采样率
+     * @param speed      语速倍率（1.0 为正常，1.25 为加速 25%）
      * @param onChunk    PCM 分块回调
      * @param onComplete 合成完成回调
      * @param onError    错误回调
@@ -47,12 +48,13 @@ public class TtsService {
             String voiceId,
             String text,
             int sampleRate,
+            double speed,
             java.util.function.Consumer<byte[]> onChunk,
             Runnable onComplete,
             java.util.function.Consumer<String> onError
     ) {
-        log.info("[TtsService] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}",
-                voiceId, text != null ? text.length() : 0, sampleRate);
+        log.info("[TtsService] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}",
+                voiceId, text != null ? text.length() : 0, sampleRate, speed);
 
         GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool(voiceId);
 
@@ -74,6 +76,7 @@ public class TtsService {
             clientHolder[0].streamSynthesize(
                     text,
                     sampleRate,
+                    speed,
                     onChunk,
                     () -> {
                         returnClient(pool, clientHolder[0], voiceId);
@@ -221,6 +224,7 @@ public class TtsService {
         public synchronized void streamSynthesize(
                 String text,
                 int sampleRate,
+                double speed,
                 java.util.function.Consumer<byte[]> onChunk,
                 Runnable onComplete,
                 java.util.function.Consumer<String> onError
@@ -264,6 +268,7 @@ public class TtsService {
                             Constants.CARTESIA_FIELD_ENCODING, Constants.CARTESIA_ENCODING_PCM_S16LE,
                             Constants.CARTESIA_FIELD_SAMPLE_RATE, sampleRate
                     ));
+                    ttsMsg.put(Constants.CARTESIA_FIELD_SPEED, speed);
                     ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
                     ws.send(toJson(ttsMsg));
                 }

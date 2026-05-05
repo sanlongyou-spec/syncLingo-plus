@@ -13,6 +13,8 @@ import org.springframework.stereotype.Component;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -30,6 +32,12 @@ public class RealtimeInterpretationFacade {
     private final TranslationService translationService;
     private final InterpretationSessionService sessionService;
     private final CartesiaProperties cartesiaProperties;
+
+    private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
+
+    /** 翻译任务专用线程池，避免阻塞 ForkJoinPool.commonPool 影响系统响应 */
+    private static final Executor TRANSLATION_EXECUTOR =
+            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER);
 
     /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
@@ -75,6 +83,11 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] startInterpretation, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
 
+        // 重置 TTS 链：防止 WS 重连时旧的未完成 Future 阻塞新任务
+        sessionTtsChain.put(sessionId, CompletableFuture.completedFuture(null));
+        sessionTtsVersion.put(sessionId, new AtomicLong(0));
+        sessionLastSourceLang.remove(sessionId);
+
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
 
@@ -85,7 +98,8 @@ public class RealtimeInterpretationFacade {
                 (text, lang) -> {
                     onRecognized.accept(text, lang);
                     CompletableFuture.runAsync(() ->
-                            processFinalRecognition(text, lang, sessionId, voiceId))
+                            processFinalRecognition(text, lang, sessionId, voiceId),
+                            TRANSLATION_EXECUTOR)
                             .exceptionally(ex -> {
                                 log.error("[RealtimeInterpretationFacade] processFinalRecognition async error, sessionId={}", sessionId, ex);
                                 return null;
@@ -93,6 +107,7 @@ public class RealtimeInterpretationFacade {
                 },
                 errorMessage -> onError.accept(errorMessage)
         );
+        log.info("[RealtimeInterpretationFacade] startInterpretation done, sessionId={}", sessionId);
     }
 
     /**
@@ -112,13 +127,22 @@ public class RealtimeInterpretationFacade {
      */
     public void stopInterpretation(String sessionId) {
         log.info("[RealtimeInterpretationFacade] stopInterpretation, sessionId={}", sessionId);
-        asrService.stopRecognition(sessionId);
-        sessionService.stopSession(sessionId);
+        try {
+            asrService.stopRecognition(sessionId);
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e);
+        }
+        try {
+            sessionService.stopSession(sessionId);
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e);
+        }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
         sessionTtsVersion.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
+        log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 
     // ---------- Recognition → Translation → TTS pipeline ----------
@@ -137,13 +161,14 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, detected={}, {}→{}",
                 sessionId, detectedLang, sourceLang, targetLang);
 
-        // 检测语言切换：版本递增，重置 TTS 链，让排队中的旧任务自动跳过
+        // 检测语言切换：版本递增，原子重置 TTS 链，让排队中的旧任务自动跳过
         String prevLang = sessionLastSourceLang.put(sessionId, sourceLang);
         if (prevLang != null && !prevLang.equals(sourceLang)) {
             long newVersion = sessionTtsVersion
                     .computeIfAbsent(sessionId, k -> new AtomicLong(0))
                     .incrementAndGet();
-            sessionTtsChain.put(sessionId, CompletableFuture.completedFuture(null));
+            // 用 compute 原子替换，避免与 translateAndStreamTts 的 compute 产生竞态
+            sessionTtsChain.compute(sessionId, (k, old) -> CompletableFuture.completedFuture(null));
             log.info("[RealtimeInterpretationFacade] lang switch {}→{}, TTS chain reset, version={}, sessionId={}",
                     prevLang, sourceLang, newVersion, sessionId);
         }
@@ -156,6 +181,7 @@ public class RealtimeInterpretationFacade {
         }
 
         translateAndStreamTts(text, sourceLang, targetLang, resolvedVoiceId, sessionId);
+        log.info("[RealtimeInterpretationFacade] processFinalRecognition done, sessionId={}", sessionId);
     }
 
     private String normalizeAsrLang(String asrLang) {
@@ -177,8 +203,18 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] translateAndStreamTts, sessionId={}, textLen={}, {}→{}, voiceId={}",
                 sessionId, text.length(), sourceLang, targetLang, voiceId);
 
+        // 在翻译开始前捕获版本号，确保版本校验能覆盖整个翻译+TTS过程
+        final long myVersion = sessionTtsVersion
+                .computeIfAbsent(sessionId, k -> new AtomicLong(0)).get();
+
         long translateStart = System.currentTimeMillis();
-        String translated = translationService.translate(text, sourceLang, targetLang);
+        String translated;
+        try {
+            translated = translationService.translate(text, sourceLang, targetLang);
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}, {}→{}", sessionId, sourceLang, targetLang, e);
+            return;
+        }
         log.info("[RealtimeInterpretationFacade] translate done, sessionId={}, costMs={}, translatedLen={}",
                 sessionId, System.currentTimeMillis() - translateStart, translated != null ? translated.length() : 0);
 
@@ -192,8 +228,6 @@ public class RealtimeInterpretationFacade {
         final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
-        final long myVersion = sessionTtsVersion
-                .computeIfAbsent(sessionId, k -> new AtomicLong(0)).get();
 
         CompletableFuture<Void> thisFuture = new CompletableFuture<>();
         @SuppressWarnings("unchecked")
@@ -205,6 +239,10 @@ public class RealtimeInterpretationFacade {
 
         log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, textLen={}, voiceId={}, prevDone={}",
                 sessionId, finalTranslated.length(), resolvedVoiceId, prevHolder[0].isDone());
+
+        final double ttsSpeed = Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
+                ? Constants.TTS_SPEED_INDONESIAN
+                : Constants.TTS_SPEED_DEFAULT;
 
         prevHolder[0].thenRunAsync(() -> {
             long currentVersion = sessionTtsVersion
@@ -220,6 +258,7 @@ public class RealtimeInterpretationFacade {
                     resolvedVoiceId,
                     finalTranslated,
                     cartesiaProperties.getTts().getSampleRate(),
+                    ttsSpeed,
                     pcm -> {
                         TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
                         if (onTtsAudio != null) {
@@ -236,6 +275,10 @@ public class RealtimeInterpretationFacade {
                         thisFuture.complete(null);
                     }
             );
+        }, TRANSLATION_EXECUTOR).exceptionally(ex -> {
+            log.error("[RealtimeInterpretationFacade] TTS chain error, sessionId={}", sessionId, ex);
+            thisFuture.complete(null);
+            return null;
         });
     }
 
@@ -254,15 +297,24 @@ public class RealtimeInterpretationFacade {
      */
     public void cleanupSession(String sessionId) {
         log.info("[RealtimeInterpretationFacade] cleanupSession, sessionId={}", sessionId);
-        asrService.stopRecognition(sessionId);
-        if (sessionService.isSessionActive(sessionId)) {
-            sessionService.stopSession(sessionId);
+        try {
+            asrService.stopRecognition(sessionId);
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e);
+        }
+        try {
+            if (sessionService.isSessionActive(sessionId)) {
+                sessionService.stopSession(sessionId);
+            }
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e);
         }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
         sessionTtsVersion.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
+        log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
     }
 
     /**
@@ -271,7 +323,14 @@ public class RealtimeInterpretationFacade {
     public String translateText(String text, String targetLang) {
         if (text == null || text.isBlank()) return "";
         log.info("[RealtimeInterpretationFacade] translateText, textLen={}, targetLang={}", text.length(), targetLang);
-        return translationService.translate(text, Constants.LANG_AUTO, targetLang);
+        try {
+            String result = translationService.translate(text, Constants.LANG_AUTO, targetLang);
+            log.info("[RealtimeInterpretationFacade] translateText done, resultLen={}", result != null ? result.length() : 0);
+            return result != null ? result : "";
+        } catch (Exception e) {
+            log.error("[RealtimeInterpretationFacade] translateText failed, targetLang={}", targetLang, e);
+            return "";
+        }
     }
 
     @FunctionalInterface

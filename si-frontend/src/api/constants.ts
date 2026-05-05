@@ -9,7 +9,7 @@ export const API_DEFAULTS = {
 
 export const WS_DEFAULTS = {
   BASE_URL: import.meta.env.VITE_WS_BASE_URL || '',
-  MAX_RECONNECT: 3,
+  MAX_RECONNECT: 10,
   RECONNECT_DELAY_MS: 2000,
 } as const
 

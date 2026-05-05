@@ -126,6 +126,12 @@ public final class Constants {
     public static final String CARTESIA_FIELD_SAMPLE_RATE = "sample_rate";
     /** Cartesia TTS WebSocket JSON 字段：context_id */
     public static final String CARTESIA_FIELD_CONTEXT_ID = "context_id";
+    /** Cartesia TTS WebSocket JSON 字段：speed（语速倍率，1.0 为正常） */
+    public static final String CARTESIA_FIELD_SPEED = "speed";
+    /** 印尼语 TTS 语速倍率（1.25 = 加速 25%） */
+    public static final double TTS_SPEED_INDONESIAN = 1.25;
+    /** 默认 TTS 语速倍率（正常速度） */
+    public static final double TTS_SPEED_DEFAULT = 1.0;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
     public static final String CARTESIA_FIELD_AUDIO = "data";
     /** Cartesia TTS WebSocket JSON 字段：done */

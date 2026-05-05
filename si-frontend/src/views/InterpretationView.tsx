@@ -189,6 +189,9 @@ export default function InterpretationView() {
       streamContextRef.current = new AudioContext()
     }
     const ctx = streamContextRef.current
+    if (ctx.state === 'suspended') {
+      await ctx.resume()
+    }
 
     if (!streamDestZhRef.current) {
       streamDestZhRef.current = ctx.createMediaStreamDestination()
@@ -244,7 +247,8 @@ export default function InterpretationView() {
     console.log('[TTS] schedule chunk: queueWait=', queueWaitMs, 'ms, duration=', Math.round(buffer.duration * 1000), 'ms')
     pendingRef.current.push(source)
     source.addEventListener('ended', () => {
-      pendingRef.current = pendingRef.current.filter(s => s !== source)
+      const idx = pendingRef.current.indexOf(source)
+      if (idx !== -1) pendingRef.current.splice(idx, 1)
     })
     source.start(startAt)
     scheduleRef.current = startAt + buffer.duration
@@ -370,7 +374,7 @@ export default function InterpretationView() {
           let sumSq = 0
           for (let i = 0; i < pcm.length; i++) sumSq += pcm[i] * pcm[i]
           const rms = Math.sqrt(sumSq / pcm.length)
-          if (rms > 0.0012) lastLoudAudioAtRef.current = Date.now()
+          if (rms > 0.001) lastLoudAudioAtRef.current = Date.now()
         },
       })
       audioRef.current = audio
@@ -404,10 +408,12 @@ export default function InterpretationView() {
     streamDestIdRef.current = null
     streamContextRef.current?.close()
     streamContextRef.current = null
-    scheduleTimeZhRef.current = 0
-    scheduleTimeIdRef.current = 0
+    pendingSourcesZhRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
+    pendingSourcesIdRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
     pendingSourcesZhRef.current = []
     pendingSourcesIdRef.current = []
+    scheduleTimeZhRef.current = 0
+    scheduleTimeIdRef.current = 0
     prevDetectedLangRef.current = ''
     wsRef.current = null
     audioRef.current = null
@@ -502,8 +508,8 @@ export default function InterpretationView() {
                       </div>
                     </div>
                     <div className="si-tri-block-line">
-                      <span className="si-tri-line-lang-badge si-tri-line-lang-badge--id">
-                        Indonesia
+                      <span className={`si-tri-line-lang-badge ${item.language.startsWith('id') ? 'si-tri-line-lang-badge--zh' : 'si-tri-line-lang-badge--id'}`}>
+                        {item.language.startsWith('id') ? '中文' : 'Indonesia'}
                       </span>
                       <div className="si-tri-block-line-body">
                         <span className="si-tri-line-plain">{item.translated}</span>
@@ -528,8 +534,8 @@ export default function InterpretationView() {
                       </div>
                     </div>
                     <div className="si-tri-block-line">
-                      <span className="si-tri-line-lang-badge si-tri-line-lang-badge--partial si-tri-line-lang-badge--id">
-                        Indonesia
+                      <span className={`si-tri-line-lang-badge si-tri-line-lang-badge--partial ${detectedLang.startsWith('id') ? 'si-tri-line-lang-badge--zh' : 'si-tri-line-lang-badge--id'}`}>
+                        {detectedLang.startsWith('id') ? '中文' : 'Indonesia'}
                       </span>
                       <div className="si-tri-block-line-body">
                         <span className="si-tri-seg-pending">
