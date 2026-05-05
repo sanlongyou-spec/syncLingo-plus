@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 实时同传门面层，协调 ASR、翻译、TTS 的实时处理流程。
@@ -38,6 +39,12 @@ public class RealtimeInterpretationFacade {
 
     /** 每个会话最后一个 TTS 任务的 Future，串行化多段 TTS 防止声音混叠 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
+
+    /** 每个会话的 TTS 版本号：语言切换时递增，旧任务检测到版本不匹配则跳过 */
+    private final ConcurrentHashMap<String, AtomicLong> sessionTtsVersion = new ConcurrentHashMap<>();
+
+    /** 每个会话上一次检测到的源语言，用于判断是否发生了语言切换 */
+    private final ConcurrentHashMap<String, String> sessionLastSourceLang = new ConcurrentHashMap<>();
 
     // ---------- WebSocket session lifecycle ----------
 
@@ -77,7 +84,12 @@ public class RealtimeInterpretationFacade {
                 (text, lang) -> onRecognizing.accept(text, lang),
                 (text, lang) -> {
                     onRecognized.accept(text, lang);
-                    processFinalRecognition(text, lang, sessionId, voiceId);
+                    CompletableFuture.runAsync(() ->
+                            processFinalRecognition(text, lang, sessionId, voiceId))
+                            .exceptionally(ex -> {
+                                log.error("[RealtimeInterpretationFacade] processFinalRecognition async error, sessionId={}", sessionId, ex);
+                                return null;
+                            });
                 },
                 errorMessage -> onError.accept(errorMessage)
         );
@@ -105,6 +117,8 @@ public class RealtimeInterpretationFacade {
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
+        sessionTtsVersion.remove(sessionId);
+        sessionLastSourceLang.remove(sessionId);
     }
 
     // ---------- Recognition → Translation → TTS pipeline ----------
@@ -122,6 +136,17 @@ public class RealtimeInterpretationFacade {
 
         log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, detected={}, {}→{}",
                 sessionId, detectedLang, sourceLang, targetLang);
+
+        // 检测语言切换：版本递增，重置 TTS 链，让排队中的旧任务自动跳过
+        String prevLang = sessionLastSourceLang.put(sessionId, sourceLang);
+        if (prevLang != null && !prevLang.equals(sourceLang)) {
+            long newVersion = sessionTtsVersion
+                    .computeIfAbsent(sessionId, k -> new AtomicLong(0))
+                    .incrementAndGet();
+            sessionTtsChain.put(sessionId, CompletableFuture.completedFuture(null));
+            log.info("[RealtimeInterpretationFacade] lang switch {}→{}, TTS chain reset, version={}, sessionId={}",
+                    prevLang, sourceLang, newVersion, sessionId);
+        }
 
         String resolvedVoiceId = voiceId;
         if (resolvedVoiceId == null || resolvedVoiceId.isBlank()) {
@@ -164,11 +189,11 @@ public class RealtimeInterpretationFacade {
             onTranslated.accept(text, translated, targetLang);
         }
 
-        translated = truncateIfTooLong(translated, 150);
-
         final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
+        final long myVersion = sessionTtsVersion
+                .computeIfAbsent(sessionId, k -> new AtomicLong(0)).get();
 
         CompletableFuture<Void> thisFuture = new CompletableFuture<>();
         @SuppressWarnings("unchecked")
@@ -182,6 +207,14 @@ public class RealtimeInterpretationFacade {
                 sessionId, finalTranslated.length(), resolvedVoiceId, prevHolder[0].isDone());
 
         prevHolder[0].thenRunAsync(() -> {
+            long currentVersion = sessionTtsVersion
+                    .getOrDefault(sessionId, new AtomicLong(0)).get();
+            if (currentVersion != myVersion) {
+                log.info("[RealtimeInterpretationFacade] TTS skipped (lang switched v{}→v{}), sessionId={}",
+                        myVersion, currentVersion, sessionId);
+                thisFuture.complete(null);
+                return;
+            }
             long ttsStart = System.currentTimeMillis();
             ttsService.synthesizeStream(
                     resolvedVoiceId,
@@ -206,21 +239,6 @@ public class RealtimeInterpretationFacade {
         });
     }
 
-    private String truncateIfTooLong(String text, int maxLen) {
-        if (text == null || text.length() <= maxLen) return text;
-        int cutAt = maxLen;
-        for (int i = maxLen; i >= maxLen / 2; i--) {
-            char c = text.charAt(i);
-            if (c == '.' || c == ',' || c == ';' || c == '!' || c == '?') {
-                cutAt = i + 1;
-                break;
-            }
-        }
-        String truncated = text.substring(0, cutAt).trim();
-        log.info("[RealtimeInterpretationFacade] truncated: {}→{} chars", text.length(), truncated.length());
-        return truncated;
-    }
-
     private String resolveVoiceId(String voiceId, String targetLang) {
         if (voiceId != null && !voiceId.isBlank()) return voiceId;
         if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
@@ -243,6 +261,8 @@ public class RealtimeInterpretationFacade {
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
+        sessionTtsVersion.remove(sessionId);
+        sessionLastSourceLang.remove(sessionId);
     }
 
     /**

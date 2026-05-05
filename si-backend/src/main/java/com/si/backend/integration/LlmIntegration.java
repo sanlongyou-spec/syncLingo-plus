@@ -53,7 +53,7 @@ public class LlmIntegration {
             + "8. Preserve all facts, actions, and results.\n"
             + "9. Keep the original order.\n\n"
             + "【Length Control】\n"
-            + "10. Target: 60%~70% of the original length.\n"
+            + "10. Target: 50%~60% of the original length.\n"
             + "11. Do NOT delete key actions or events.\n\n"
             + "【Style (Strict)】\n"
             + "12. Use very simple sentence structures.\n"

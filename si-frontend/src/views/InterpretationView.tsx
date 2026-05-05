@@ -68,12 +68,34 @@ export default function InterpretationView() {
   // 每个声道的音频排队结束时间，防止 chunk 并发播放产生双音色
   const scheduleTimeZhRef = useRef(0)
   const scheduleTimeIdRef = useRef(0)
+  const pendingSourcesZhRef = useRef<AudioBufferSourceNode[]>([])
+  const pendingSourcesIdRef = useRef<AudioBufferSourceNode[]>([])
   const detectedLangRef = useRef('')
+  const prevDetectedLangRef = useRef('')
   const capturePipelineStartedAtRef = useRef(0)
   const lastLoudAudioAtRef = useRef(0)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
+
+  // 语言切换时清空新语言声道，立刻跟上原音
+  useEffect(() => {
+    if (!isRunning || !detectedLang) return
+    const prev = prevDetectedLangRef.current
+    prevDetectedLangRef.current = detectedLang
+    if (!prev || prev === detectedLang) return
+    const newIsZh = !detectedLang.startsWith('id')
+    const pending = newIsZh ? pendingSourcesZhRef.current : pendingSourcesIdRef.current
+    pending.forEach(s => { try { s.stop() } catch { /* already ended */ } })
+    if (newIsZh) {
+      pendingSourcesZhRef.current = []
+      scheduleTimeZhRef.current = streamContextRef.current?.currentTime ?? 0
+    } else {
+      pendingSourcesIdRef.current = []
+      scheduleTimeIdRef.current = streamContextRef.current?.currentTime ?? 0
+    }
+    console.log('[InterpretationView] 语言切换 %s→%s，已清空%s声道', prev, detectedLang, newIsZh ? '中文' : '印尼语')
+  }, [detectedLang, isRunning])
 
   useEffect(() => {
     getUserVoice(userId)
@@ -195,7 +217,8 @@ export default function InterpretationView() {
     const ctx = streamContextRef.current
     if (!dest || !ctx) return
     const scheduleRef = isZh ? scheduleTimeZhRef : scheduleTimeIdRef
-    playStreamPcmDirect(pcmData, sampleRate, ctx, dest, scheduleRef)
+    const pendingRef = isZh ? pendingSourcesZhRef : pendingSourcesIdRef
+    playStreamPcmDirect(pcmData, sampleRate, ctx, dest, scheduleRef, pendingRef)
   }, [initStreamAudio])
 
   // 直接播放 PCM 到 destination（串行调度，避免 chunk 并发双音色）
@@ -205,6 +228,7 @@ export default function InterpretationView() {
     ctx: AudioContext,
     dest: MediaStreamAudioDestinationNode,
     scheduleRef: React.MutableRefObject<number>,
+    pendingRef: React.MutableRefObject<AudioBufferSourceNode[]>,
   ) => {
     const float32Data = new Float32Array(pcmData.length)
     for (let i = 0; i < pcmData.length; i++) {
@@ -218,6 +242,10 @@ export default function InterpretationView() {
     const startAt = Math.max(ctx.currentTime, scheduleRef.current)
     const queueWaitMs = Math.round((startAt - ctx.currentTime) * 1000)
     console.log('[TTS] schedule chunk: queueWait=', queueWaitMs, 'ms, duration=', Math.round(buffer.duration * 1000), 'ms')
+    pendingRef.current.push(source)
+    source.addEventListener('ended', () => {
+      pendingRef.current = pendingRef.current.filter(s => s !== source)
+    })
     source.start(startAt)
     scheduleRef.current = startAt + buffer.duration
   }
@@ -241,6 +269,7 @@ export default function InterpretationView() {
     switch (msg.type) {
       case 'recognizing':
         setCurrentSource(msg.text || '')
+        if (msg.language) setDetectedLang(msg.language)
         break
       case 'recognized':
         if (msg.text) {
@@ -271,6 +300,15 @@ export default function InterpretationView() {
         const ttsReceiveMs = performance.now()
         console.log('[TTS] chunk received, audioBase64 length=', msg.audioBase64 ? msg.audioBase64.length : 0, ', lang=', msg.targetLanguage)
         if (msg.audioBase64 && msg.targetLanguage) {
+          // 丢弃方向与当前说话人不匹配的 TTS 块（语言切换后旧 TTS 仍在传输时）
+          const curLang = detectedLangRef.current
+          if (curLang) {
+            const expectedTarget = curLang.startsWith('id') ? 'zh' : 'id'
+            if (!msg.targetLanguage.toLowerCase().startsWith(expectedTarget)) {
+              console.log('[TTS] discarded stale chunk, target=%s expected=%s', msg.targetLanguage, expectedTarget)
+              break
+            }
+          }
           try {
             const binaryStr = atob(msg.audioBase64)
             const bytes = new Uint8Array(binaryStr.length)
@@ -368,6 +406,9 @@ export default function InterpretationView() {
     streamContextRef.current = null
     scheduleTimeZhRef.current = 0
     scheduleTimeIdRef.current = 0
+    pendingSourcesZhRef.current = []
+    pendingSourcesIdRef.current = []
+    prevDetectedLangRef.current = ''
     wsRef.current = null
     audioRef.current = null
     setSessionId(null)
