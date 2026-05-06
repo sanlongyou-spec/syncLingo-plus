@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -211,15 +212,20 @@ public class AzureAsrIntegration {
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<String> result = new AtomicReference<>("");
             AtomicReference<String> lang = new AtomicReference<>("");
+            AtomicBoolean done = new AtomicBoolean(false);
 
             recognizer.recognized.addEventListener((s, e) -> {
+                if (!done.compareAndSet(false, true)) return;
                 if (e.getResult().getReason() == ResultReason.RecognizedSpeech) {
                     result.set(e.getResult().getText());
                     lang.set(resolveDetectedLanguage(e.getResult()));
                 }
                 latch.countDown();
             });
-            recognizer.canceled.addEventListener((s, e) -> latch.countDown());
+            recognizer.canceled.addEventListener((s, e) -> {
+                if (!done.compareAndSet(false, true)) return;
+                latch.countDown();
+            });
 
             long start = System.currentTimeMillis();
             recognizer.recognizeOnceAsync().get(10, TimeUnit.SECONDS);

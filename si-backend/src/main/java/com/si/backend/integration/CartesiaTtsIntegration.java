@@ -71,7 +71,7 @@ public class CartesiaTtsIntegration {
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("name", voiceName)
                 .addFormDataPart("language", language)
-                .addFormDataPart("enhance", "false")
+                .addFormDataPart("enhance", Constants.CARTESIA_ENHANCE_DISABLED)
                 .addFormDataPart("clip", "sample.wav",
                         RequestBody.create(audioSample, MediaType.parse("audio/wav")))
                 .build();
@@ -93,7 +93,8 @@ public class CartesiaTtsIntegration {
                         "音色克隆失败: HTTP " + response.code());
             }
 
-            String bodyStr = response.body() != null ? response.body().string() : "";
+            okhttp3.ResponseBody responseBody = response.body();
+            String bodyStr = responseBody != null ? responseBody.string() : "";
             JsonNode node = objectMapper.readTree(bodyStr);
             String voiceId = node.path("id").asText();
 

@@ -67,8 +67,8 @@ public final class Constants {
     public static final String WS_PATH_ASR = "/ws/asr";
     /** WebSocket 最大文本消息大小（64KB） */
     public static final int WS_MAX_TEXT_MESSAGE_SIZE = 1024 * 64;
-    /** WebSocket 最大二进制消息大小（1MB） */
-    public static final int WS_MAX_BINARY_MESSAGE_SIZE = 1024 * 1024;
+    /** WebSocket 最大二进制消息大小（10MB，与 application.yml 保持一致） */
+    public static final int WS_MAX_BINARY_MESSAGE_SIZE = 10 * 1024 * 1024;
     /** URL Query 参数中的 Token key */
     public static final String WS_QUERY_PARAM_TOKEN = "token";
 
@@ -150,6 +150,8 @@ public final class Constants {
     public static final String CARTESIA_CLOSE_REASON_CLIENT_CLOSED = "client closed";
     /** TTS 内部错误消息：未知错误 */
     public static final String TTS_ERROR_UNKNOWN = "unknown error";
+    /** Cartesia 音色克隆 enhance 参数：false 可获得更高相似度 */
+    public static final String CARTESIA_ENHANCE_DISABLED = "false";
     /** 默认音色 ID（当用户未克隆音色时使用） */
     public static final String VOICE_ID_DEFAULT = "default";
     /** PCM 编码格式（Cartesia 协议） */
@@ -163,6 +165,7 @@ public final class Constants {
     public static final int HTTP_BAD_REQUEST = 400;
     public static final int HTTP_UNAUTHORIZED = 401;
     public static final int HTTP_NOT_FOUND = 404;
+    public static final int HTTP_METHOD_NOT_ALLOWED = 405;
     public static final int HTTP_SERVER_ERROR = 500;
 
     // ═══════════════════════════════════════════════════════════
@@ -231,12 +234,4 @@ public final class Constants {
     /** 获取字符串参数时缓冲区大小（字节） */
     public static final int VOICEMEETER_STRING_BUFFER_SIZE = 256;
 
-    // ═══════════════════════════════════════════════════════════
-    // Default voice IDs（从 Cartesia GET /voices 获取）
-    // ═══════════════════════════════════════════════════════════
-
-    /** 默认印尼语音色 ID：Andi - Dynamic Presenter */
-    public static final String DEFAULT_VOICE_ID_INDONESIAN = "a053f6bc-7df4-40de-96d4-de026bc47ce8";
-    /** 默认中文音色 ID：Jing - Clear Coordinator */
-    public static final String DEFAULT_VOICE_ID_CHINESE = "6eb8965c-e295-47bd-a9e4-3eeebb3abcff";
 }

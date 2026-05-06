@@ -34,7 +34,7 @@ public class GlobalExceptionHandler {
                 .map(FieldError::getDefaultMessage)
                 .collect(Collectors.joining("; "));
         log.warn("[GlobalExceptionHandler] validation failed: {}", message);
-        return Result.fail(400, message);
+        return Result.fail(Constants.HTTP_BAD_REQUEST, message);
     }
 
     @ExceptionHandler(BindException.class)
@@ -44,34 +44,34 @@ public class GlobalExceptionHandler {
                 .map(FieldError::getDefaultMessage)
                 .collect(Collectors.joining("; "));
         log.warn("[GlobalExceptionHandler] bind failed: {}", message);
-        return Result.fail(400, message);
+        return Result.fail(Constants.HTTP_BAD_REQUEST, message);
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Result<Void> handleNotFound(NoHandlerFoundException e) {
         log.warn("[GlobalExceptionHandler] not found: {}", e.getRequestURL());
-        return Result.fail(404, "接口不存在: " + e.getRequestURL());
+        return Result.fail(Constants.HTTP_NOT_FOUND, "接口不存在: " + e.getRequestURL());
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
     public Result<Void> handleMethodNotSupported(HttpRequestMethodNotSupportedException e) {
         log.warn("[GlobalExceptionHandler] method not allowed: {}", e.getMethod());
-        return Result.fail(405, "不支持的请求方法: " + e.getMethod());
+        return Result.fail(Constants.HTTP_METHOD_NOT_ALLOWED, "不支持的请求方法: " + e.getMethod());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public Result<Void> handleIllegalArgument(IllegalArgumentException e) {
         log.warn("[GlobalExceptionHandler] illegal argument: {}", e.getMessage());
-        return Result.fail(400, e.getMessage());
+        return Result.fail(Constants.HTTP_BAD_REQUEST, e.getMessage());
     }
 
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public Result<Void> handleGenericException(Exception e) {
         log.error("[GlobalExceptionHandler] unexpected exception", e);
-        return Result.fail(500, "服务器内部错误");
+        return Result.fail(Constants.HTTP_SERVER_ERROR, "服务器内部错误");
     }
 }

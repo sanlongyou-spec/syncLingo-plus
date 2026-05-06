@@ -1,19 +1,21 @@
 package com.si.backend.integration;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.*;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * LLM 集成层，用于调用 Qwen3-Max 进行印尼语翻译压缩。
+ * 使用全局共享 OkHttpClient（含连接池与 5xx 重试）。
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class LlmIntegration {
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
@@ -69,15 +71,6 @@ public class LlmIntegration {
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    public LlmIntegration(ObjectMapper objectMapper) {
-        this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(5, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS)
-                .writeTimeout(5, TimeUnit.SECONDS)
-                .build();
-        this.objectMapper = objectMapper;
-    }
-
     /**
      * 调用 LLM 进行文本压缩（印尼语）。
      *
@@ -121,6 +114,7 @@ public class LlmIntegration {
         String requestBody = objectMapper.writeValueAsString(body);
         log.debug("[LlmIntegration] POST {}, bodyLen={}", endpoint, requestBody.length());
 
+        long start = System.currentTimeMillis();
         Request request = new Request.Builder()
                 .url(endpoint)
                 .header("Authorization", "Bearer " + apiKey)
@@ -129,6 +123,7 @@ public class LlmIntegration {
                 .build();
 
         try (Response response = httpClient.newCall(request).execute()) {
+            log.info("[LlmIntegration] doCall done, costMs={}, httpCode={}", System.currentTimeMillis() - start, response.code());
             String responseBody = response.body() != null ? response.body().string() : "";
 
             if (!response.isSuccessful()) {

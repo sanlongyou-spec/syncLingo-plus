@@ -58,7 +58,7 @@ public class TranslationService {
         log.info("[TranslationService] translate start, textLen={}, sourceLang={}, targetLang={}",
                 text != null ? text.length() : 0, sourceLang, targetLang);
         if (text == null || text.isBlank()) {
-            log.debug("[TranslationService] translate skip, empty text");
+            log.debug("[TranslationService] translate end (blank input), textLen=0, targetLang={}", targetLang);
             return "";
         }
 

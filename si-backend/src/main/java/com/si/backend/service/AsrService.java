@@ -94,7 +94,7 @@ public class AsrService {
      * @param pcmFrame  PCM 音频数据
      */
     public void pushAudio(String sessionId, byte[] pcmFrame) {
-        log.trace("[AsrService] pushAudio, sessionId={}, bytes={}", sessionId, pcmFrame.length);
+        log.debug("[AsrService] pushAudio, sessionId={}, bytes={}", sessionId, pcmFrame.length);
         asrIntegration.pushAudio(sessionId, pcmFrame);
     }
 

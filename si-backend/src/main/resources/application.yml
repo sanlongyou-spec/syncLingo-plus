@@ -76,12 +76,14 @@ google:
 cartesia:
   api-key: ${CARTESIA_API_KEY:}
   api-url: ${CARTESIA_API_URL:wss://api.cartesia.ai}
+  default-voice-id-chinese: ${CARTESIA_DEFAULT_VOICE_ID_ZH:6eb8965c-e295-47bd-a9e4-3eeebb3abcff}
+  default-voice-id-indonesian: ${CARTESIA_DEFAULT_VOICE_ID_ID:a053f6bc-7df4-40de-96d4-de026bc47ce8}
   tts:
     model: sonic
     sample-rate: 24000
     container: raw
   pool:
-    max-total-per-voice: 10
+    max-total-per-voice: 20
     min-idle-per-voice: 2
     max-wait-millis: 5000
 

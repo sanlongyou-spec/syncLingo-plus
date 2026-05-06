@@ -14,7 +14,9 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,16 +36,34 @@ public class RealtimeInterpretationFacade {
     private final CartesiaProperties cartesiaProperties;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
+    private static final int TTS_THREAD_MULTIPLIER = 2;
 
-    /** 翻译任务专用线程池，避免阻塞 ForkJoinPool.commonPool 影响系统响应 */
-    private static final Executor TRANSLATION_EXECUTOR =
-            Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER);
+    /** 翻译任务专用线程池，有界队列防止 OOM，CallerRunsPolicy 提供背压 */
+    private static final Executor TRANSLATION_EXECUTOR = new ThreadPoolExecutor(
+            Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER,
+            Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER,
+            0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(1000),
+            new ThreadPoolExecutor.CallerRunsPolicy()
+    );
+
+    /** TTS 串行链专用线程池，与翻译线程池隔离，防止互相阻塞 */
+    private static final Executor TTS_EXECUTOR = new ThreadPoolExecutor(
+            Runtime.getRuntime().availableProcessors() * TTS_THREAD_MULTIPLIER,
+            Runtime.getRuntime().availableProcessors() * TTS_THREAD_MULTIPLIER,
+            0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(1000),
+            new ThreadPoolExecutor.CallerRunsPolicy()
+    );
 
     /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
 
     /** 缓存每个会话的 TTS 音频回调，用于将 PCM 数据推送给前端 */
     private final ConcurrentHashMap<String, TtsAudioCallback> sessionTtsAudioCallbackMap = new ConcurrentHashMap<>();
+
+    /** 缓存每个会话的错误回调，用于将异步管道错误推送给前端 */
+    private final ConcurrentHashMap<String, AsrErrorCallback> sessionErrorCallbackMap = new ConcurrentHashMap<>();
 
     /** 每个会话最后一个 TTS 任务的 Future，串行化多段 TTS 防止声音混叠 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
@@ -85,11 +105,13 @@ public class RealtimeInterpretationFacade {
 
         // 重置 TTS 链：防止 WS 重连时旧的未完成 Future 阻塞新任务
         sessionTtsChain.put(sessionId, CompletableFuture.completedFuture(null));
-        sessionTtsVersion.put(sessionId, new AtomicLong(0));
+        // 用 computeIfAbsent+set 而非 put，避免替换其他线程持有的 AtomicLong 引用导致版本号失效
+        sessionTtsVersion.computeIfAbsent(sessionId, k -> new AtomicLong(0)).set(0);
         sessionLastSourceLang.remove(sessionId);
 
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
+        sessionErrorCallbackMap.put(sessionId, onError);
 
         asrService.startRecognition(
                 sessionId,
@@ -102,6 +124,10 @@ public class RealtimeInterpretationFacade {
                             TRANSLATION_EXECUTOR)
                             .exceptionally(ex -> {
                                 log.error("[RealtimeInterpretationFacade] processFinalRecognition async error, sessionId={}", sessionId, ex);
+                                AsrErrorCallback errCb = sessionErrorCallbackMap.get(sessionId);
+                                if (errCb != null) {
+                                    errCb.accept("翻译处理失败: " + ex.getMessage());
+                                }
                                 return null;
                             });
                 },
@@ -139,6 +165,7 @@ public class RealtimeInterpretationFacade {
         }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionErrorCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
         sessionTtsVersion.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
@@ -266,16 +293,22 @@ public class RealtimeInterpretationFacade {
                         }
                     },
                     () -> {
-                        log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}",
-                                sessionId, System.currentTimeMillis() - ttsStart);
-                        thisFuture.complete(null);
+                        try {
+                            log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}",
+                                    sessionId, System.currentTimeMillis() - ttsStart);
+                        } finally {
+                            thisFuture.complete(null);
+                        }
                     },
                     err -> {
-                        log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
-                        thisFuture.complete(null);
+                        try {
+                            log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
+                        } finally {
+                            thisFuture.complete(null);
+                        }
                     }
             );
-        }, TRANSLATION_EXECUTOR).exceptionally(ex -> {
+        }, TTS_EXECUTOR).exceptionally(ex -> {
             log.error("[RealtimeInterpretationFacade] TTS chain error, sessionId={}", sessionId, ex);
             thisFuture.complete(null);
             return null;
@@ -285,9 +318,9 @@ public class RealtimeInterpretationFacade {
     private String resolveVoiceId(String voiceId, String targetLang) {
         if (voiceId != null && !voiceId.isBlank()) return voiceId;
         if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
-            return Constants.DEFAULT_VOICE_ID_CHINESE;
+            return cartesiaProperties.getDefaultVoiceIdChinese();
         }
-        return Constants.DEFAULT_VOICE_ID_INDONESIAN;
+        return cartesiaProperties.getDefaultVoiceIdIndonesian();
     }
 
     // ---------- Cleanup ----------
@@ -311,6 +344,7 @@ public class RealtimeInterpretationFacade {
         }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionErrorCallbackMap.remove(sessionId);
         sessionTtsChain.remove(sessionId);
         sessionTtsVersion.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);

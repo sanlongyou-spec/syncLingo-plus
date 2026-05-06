@@ -178,29 +178,33 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private void sendMessage(WebSocketSession session, WsMessage msg) {
         String type = msg.getType();
         boolean isTtsAudio = Constants.WS_MSG_TYPE_TTS_AUDIO.equals(type);
-        boolean isOpen = false;
-        synchronized (session) {
-            isOpen = session.isOpen();
-        }
-        if (!isOpen) {
-            log.warn("[AsrWebSocketHandler] session closed, skip send, sessionId={}, type={}",
-                    session.getId(), type);
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(msg);
+        } catch (Exception e) {
+            log.error("[AsrWebSocketHandler] serialize error, sessionId={}, type={}", session.getId(), type, e);
             return;
         }
-        try {
-            String json = objectMapper.writeValueAsString(msg);
-            synchronized (session) {
+        synchronized (session) {
+            if (!session.isOpen()) {
+                log.warn("[AsrWebSocketHandler] session closed, skip send, sessionId={}, type={}",
+                        session.getId(), type);
+                return;
+            }
+            try {
                 session.sendMessage(new TextMessage(json));
+            } catch (IOException e) {
+                log.error("[AsrWebSocketHandler] send IO error, sessionId={}, type={}", session.getId(), type, e);
+                return;
+            } catch (IllegalStateException e) {
+                log.error("[AsrWebSocketHandler] send state error (concurrent access?), sessionId={}, type={}",
+                        session.getId(), type, e);
+                return;
             }
-            if (isTtsAudio) {
-                log.info("[AsrWebSocketHandler] sent tts_audio, sessionId={}, jsonLen={}",
-                        session.getId(), json.length());
-            }
-        } catch (IOException e) {
-            log.error("[AsrWebSocketHandler] send IO error, sessionId={}, type={}", session.getId(), type, e);
-        } catch (IllegalStateException e) {
-            log.error("[AsrWebSocketHandler] send state error (concurrent access?), sessionId={}, type={}",
-                    session.getId(), type, e);
+        }
+        if (isTtsAudio) {
+            log.info("[AsrWebSocketHandler] sent tts_audio, sessionId={}, jsonLen={}",
+                    session.getId(), json.length());
         }
     }
 

@@ -7,6 +7,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.config.CartesiaProperties;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.annotation.PostConstruct;
 import org.apache.commons.pool2.BasePooledObjectFactory;
 import org.apache.commons.pool2.PooledObject;
 import org.apache.commons.pool2.impl.GenericObjectPool;
@@ -31,6 +32,20 @@ public class TtsService {
     public TtsService(CartesiaProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * 启动时异步预热默认音色连接池，避免阻塞应用启动流程。
+     */
+    @PostConstruct
+    public void init() {
+        log.info("[TtsService] init, prewarming default voice pools async");
+        int warmCount = properties.getPool().getMinIdlePerVoice();
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            prewarmPool(properties.getDefaultVoiceIdChinese(), warmCount);
+            prewarmPool(properties.getDefaultVoiceIdIndonesian(), warmCount);
+            log.info("[TtsService] init done");
+        });
     }
 
     /**
@@ -68,7 +83,6 @@ public class TtsService {
 
             // Use a holder array to allow lambda to reference the client
             // while still being able to check for null in catch block
-            @SuppressWarnings("unchecked")
             final CartesiaWsClient[] clientHolder = new CartesiaWsClient[] { borrowedClient };
 
             // streamSynthesize 是异步的（newWebSocket 非阻塞，立即返回）。
@@ -150,7 +164,7 @@ public class TtsService {
             config.setMinIdle(properties.getPool().getMinIdlePerVoice());
             config.setMaxWait(java.time.Duration.ofMillis(properties.getPool().getMaxWaitMillis()));
 
-            CartesiaPooledObjectFactory factory = new CartesiaPooledObjectFactory(properties, objectMapper, id);
+            CartesiaPooledObjectFactory factory = new CartesiaPooledObjectFactory(properties, objectMapper);
             GenericObjectPool<CartesiaWsClient> pool = new GenericObjectPool<>(factory, config);
 
             log.info("[TtsService] pool created, voiceId={}, maxTotal={}, minIdle={}",
@@ -168,12 +182,10 @@ public class TtsService {
 
         private final CartesiaProperties properties;
         private final ObjectMapper objectMapper;
-        private final String voiceId;
 
-        CartesiaPooledObjectFactory(CartesiaProperties properties, ObjectMapper objectMapper, String voiceId) {
+        CartesiaPooledObjectFactory(CartesiaProperties properties, ObjectMapper objectMapper) {
             this.properties = properties;
             this.objectMapper = objectMapper;
-            this.voiceId = voiceId;
         }
 
         @Override
@@ -206,6 +218,16 @@ public class TtsService {
      */
     public static class CartesiaWsClient {
 
+        private static final int WS_WRITE_TIMEOUT_SECONDS = 30;
+        private static final int WS_PING_INTERVAL_SECONDS = 20;
+
+        /** 所有 CartesiaWsClient 共享同一 OkHttpClient，复用连接池，避免每次合成重建 TCP 连接 */
+        private static final okhttp3.OkHttpClient WS_HTTP_CLIENT = new okhttp3.OkHttpClient.Builder()
+                .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .writeTimeout(WS_WRITE_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+                .pingInterval(WS_PING_INTERVAL_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+                .build();
+
         private final CartesiaProperties properties;
         private final ObjectMapper objectMapper;
         private volatile String voiceId;
@@ -221,7 +243,7 @@ public class TtsService {
             this.voiceId = voiceId;
         }
 
-        public synchronized void streamSynthesize(
+        public void streamSynthesize(
                 String text,
                 int sampleRate,
                 double speed,
@@ -229,18 +251,16 @@ public class TtsService {
                 Runnable onComplete,
                 java.util.function.Consumer<String> onError
         ) {
-            // 关闭旧连接
-            if (webSocket != null) {
-                webSocket.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_REUSE);
-                webSocket = null;
+            // 仅持锁期间交换 WebSocket 引用，避免锁持有期间执行 I/O
+            okhttp3.WebSocket oldWebSocket;
+            synchronized (this) {
+                oldWebSocket = this.webSocket;
+                this.webSocket = null;
+                this.open = false;
             }
-            open = false;
-
-            okhttp3.OkHttpClient httpClient = new okhttp3.OkHttpClient.Builder()
-                    .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
-                    .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                    .pingInterval(20, java.util.concurrent.TimeUnit.SECONDS)
-                    .build();
+            if (oldWebSocket != null) {
+                oldWebSocket.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_REUSE);
+            }
 
             String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
 
@@ -250,7 +270,7 @@ public class TtsService {
                     .addHeader("Cartesia-Version", Constants.CARTESIA_VERSION_HEADER)
                     .build();
 
-            webSocket = httpClient.newWebSocket(request, new okhttp3.WebSocketListener() {
+            okhttp3.WebSocket newWebSocket = WS_HTTP_CLIENT.newWebSocket(request, new okhttp3.WebSocketListener() {
 
                 @Override
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
@@ -328,6 +348,9 @@ public class TtsService {
                     log.warn("[CartesiaWsClient] WebSocket closed, code={}, reason={}", code, reason);
                 }
             });
+            synchronized (this) {
+                this.webSocket = newWebSocket;
+            }
         }
 
         private String toJson(Map<String, Object> map) {

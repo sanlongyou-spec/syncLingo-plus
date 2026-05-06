@@ -68,8 +68,8 @@ export default function InterpretationView() {
   // 每个声道的音频排队结束时间，防止 chunk 并发播放产生双音色
   const scheduleTimeZhRef = useRef(0)
   const scheduleTimeIdRef = useRef(0)
-  const pendingSourcesZhRef = useRef<AudioBufferSourceNode[]>([])
-  const pendingSourcesIdRef = useRef<AudioBufferSourceNode[]>([])
+  const pendingSourcesZhRef = useRef<Set<AudioBufferSourceNode>>(new Set())
+  const pendingSourcesIdRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const detectedLangRef = useRef('')
   const prevDetectedLangRef = useRef('')
   const capturePipelineStartedAtRef = useRef(0)
@@ -87,11 +87,10 @@ export default function InterpretationView() {
     const newIsZh = !detectedLang.startsWith('id')
     const pending = newIsZh ? pendingSourcesZhRef.current : pendingSourcesIdRef.current
     pending.forEach(s => { try { s.stop() } catch { /* already ended */ } })
+    pending.clear()
     if (newIsZh) {
-      pendingSourcesZhRef.current = []
       scheduleTimeZhRef.current = streamContextRef.current?.currentTime ?? 0
     } else {
-      pendingSourcesIdRef.current = []
       scheduleTimeIdRef.current = streamContextRef.current?.currentTime ?? 0
     }
     console.log('[InterpretationView] 语言切换 %s→%s，已清空%s声道', prev, detectedLang, newIsZh ? '中文' : '印尼语')
@@ -211,18 +210,19 @@ export default function InterpretationView() {
   }, [])
 
   // 流式播放 PCM（实时播放，使用两个独立的 AudioElement 分别对应中文/印尼语）
-  const playStreamPcm = useCallback(async (pcmData: Int16Array, sampleRate: number, lang: string) => {
+  // 同步函数：initStreamAudio 已在 startSession 中 await 完成，此处直接使用 ref
+  const playStreamPcm = useCallback((pcmData: Int16Array, sampleRate: number, lang: string) => {
     const isZh = !lang.startsWith('id')
-    if (!streamDestZhRef.current || !streamDestIdRef.current) {
-      await initStreamAudio()
-    }
     const dest = isZh ? streamDestZhRef.current : streamDestIdRef.current
     const ctx = streamContextRef.current
-    if (!dest || !ctx) return
+    if (!dest || !ctx) {
+      console.warn('[InterpretationView] 音频未初始化，丢弃 PCM 块')
+      return
+    }
     const scheduleRef = isZh ? scheduleTimeZhRef : scheduleTimeIdRef
     const pendingRef = isZh ? pendingSourcesZhRef : pendingSourcesIdRef
     playStreamPcmDirect(pcmData, sampleRate, ctx, dest, scheduleRef, pendingRef)
-  }, [initStreamAudio])
+  }, [])
 
   // 直接播放 PCM 到 destination（串行调度，避免 chunk 并发双音色）
   const playStreamPcmDirect = (
@@ -231,7 +231,7 @@ export default function InterpretationView() {
     ctx: AudioContext,
     dest: MediaStreamAudioDestinationNode,
     scheduleRef: React.MutableRefObject<number>,
-    pendingRef: React.MutableRefObject<AudioBufferSourceNode[]>,
+    pendingRef: React.MutableRefObject<Set<AudioBufferSourceNode>>,
   ) => {
     const float32Data = new Float32Array(pcmData.length)
     for (let i = 0; i < pcmData.length; i++) {
@@ -245,26 +245,25 @@ export default function InterpretationView() {
     const startAt = Math.max(ctx.currentTime, scheduleRef.current)
     const queueWaitMs = Math.round((startAt - ctx.currentTime) * 1000)
     console.log('[TTS] schedule chunk: queueWait=', queueWaitMs, 'ms, duration=', Math.round(buffer.duration * 1000), 'ms')
-    pendingRef.current.push(source)
+    pendingRef.current.add(source)
     source.addEventListener('ended', () => {
-      const idx = pendingRef.current.indexOf(source)
-      if (idx !== -1) pendingRef.current.splice(idx, 1)
+      pendingRef.current.delete(source)
     })
     source.start(startAt)
     scheduleRef.current = startAt + buffer.duration
   }
 
   // TTS 播放（24000Hz，语言由后端 targetLanguage 字段确定）
-  const playPcm = useCallback(async (pcmData: Int16Array, targetLang: string) => {
+  const playPcm = useCallback((pcmData: Int16Array, targetLang: string) => {
     console.log('[InterpretationView] playPcm, targetLang=', targetLang)
-    await playStreamPcm(pcmData, 24000, targetLang)
+    playStreamPcm(pcmData, 24000, targetLang)
   }, [playStreamPcm])
 
   // 原音播放（16000Hz，语言从 detectedLangRef 读取，默认中文声道）
-  const playSourcePcm = useCallback(async (pcmData: Int16Array) => {
+  const playSourcePcm = useCallback((pcmData: Int16Array) => {
     const lang = detectedLangRef.current || 'zh'
     console.log('[SRC] playSourcePcm, lang=', lang, 'samples=', pcmData.length, 'zhEl.paused=', streamAudioElZhRef.current?.paused)
-    await playStreamPcm(pcmData, AUDIO_DEFAULTS.SAMPLE_RATE, lang)
+    playStreamPcm(pcmData, AUDIO_DEFAULTS.SAMPLE_RATE, lang)
   }, [playStreamPcm])
 
   // 处理 WebSocket 消息
@@ -273,7 +272,10 @@ export default function InterpretationView() {
     switch (msg.type) {
       case 'recognizing':
         setCurrentSource(msg.text || '')
-        if (msg.language) setDetectedLang(msg.language)
+        if (msg.language) {
+          detectedLangRef.current = msg.language
+          setDetectedLang(msg.language)
+        }
         break
       case 'recognized':
         if (msg.text) {
@@ -331,6 +333,7 @@ export default function InterpretationView() {
       case 'started':
         setIsRunning(true)
         setError('')
+        detectedLangRef.current = msg.language || ''
         setDetectedLang(msg.language || '')
         break
       case 'stopped':
@@ -410,8 +413,8 @@ export default function InterpretationView() {
     streamContextRef.current = null
     pendingSourcesZhRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
     pendingSourcesIdRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
-    pendingSourcesZhRef.current = []
-    pendingSourcesIdRef.current = []
+    pendingSourcesZhRef.current.clear()
+    pendingSourcesIdRef.current.clear()
     scheduleTimeZhRef.current = 0
     scheduleTimeIdRef.current = 0
     prevDetectedLangRef.current = ''

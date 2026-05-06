@@ -14,6 +14,12 @@ public class CartesiaProperties {
     private TtsProperties tts = new TtsProperties();
     private PoolProperties pool = new PoolProperties();
 
+    /** 默认中文音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_ZH 环境变量覆盖 */
+    private String defaultVoiceIdChinese = "6eb8965c-e295-47bd-a9e4-3eeebb3abcff";
+
+    /** 默认印尼语音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_ID 环境变量覆盖 */
+    private String defaultVoiceIdIndonesian = "a053f6bc-7df4-40de-96d4-de026bc47ce8";
+
     @Data
     public static class TtsProperties {
         private String modelId = "sonic-3";
