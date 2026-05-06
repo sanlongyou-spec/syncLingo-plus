@@ -288,7 +288,7 @@ public class TtsService {
                             Constants.CARTESIA_FIELD_ENCODING, Constants.CARTESIA_ENCODING_PCM_S16LE,
                             Constants.CARTESIA_FIELD_SAMPLE_RATE, sampleRate
                     ));
-                    ttsMsg.put(Constants.CARTESIA_FIELD_SPEED, speed);
+                    ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
                     ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
                     ws.send(toJson(ttsMsg));
                 }
