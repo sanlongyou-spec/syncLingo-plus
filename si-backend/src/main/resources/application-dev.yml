@@ -1,0 +1,33 @@
+server:
+  port: 8080
+
+app:
+  websocket:
+    max-text-size: 10485760
+    max-binary-size: 10485760
+
+azure:
+  speech:
+    key: YOUR_AZURE_SPEECH_KEY
+    region: southeastasia
+    asr:
+      language: zh-CN,id-ID
+      sample-rate: 16000
+      end-silence-timeout-ms: 6000
+    tts:
+      sample-rate: 24000
+
+google:
+  translate:
+    api-key: YOUR_GOOGLE_TRANSLATE_API_KEY
+
+cartesia:
+  api-key: YOUR_CARTESIA_API_KEY
+
+logging:
+  level:
+    root: INFO
+    com.si.backend: DEBUG
+    com.si.backend.integration: DEBUG
+    com.si.backend.ws: DEBUG
+    com.si.backend.service: DEBUG
