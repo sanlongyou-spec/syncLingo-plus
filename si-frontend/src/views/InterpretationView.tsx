@@ -260,12 +260,6 @@ export default function InterpretationView() {
   }, [playStreamPcm])
 
   // 原音播放（16000Hz，语言从 detectedLangRef 读取，默认中文声道）
-  const playSourcePcm = useCallback((pcmData: Int16Array) => {
-    const lang = detectedLangRef.current || 'zh'
-    console.log('[SRC] playSourcePcm, lang=', lang, 'samples=', pcmData.length, 'zhEl.paused=', streamAudioElZhRef.current?.paused)
-    playStreamPcm(pcmData, AUDIO_DEFAULTS.SAMPLE_RATE, lang)
-  }, [playStreamPcm])
-
   // 处理 WebSocket 消息
   const handleWsMessage = useCallback((msg: WsMessage) => {
     console.log('[InterpretationView] WS message:', msg.type, msg.text, msg.language)
@@ -373,7 +367,6 @@ export default function InterpretationView() {
         sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
         onData: pcm => {
           ws.sendAudio(sid, pcmToBase64(pcm))
-          playSourcePcm(pcm)
           let sumSq = 0
           for (let i = 0; i < pcm.length; i++) sumSq += pcm[i] * pcm[i]
           const rms = Math.sqrt(sumSq / pcm.length)

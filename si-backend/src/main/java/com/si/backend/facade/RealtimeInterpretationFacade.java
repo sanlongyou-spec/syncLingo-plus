@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -65,8 +66,10 @@ public class RealtimeInterpretationFacade {
     /** 缓存每个会话的错误回调，用于将异步管道错误推送给前端 */
     private final ConcurrentHashMap<String, AsrErrorCallback> sessionErrorCallbackMap = new ConcurrentHashMap<>();
 
-    /** 每个会话最后一个 TTS 任务的 Future，串行化多段 TTS 防止声音混叠 */
+    /** 每个会话最后一个 TTS 播放任务的 Future；合成可重叠，音频下发保持串行 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
+
+    private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, -1L);
 
     /** 每个会话的 TTS 版本号：语言切换时递增，旧任务检测到版本不匹配则跳过 */
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsVersion = new ConcurrentHashMap<>();
@@ -256,12 +259,12 @@ public class RealtimeInterpretationFacade {
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
 
-        CompletableFuture<Void> thisFuture = new CompletableFuture<>();
+        CompletableFuture<Void> playFuture = new CompletableFuture<>();
         @SuppressWarnings("unchecked")
         CompletableFuture<Void>[] prevHolder = new CompletableFuture[1];
         sessionTtsChain.compute(sessionId, (k, prev) -> {
             prevHolder[0] = (prev != null) ? prev : CompletableFuture.completedFuture(null);
-            return thisFuture;
+            return playFuture;
         });
 
         log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, textLen={}, voiceId={}, prevDone={}",
@@ -271,13 +274,15 @@ public class RealtimeInterpretationFacade {
                 ? Constants.TTS_SPEED_INDONESIAN
                 : Constants.TTS_SPEED_DEFAULT;
 
-        prevHolder[0].thenRunAsync(() -> {
+        BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
+
+        CompletableFuture.runAsync(() -> {
             long currentVersion = sessionTtsVersion
                     .getOrDefault(sessionId, new AtomicLong(0)).get();
             if (currentVersion != myVersion) {
                 log.info("[RealtimeInterpretationFacade] TTS skipped (lang switched v{}→v{}), sessionId={}",
                         myVersion, currentVersion, sessionId);
-                thisFuture.complete(null);
+                audioQueue.offer(TTS_END);
                 return;
             }
             long ttsStart = System.currentTimeMillis();
@@ -286,33 +291,89 @@ public class RealtimeInterpretationFacade {
                     finalTranslated,
                     cartesiaProperties.getTts().getSampleRate(),
                     ttsSpeed,
-                    pcm -> {
-                        TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
-                        if (onTtsAudio != null) {
-                            onTtsAudio.accept(pcm, finalTargetLang);
-                        }
-                    },
+                    pcm -> audioQueue.offer(new TtsBufferedChunk(pcm, finalTargetLang, System.nanoTime())),
                     () -> {
                         try {
-                            log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}",
+                            log.info("[RealtimeInterpretationFacade] TTS synth complete, sessionId={}, costMs={}",
                                     sessionId, System.currentTimeMillis() - ttsStart);
                         } finally {
-                            thisFuture.complete(null);
+                            audioQueue.offer(TTS_END);
                         }
                     },
                     err -> {
                         try {
-                            log.error("[RealtimeInterpretationFacade] TTS stream error, sessionId={}, error={}", sessionId, err);
+                            log.error("[RealtimeInterpretationFacade] TTS synth error, sessionId={}, error={}", sessionId, err);
                         } finally {
-                            thisFuture.complete(null);
+                            audioQueue.offer(TTS_END);
                         }
                     }
             );
         }, TTS_EXECUTOR).exceptionally(ex -> {
-            log.error("[RealtimeInterpretationFacade] TTS chain error, sessionId={}", sessionId, ex);
-            thisFuture.complete(null);
+            log.error("[RealtimeInterpretationFacade] TTS synth task error, sessionId={}", sessionId, ex);
+            audioQueue.offer(TTS_END);
             return null;
         });
+
+        prevHolder[0].thenRunAsync(() -> {
+            long currentVersion = sessionTtsVersion
+                    .getOrDefault(sessionId, new AtomicLong(0)).get();
+            if (currentVersion != myVersion) {
+                log.info("[RealtimeInterpretationFacade] TTS playback skipped (lang switched), sessionId={}, fromVersion={}, currentVersion={}",
+                        sessionId, myVersion, currentVersion);
+                playFuture.complete(null);
+                return;
+            }
+
+            long playbackStart = System.currentTimeMillis();
+            long lastChunkTimeNanos = -1L;
+            long lastSendTimeNanos = -1L;
+            try {
+                while (true) {
+                    TtsBufferedChunk chunk = audioQueue.take();
+                    if (chunk == TTS_END) {
+                        log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}",
+                                sessionId, System.currentTimeMillis() - playbackStart);
+                        playFuture.complete(null);
+                        return;
+                    }
+
+                    if (lastChunkTimeNanos > 0) {
+                        long chunkGapNanos = chunk.createdAtNanos() - lastChunkTimeNanos;
+                        if (chunkGapNanos > 0) {
+                            sleepUntil(lastSendTimeNanos + chunkGapNanos);
+                        }
+                    }
+
+                    TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
+                    if (onTtsAudio != null) {
+                        onTtsAudio.accept(chunk.pcm(), chunk.lang());
+                    }
+                    lastChunkTimeNanos = chunk.createdAtNanos();
+                    lastSendTimeNanos = System.nanoTime();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[RealtimeInterpretationFacade] TTS playback interrupted, sessionId={}", sessionId);
+                playFuture.complete(null);
+            } catch (Exception e) {
+                log.error("[RealtimeInterpretationFacade] TTS playback error, sessionId={}", sessionId, e);
+                playFuture.complete(null);
+            }
+        }, TTS_EXECUTOR).exceptionally(ex -> {
+            log.error("[RealtimeInterpretationFacade] TTS playback chain error, sessionId={}", sessionId, ex);
+            playFuture.complete(null);
+            return null;
+        });
+    }
+
+    private void sleepUntil(long targetTimeNanos) throws InterruptedException {
+        long remainingNanos = targetTimeNanos - System.nanoTime();
+        if (remainingNanos > 0) {
+            TimeUnit.NANOSECONDS.sleep(remainingNanos);
+        }
+    }
+
+    private record TtsBufferedChunk(byte[] pcm, String lang, long createdAtNanos) {
     }
 
     private String resolveVoiceId(String voiceId, String targetLang) {
