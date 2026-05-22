@@ -14,6 +14,9 @@ public class UserVoice {
     private String voiceName;
     private Integer durationSeconds;
     private String sampleUrl;
+    private Boolean authorized;
+    private String scope;
+    private Boolean disabled;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

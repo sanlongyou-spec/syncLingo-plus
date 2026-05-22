@@ -6,19 +6,21 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * 文本翻译请求 DTO。
+ * Text translation request DTO.
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class TranslateTextRequest {
 
-    @NotBlank(message = "text 不能为空")
+    private Long userId = 1L;
+
+    @NotBlank(message = "text cannot be blank")
     private String text;
 
-    @NotBlank(message = "sourceLang 不能为空")
+    @NotBlank(message = "sourceLang cannot be blank")
     private String sourceLang;
 
-    @NotBlank(message = "targetLang 不能为空")
+    @NotBlank(message = "targetLang cannot be blank")
     private String targetLang;
 }

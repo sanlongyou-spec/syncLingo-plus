@@ -1,0 +1,298 @@
+.tb-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem 2rem;
+  max-width: 780px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.tb-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 1.4rem 1.6rem;
+}
+
+.tb-card-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0 0 0.25rem;
+}
+
+.tb-card-desc {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 0 0 1rem;
+}
+
+/* ── Join row ── */
+.tb-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  font-size: 0.9rem;
+  outline: none;
+  background: #f8fafc;
+  transition: border-color 0.15s;
+}
+
+.tb-input:focus {
+  border-color: #6366f1;
+  background: #fff;
+}
+
+/* ── Add row ── */
+.tb-add-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.tb-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.88rem;
+  color: #475569;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ── Buttons ── */
+.tb-btn {
+  padding: 0.45rem 1rem;
+  border-radius: 7px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.tb-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tb-btn--primary {
+  background: #6366f1;
+  color: #fff;
+}
+
+.tb-btn--primary:hover:not(:disabled) {
+  background: #4f46e5;
+}
+
+.tb-btn--secondary {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.tb-btn--secondary:hover:not(:disabled) {
+  background: #cbd5e1;
+}
+
+.tb-btn--danger-text {
+  background: transparent;
+  color: #ef4444;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+.tb-btn--danger-text:hover {
+  text-decoration: underline;
+}
+
+.tb-btn--loading {
+  opacity: 0.75;
+}
+
+/* ── Recipient list ── */
+.tb-recipient-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tb-recipient-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.tb-type-pill {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.tb-type-pill--person {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.tb-recipient-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.9rem;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Toggle switch ── */
+.tb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tb-toggle input {
+  display: none;
+}
+
+.tb-toggle-track {
+  position: relative;
+  width: 2rem;
+  height: 1.1rem;
+  background: #cbd5e1;
+  border-radius: 999px;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.tb-toggle input:checked + .tb-toggle-track {
+  background: #6366f1;
+}
+
+.tb-toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.tb-toggle input:checked + .tb-toggle-track::after {
+  transform: translateX(0.9rem);
+}
+
+.tb-toggle-label {
+  font-size: 0.8rem;
+  color: #64748b;
+  min-width: 3.5rem;
+}
+
+/* ── Send section ── */
+.tb-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  background: #f8fafc;
+  transition: border-color 0.15s;
+}
+
+.tb-textarea:focus {
+  border-color: #6366f1;
+  background: #fff;
+}
+
+.tb-send-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.tb-send-hint {
+  font-size: 0.83rem;
+  color: #64748b;
+  flex: 1;
+  min-width: 0;
+}
+
+.tb-empty {
+  font-size: 0.85rem;
+  color: #94a3b8;
+  margin: 0;
+}
+
+/* ── Card header with action button ── */
+.tb-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.tb-card-header .tb-card-title {
+  margin-bottom: 0;
+}
+
+/* ── Small button variant ── */
+.tb-btn--sm {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+/* ── Status line ── */
+.tb-status {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.tb-status--ok {
+  color: #16a34a;
+}
+
+.tb-status--idle {
+  color: #94a3b8;
+}
+
+/* ── Sub-text inside recipient value ── */
+.tb-recipient-sub {
+  color: #94a3b8;
+  font-size: 0.82rem;
+}
+
+/* ── Load row (session ID + load button) ── */
+.tb-load-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.tb-input--sm {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.65rem;
+}

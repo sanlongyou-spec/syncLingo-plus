@@ -23,7 +23,12 @@ public class TranslateController {
         log.info("[TranslateController] translate start, textLen={}, sourceLang={}, targetLang={}",
                 request.getText() != null ? request.getText().length() : 0,
                 request.getSourceLang(), request.getTargetLang());
-        String result = translateFacade.translate(request.getText(), request.getSourceLang(), request.getTargetLang());
+        String result = translateFacade.translate(
+                request.getText(),
+                request.getSourceLang(),
+                request.getTargetLang(),
+                request.getUserId()
+        );
         log.info("[TranslateController] translate end, resultLen={}", result != null ? result.length() : 0);
         return Result.ok(result);
     }

@@ -17,7 +17,6 @@ export const AUDIO_DEFAULTS = {
   SAMPLE_RATE: 16000,
   CHANNELS: 1,
   BUFFER_SIZE: 4096,
-  PROCESSOR_PATH: '/audio-capture-processor.js',
 } as const
 
 export const PCM = {
@@ -30,4 +29,5 @@ export const PCM = {
 export const VOICEMEETER = {
   ZH_DEVICE_LABEL: 'VoiceMeeter Input',
   ID_DEVICE_LABEL: 'VoiceMeeter Aux Input',
+  EN_DEVICE_LABEL: 'VoiceMeeter VAIO3',
 } as const

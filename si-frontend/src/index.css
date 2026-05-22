@@ -17,6 +17,13 @@ body {
   flex-direction: column;
 }
 
+.route-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #f6f8fb;
+}
+
 /* ========== Global Components ========== */
 
 .header {

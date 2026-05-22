@@ -10,6 +10,11 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/bot-api': {
+        target: 'http://localhost:3978',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/bot-api/, ''),
+      },
       '/ws': {
         target: 'ws://localhost:8080',
         ws: true,

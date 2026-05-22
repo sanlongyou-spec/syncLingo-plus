@@ -15,6 +15,15 @@ public interface UserMapper {
     @Select("SELECT * FROM si_user WHERE id = #{id}")
     SiUser findById(Long id);
 
+    @Select("""
+            SELECT *
+            FROM si_user
+            WHERE LOWER(username) = LOWER(#{identity})
+               OR LOWER(email) = LOWER(#{identity})
+            LIMIT 1
+            """)
+    SiUser findByUsernameOrEmailIgnoreCase(String identity);
+
     @Insert("INSERT INTO si_user (username, password, nickname, email, role, create_time, update_time) " +
             "VALUES (#{username}, #{password}, #{nickname}, #{email}, #{role}, NOW(), NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")

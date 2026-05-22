@@ -14,8 +14,19 @@ public class InterpretationSession {
     private String sourceLang;
     private String targetLang;
     private String voiceId;
+    private String hotwordIds;
+    private String enabledLanguages;
+    private String title;
     private String status;
+    private Boolean deleted;
+    private Integer resultCount;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
+    private Long asrAudioMs;
+    private Long translateChars;
+    private Long ttsChars;
+    private Long llmInputTokens;
+    private Long llmOutputTokens;
+    private String meetingSummary;
     private LocalDateTime createTime;
 }

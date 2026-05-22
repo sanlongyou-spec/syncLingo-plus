@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AsrService {
 
     private final AzureAsrIntegration asrIntegration;
+    private final AsrHotwordService asrHotwordService;
 
     private final Map<String, AsrSessionContext> activeSessions = new ConcurrentHashMap<>();
 
@@ -34,12 +35,15 @@ public class AsrService {
      */
     public void startRecognition(
             String sessionId,
+            Long userId,
             String sourceLang,
+            String selectedHotwordIds,
+            String enabledLanguages,
             AsrCallback onRecognizing,
             AsrCallback onRecognized,
             AsrErrorCallback onError
     ) {
-        log.info("[AsrService] startRecognition start, sessionId={}, sourceLang={}", sessionId, sourceLang);
+        log.info("[AsrService] startRecognition start, sessionId={}, userId={}, sourceLang={}", sessionId, userId, sourceLang);
 
         if (activeSessions.containsKey(sessionId)) {
             log.warn("[AsrService] session already exists, closing old one, sessionId={}", sessionId);
@@ -48,7 +52,22 @@ public class AsrService {
 
         AzureAsrIntegration.AsrSession asrSession;
         try {
-            asrSession = asrIntegration.createSession(sessionId, sourceLang);
+            String hotwordLanguage = "auto".equalsIgnoreCase(sourceLang) ? null : sourceLang;
+            var selectedHotwords = asrHotwordService.filterSelected(
+                    asrHotwordService.listActive(userId, hotwordLanguage),
+                    selectedHotwordIds
+            );
+            var hotwords = selectedHotwords.stream()
+                    .map(com.si.backend.entity.AsrHotword::getPhrase)
+                    .filter(phrase -> phrase != null && !phrase.isBlank())
+                    .distinct()
+                    .toList();
+            log.info("[AsrService] loading hotwords, sessionId={}, userId={}, count={}", sessionId, userId, hotwords.size());
+            asrHotwordService.markUsed(userId, selectedHotwords.stream()
+                    .map(com.si.backend.entity.AsrHotword::getId)
+                    .filter(java.util.Objects::nonNull)
+                    .toList());
+            asrSession = asrIntegration.createSession(sessionId, sourceLang, hotwords, enabledLanguages);
         } catch (Exception e) {
             log.error("[AsrService] createSession failed, sessionId={}", sessionId, e);
             onError.onError("ASR 会话创建失败: " + e.getMessage());
@@ -60,12 +79,15 @@ public class AsrService {
 
         asrSession.setCallback(new AzureAsrIntegration.RecognizerCallback() {
             @Override
-            public void onRecognizing(String text, String language, boolean isFinal) {
-                log.info("[AsrService] ASR recognizing, sessionId={}, isFinal={}, text={}, lang={}", sessionId, isFinal, text, language);
+            public void onRecognizing(String text, String language, String speakerId, boolean isFinal) {
                 if (isFinal) {
-                    onRecognized.onResult(text, language);
+                    log.info("[AsrService] ASR recognized, sessionId={}, speakerId={}, textLen={}, lang={}",
+                            sessionId, speakerId, text != null ? text.length() : 0, language);
+                    onRecognized.onResult(text, language, speakerId);
                 } else {
-                    onRecognizing.onResult(text, language);
+                    log.trace("[AsrService] ASR recognizing, sessionId={}, speakerId={}, textLen={}, lang={}",
+                            sessionId, speakerId, text != null ? text.length() : 0, language);
+                    onRecognizing.onResult(text, language, speakerId);
                 }
             }
 
@@ -141,7 +163,7 @@ public class AsrService {
 
     @FunctionalInterface
     public interface AsrCallback {
-        void onResult(String text, String detectedLanguage);
+        void onResult(String text, String detectedLanguage, String speakerId);
     }
 
     @FunctionalInterface

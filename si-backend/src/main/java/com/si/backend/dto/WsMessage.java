@@ -13,8 +13,16 @@ public class WsMessage {
     private String audioBase64;
     private String text;
     private String language;
+    private String speakerId;
+    private String speakerName;
+    private String speakerProfileId;
+    private String speakerIdentityStatus;
+    private String speakerIdentitySource;
     private String translatedText;
     private String targetLanguage;
+    private String ttsTaskId;
+    private Long ttsSequence;
+    private Integer chunkIndex;
     private String code;
     private String message;
 }

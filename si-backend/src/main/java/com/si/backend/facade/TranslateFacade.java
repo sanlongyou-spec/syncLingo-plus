@@ -25,10 +25,10 @@ public class TranslateFacade {
      * @param targetLang 目标语言
      * @return 译文
      */
-    public String translate(String text, String sourceLang, String targetLang) {
+    public String translate(String text, String sourceLang, String targetLang, Long userId) {
         log.info("[TranslateFacade] translate start, textLen={}, sourceLang={}, targetLang={}",
                 text != null ? text.length() : 0, sourceLang, targetLang);
-        String result = translationService.translate(text, sourceLang, targetLang);
+        String result = translationService.translate(text, sourceLang, targetLang, userId);
         log.info("[TranslateFacade] translate end, sourceLang={}, targetLang={}, resultLen={}",
                 sourceLang, targetLang, result != null ? result.length() : 0);
         return result;
@@ -43,9 +43,13 @@ public class TranslateFacade {
      * @return 译文列表
      */
     public List<String> translateBatch(List<String> texts, String sourceLang, String targetLang) {
+        return translateBatch(texts, sourceLang, targetLang, 1L);
+    }
+
+    public List<String> translateBatch(List<String> texts, String sourceLang, String targetLang, Long userId) {
         log.info("[TranslateFacade] translateBatch start, count={}, sourceLang={}, targetLang={}",
                 texts != null ? texts.size() : 0, sourceLang, targetLang);
-        List<String> results = translationService.translateBatch(texts, sourceLang, targetLang);
+        List<String> results = translationService.translateBatch(texts, sourceLang, targetLang, userId);
         log.info("[TranslateFacade] translateBatch end, count={}, sourceLang={}, targetLang={}",
                 results != null ? results.size() : 0, sourceLang, targetLang);
         return results;

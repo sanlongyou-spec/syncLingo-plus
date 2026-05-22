@@ -20,6 +20,9 @@ public class CartesiaProperties {
     /** 默认印尼语音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_ID 环境变量覆盖 */
     private String defaultVoiceIdIndonesian = "a053f6bc-7df4-40de-96d4-de026bc47ce8";
 
+    /** 默认英语音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_EN 环境变量覆盖 */
+    private String defaultVoiceIdEnglish = "default";
+
     @Data
     public static class TtsProperties {
         private String modelId = "sonic-3";

@@ -1,5 +1,6 @@
 package com.si.backend.config;
 
+import com.si.backend.common.Constants;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -9,6 +10,7 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 import com.si.backend.ws.AsrWebSocketHandler;
 import com.si.backend.ws.JwtHandshakeInterceptor;
+import com.si.backend.ws.ShareWebSocketHandler;
 import lombok.RequiredArgsConstructor;
 
 @Configuration
@@ -17,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final AsrWebSocketHandler asrWebSocketHandler;
+    private final ShareWebSocketHandler shareWebSocketHandler;
     private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
 
     @Value("${app.websocket.max-text-size:10485760}")
@@ -35,8 +38,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(asrWebSocketHandler, "/ws/asr")
+        registry.addHandler(asrWebSocketHandler, Constants.WS_PATH_ASR)
                 .addInterceptors(jwtHandshakeInterceptor)
+                .setAllowedOrigins("*");
+        registry.addHandler(shareWebSocketHandler, Constants.WS_PATH_SHARE)
                 .setAllowedOrigins("*");
     }
 }

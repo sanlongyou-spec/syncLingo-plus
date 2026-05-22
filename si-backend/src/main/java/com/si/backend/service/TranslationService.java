@@ -3,128 +3,148 @@ package com.si.backend.service;
 import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
-import com.si.backend.config.GoogleTranslateProperties;
+import com.si.backend.config.OpenAiProperties;
 import com.si.backend.integration.GoogleTranslateIntegration;
 import com.si.backend.integration.LlmIntegration;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.util.List;
 
 /**
- * 翻译服务，封装翻译业务逻辑与语种校验。
+ * Translation business service.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TranslationService {
 
+    private static final String COMPRESSION_DIRECTION_ZH_TO_ID = "zh->id";
+    private static final String COMPRESSION_DIRECTION_ZH_TO_EN = "zh->en";
+
     private final GoogleTranslateIntegration translator;
     private final LlmIntegration llmIntegration;
-    private final GoogleTranslateProperties googleProperties;
+    private final OpenAiProperties openAiProperties;
+    private final TerminologyService terminologyService;
 
-    /**
-     * 检测文本语种（使用 Google Translate 自动检测）。
-     *
-     * @param text 待检测文本
-     * @return BCP-47 语种代码
-     */
     public String detectLanguage(String text) {
-        log.info("[TranslationService] detectLanguage start, textLen={}",
-                text != null ? text.length() : 0);
+        log.info("[TranslationService] detectLanguage start, textLen={}", text != null ? text.length() : 0);
         if (text == null || text.isBlank()) {
             return Constants.LANG_UNDEFINED;
         }
         long start = System.currentTimeMillis();
         String detectedLang = translator.detectLanguage(text);
-        long cost = System.currentTimeMillis() - start;
         log.info("[TranslationService] detectLanguage end, textLen={}, detectedLang={}, costMs={}",
-                text.length(), detectedLang, cost);
+                text.length(), detectedLang, System.currentTimeMillis() - start);
         return detectedLang;
     }
 
-    /**
-     * 翻译单条文本。
-     *
-     * @param text       原文
-     * @param sourceLang 源语言（传 null / "auto" 启用自动检测）
-     * @param targetLang 目标语言
-     * @return 译文
-     */
     public String translate(String text, String sourceLang, String targetLang) {
+        return translate(text, sourceLang, targetLang, 1L);
+    }
+
+    public String translate(String text, String sourceLang, String targetLang, Long userId) {
         log.info("[TranslationService] translate start, textLen={}, sourceLang={}, targetLang={}",
                 text != null ? text.length() : 0, sourceLang, targetLang);
         if (text == null || text.isBlank()) {
-            log.debug("[TranslationService] translate end (blank input), textLen=0, targetLang={}", targetLang);
+            log.info("[TranslationService] translate end, blankInput=true, targetLang={}", targetLang);
             return "";
         }
-
-        if (!isSupportedLang(sourceLang) && !isAutoDetect(sourceLang)) {
-            log.warn("[TranslationService] unsupported source lang: {}", sourceLang);
-            throw BizException.of(ErrorCode.UNSUPPORTED_LANGUAGE,
-                    "不支持的源语言: " + sourceLang);
-        }
-        if (!isSupportedLang(targetLang)) {
-            log.warn("[TranslationService] unsupported target lang: {}", targetLang);
-            throw BizException.of(ErrorCode.UNSUPPORTED_LANGUAGE,
-                    "不支持的目标语言: " + targetLang);
-        }
+        validateLanguages(sourceLang, targetLang);
 
         long start = System.currentTimeMillis();
-        String result = translator.translate(text, sourceLang, targetLang);
-        long cost = System.currentTimeMillis() - start;
+        boolean useOfficialGlossary = translator.isGlossaryAvailable(userId, sourceLang, targetLang);
+        TerminologyService.TerminologyProtection terminologyProtection;
+        String protectedText;
+        if (useOfficialGlossary) {
+            log.info("[TranslationService] official Google glossary enabled, skip application terminology protection");
+            terminologyProtection = TerminologyService.TerminologyProtection.empty(text);
+            protectedText = text;
+        } else {
+            terminologyProtection = terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
+            protectedText = terminologyProtection.getProtectedText();
+        }
 
-        // 中文 → 印尼语：压缩（源文本过短时跳过，节省 LLM 延迟）
-        if (result != null && !result.isBlank()
-                && Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
-                && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
-                && text.length() > 40) {
-            log.info("[TranslationService] compress start, textLen={}", result.length());
-            try {
-                String compressed = llmIntegration.compress(
-                        result,
-                        googleProperties.getDashscopeApiKey(),
-                        googleProperties.getBaseUrl(),
-                        googleProperties.getCompressionModel()
-                );
-                if (compressed != null && !compressed.isBlank()) {
-                    long compMs = System.currentTimeMillis() - start;
-                    log.info("[TranslationService] compress end, originalLen={}, compressedLen={}, ratio={}%, totalMs={}",
-                            result.length(), compressed.length(),
-                            String.format("%.1f", (double) compressed.length() / result.length() * 100),
-                            compMs);
-                    result = compressed.trim();
-                }
-            } catch (IOException e) {
-                log.warn("[TranslationService] compress failed, use original translation: {}", e.getMessage());
-            }
+        String result = translator.translate(protectedText, sourceLang, targetLang, userId);
+        if (!useOfficialGlossary) {
+            result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
+        }
+
+        result = compressIfNeeded(text, sourceLang, targetLang, result, start);
+
+        if (!useOfficialGlossary) {
+            result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
         }
 
         log.info("[TranslationService] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
-                text.length(), targetLang, cost, result != null ? result.length() : 0);
+                text.length(), targetLang, System.currentTimeMillis() - start, result != null ? result.length() : 0);
         return result;
     }
 
-    /**
-     * 批量翻译文本。
-     *
-     * @param texts      原文列表
-     * @param sourceLang 源语言
-     * @param targetLang 目标语言
-     * @return 译文列表
-     */
     public List<String> translateBatch(List<String> texts, String sourceLang, String targetLang) {
+        return translateBatch(texts, sourceLang, targetLang, 1L);
+    }
+
+    public List<String> translateBatch(List<String> texts, String sourceLang, String targetLang, Long userId) {
         log.info("[TranslationService] translateBatch start, count={}, sourceLang={}, targetLang={}",
                 texts != null ? texts.size() : 0, sourceLang, targetLang);
         long start = System.currentTimeMillis();
-        List<String> results = translator.translateBatch(texts, sourceLang, targetLang);
-        long cost = System.currentTimeMillis() - start;
+        List<String> results = translator.translateBatch(texts, sourceLang, targetLang, userId);
         log.info("[TranslationService] translateBatch end, count={}, targetLang={}, costMs={}",
-                results.size(), targetLang, cost);
+                results.size(), targetLang, System.currentTimeMillis() - start);
         return results;
+    }
+
+    private void validateLanguages(String sourceLang, String targetLang) {
+        if (!isSupportedLang(sourceLang) && !isAutoDetect(sourceLang)) {
+            log.warn("[TranslationService] unsupported source lang: {}", sourceLang);
+            throw BizException.of(ErrorCode.UNSUPPORTED_LANGUAGE, "Unsupported source language: " + sourceLang);
+        }
+        if (!isSupportedLang(targetLang)) {
+            log.warn("[TranslationService] unsupported target lang: {}", targetLang);
+            throw BizException.of(ErrorCode.UNSUPPORTED_LANGUAGE, "Unsupported target language: " + targetLang);
+        }
+    }
+
+    private String compressIfNeeded(
+            String sourceText,
+            String sourceLang,
+            String targetLang,
+            String translatedText,
+            long requestStartMs
+    ) {
+        if (translatedText == null || translatedText.isBlank()
+                || !openAiProperties.isCompressionEnabled()
+                || !isCompressionDirection(sourceLang, targetLang)
+                || sourceText.length() < openAiProperties.getCompressionMinTextLength()) {
+            log.debug("[TranslationService] compress skipped, enabled={}, sourceLang={}, targetLang={}, textLen={}, threshold={}",
+                    openAiProperties.isCompressionEnabled(), sourceLang, targetLang, sourceText.length(),
+                    openAiProperties.getCompressionMinTextLength());
+            return translatedText;
+        }
+
+        String direction = resolveCompressionDirection(targetLang);
+        log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, model={}",
+                direction, sourceText.length(), translatedText.length(), openAiProperties.getCompressionModel());
+        try {
+            String compressed = compressByDirection(translatedText, direction);
+            if (compressed == null || compressed.isBlank()) {
+                return translatedText;
+            }
+            log.info("[TranslationService] compress end, direction={}, originalLen={}, compressedLen={}, ratio={}%, totalMs={}",
+                    direction,
+                    translatedText.length(),
+                    compressed.length(),
+                    String.format("%.1f", (double) compressed.length() / translatedText.length() * 100),
+                    System.currentTimeMillis() - requestStartMs);
+            return compressed.trim();
+        } catch (IOException e) {
+            log.warn("[TranslationService] compress failed, direction={}, use original translation: {}",
+                    direction, e.getMessage());
+            return translatedText;
+        }
     }
 
     private boolean isAutoDetect(String lang) {
@@ -132,8 +152,41 @@ public class TranslationService {
     }
 
     private boolean isSupportedLang(String lang) {
-        if (lang == null || lang.isBlank()) return false;
+        if (lang == null || lang.isBlank()) {
+            return false;
+        }
         String lower = lang.toLowerCase();
-        return lower.startsWith("zh") || lower.startsWith("id");
+        return lower.startsWith("zh")
+                || lower.startsWith("id")
+                || lower.startsWith(Constants.LANG_EN_SHORT);
+    }
+
+    private boolean isCompressionDirection(String sourceLang, String targetLang) {
+        if (!Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)) {
+            return false;
+        }
+        return isIndonesianTarget(targetLang)
+                || (openAiProperties.isCompressionZhToEnEnabled() && isEnglishTarget(targetLang));
+    }
+
+    private String resolveCompressionDirection(String targetLang) {
+        return isEnglishTarget(targetLang) ? COMPRESSION_DIRECTION_ZH_TO_EN : COMPRESSION_DIRECTION_ZH_TO_ID;
+    }
+
+    private String compressByDirection(String text, String direction) throws IOException {
+        if (COMPRESSION_DIRECTION_ZH_TO_EN.equals(direction)) {
+            return llmIntegration.compressEnglish(text);
+        }
+        return llmIntegration.compressIndonesian(text);
+    }
+
+    private boolean isIndonesianTarget(String targetLang) {
+        return Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
+                || Constants.LANG_ID.equalsIgnoreCase(targetLang);
+    }
+
+    private boolean isEnglishTarget(String targetLang) {
+        return Constants.LANG_EN_SHORT.equalsIgnoreCase(targetLang)
+                || Constants.LANG_EN_US.equalsIgnoreCase(targetLang);
     }
 }

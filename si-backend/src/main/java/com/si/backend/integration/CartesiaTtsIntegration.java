@@ -34,7 +34,8 @@ public class CartesiaTtsIntegration {
 
     private final CartesiaProperties properties;
     private final ObjectMapper objectMapper;
-    private final OkHttpClient httpClient;
+    /** Dedicated client with extended timeout for voice-clone uploads (Cartesia processes audio server-side, ~30–60s). */
+    private final OkHttpClient cloneHttpClient;
 
     public CartesiaTtsIntegration(
             CartesiaProperties properties,
@@ -42,7 +43,11 @@ public class CartesiaTtsIntegration {
             OkHttpClient httpClient) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.httpClient = httpClient;
+        this.cloneHttpClient = httpClient.newBuilder()
+                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+                .build();
     }
 
     /**
@@ -83,7 +88,7 @@ public class CartesiaTtsIntegration {
                 .post(body)
                 .build();
 
-        try (Response response = httpClient.newCall(request).execute()) {
+        try (Response response = cloneHttpClient.newCall(request).execute()) {
             long cost = System.currentTimeMillis() - start;
 
             if (!response.isSuccessful()) {

@@ -1,65 +1,43 @@
 package com.si.backend.integration;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.azure.ai.translation.text.TextTranslationClient;
+import com.azure.ai.translation.text.TextTranslationClientBuilder;
+import com.azure.ai.translation.text.models.TranslateOptions;
+import com.azure.ai.translation.text.models.TranslatedTextItem;
+import com.azure.ai.translation.text.models.TranslationText;
+import com.azure.core.credential.AzureKeyCredential;
+import com.azure.core.exception.HttpResponseException;
 import com.si.backend.common.BizException;
+import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.config.AzureTranslatorProperties;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 
 /**
- * Azure Translator API v3 集成层，使用 OkHttp REST 调用。
- *
- * <p>参考官方文档（REST API）：
- * <ul>
- *   <li>Endpoint: POST {Endpoint}/translate?api-version=3.0</li>
- *   <li>Headers: Ocp-Apim-Subscription-Key, Content-Type: application/json, Ocp-Apim-Subscription-Region</li>
- *   <li>Body: JSON 数组 [{"Text": "hello"}]</li>
- *   <li>Auto-detect: 不传 from 参数，API 自动检测并返回 detectedLanguage</li>
- * </ul>
- *
- * <p>说明：官方 Azure Translator Java SDK（azure-ai-translation-text）需单独引入，
- * 当前使用 OkHttp REST 与官方 API 直接对接，行为与 SDK 等价。
- *
- * @see <a href="https://learn.microsoft.com/en-us/azure/ai-services/translator/text-translation/reference/v3/reference">Azure Translator v3 REST API</a>
+ * Azure Translator integration implemented with the official Azure Text Translation SDK.
  */
 @Slf4j
 @Component
 public class AzureTranslatorIntegration {
 
-    private static final String TRANSLATE_API_PATH = "/translate?api-version=3.0";
-    private static final MediaType JSON_MEDIA_TYPE = MediaType.parse("application/json; charset=utf-8");
-
     private final AzureTranslatorProperties properties;
-    private final ObjectMapper objectMapper;
-    private final OkHttpClient httpClient;
+    private volatile TextTranslationClient translationClient;
 
-    public AzureTranslatorIntegration(
-            AzureTranslatorProperties properties,
-            ObjectMapper objectMapper,
-            OkHttpClient httpClient) {
+    public AzureTranslatorIntegration(AzureTranslatorProperties properties) {
         this.properties = properties;
-        this.objectMapper = objectMapper;
-        this.httpClient = httpClient;
     }
 
     /**
-     * 翻译单条文本。
+     * Translates one text.
      *
-     * @param text       原文
-     * @param sourceLang 源语言（传 null 或 "auto" 启用自动检测）
-     * @param targetLang 目标语言
-     * @return 译文
+     * @param text       source text
+     * @param sourceLang source language, or auto
+     * @param targetLang target language
+     * @return translated text
      */
     public String translate(String text, String sourceLang, String targetLang) {
         log.info("[AzureTranslatorIntegration] translate start, textLen={}, sourceLang={}, targetLang={}",
@@ -71,58 +49,33 @@ public class AzureTranslatorIntegration {
 
         long start = System.currentTimeMillis();
         try {
-            String endpoint = buildEndpoint(targetLang, sourceLang);
-            String jsonBody = objectMapper.writeValueAsString(List.of(new TextItem(text)));
-            RequestBody body = RequestBody.create(jsonBody, JSON_MEDIA_TYPE);
-
-            Request.Builder requestBuilder = new Request.Builder()
-                    .url(endpoint)
-                    .post(body)
-                    .header("Content-Type", "application/json");
-
-            addAuthHeaders(requestBuilder);
-
-            try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
-                long cost = System.currentTimeMillis() - start;
-
-                if (!response.isSuccessful()) {
-                    throw new java.io.IOException("Unexpected response: " + response);
-                }
-
-                String responseBody = response.body().string();
-                JsonNode root = objectMapper.readTree(responseBody);
-
-                if (!root.isArray() || root.isEmpty()) {
-                    throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure 翻译结果为空");
-                }
-
-                JsonNode translations = root.get(0).path("translations");
-                if (translations.isEmpty()) {
-                    throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure 翻译结果为空");
-                }
-
-                String result = translations.get(0).path("text").asText();
-                log.info("[AzureTranslatorIntegration] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
-                        text.length(), targetLang, cost, result != null ? result.length() : 0);
-                return result;
-            }
-
+            TranslatedTextItem translation = translationClient()
+                    .translate(text, buildTranslateOptions(sourceLang, targetLang));
+            String result = firstTranslatedText(translation);
+            log.info("[AzureTranslatorIntegration] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
+                    text.length(), targetLang, System.currentTimeMillis() - start,
+                    result != null ? result.length() : 0);
+            return result;
         } catch (BizException e) {
             throw e;
-        } catch (Exception e) {
+        } catch (HttpResponseException e) {
             log.error("[AzureTranslatorIntegration] translate error, textLen={}, source={}, target={}",
                     text != null ? text.length() : 0, sourceLang, targetLang, e);
-            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure 翻译服务异常: " + e.getMessage());
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure translation service error: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("[AzureTranslatorIntegration] translate unexpected error, textLen={}, source={}, target={}",
+                    text != null ? text.length() : 0, sourceLang, targetLang, e);
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure translation service error: " + e.getMessage());
         }
     }
 
     /**
-     * 批量翻译文本。
+     * Translates texts in batch.
      *
-     * @param texts      原文列表
-     * @param sourceLang 源语言
-     * @param targetLang 目标语言
-     * @return 译文列表
+     * @param texts      source texts
+     * @param sourceLang source language
+     * @param targetLang target language
+     * @return translated texts
      */
     public List<String> translateBatch(List<String> texts, String sourceLang, String targetLang) {
         log.info("[AzureTranslatorIntegration] translateBatch start, count={}, sourceLang={}, targetLang={}",
@@ -134,72 +87,77 @@ public class AzureTranslatorIntegration {
 
         long start = System.currentTimeMillis();
         try {
-            String endpoint = buildEndpoint(targetLang, sourceLang);
-            List<TextItem> items = texts.stream().map(TextItem::new).collect(Collectors.toList());
-            String jsonBody = objectMapper.writeValueAsString(items);
-            RequestBody body = RequestBody.create(jsonBody, JSON_MEDIA_TYPE);
-
-            Request.Builder requestBuilder = new Request.Builder()
-                    .url(endpoint)
-                    .post(body)
-                    .header("Content-Type", "application/json");
-
-            addAuthHeaders(requestBuilder);
-
-            try (Response response = httpClient.newCall(requestBuilder.build()).execute()) {
-                long cost = System.currentTimeMillis() - start;
-
-                if (!response.isSuccessful()) {
-                    throw new java.io.IOException("Unexpected response: " + response);
-                }
-
-                String responseBody = response.body().string();
-                JsonNode root = objectMapper.readTree(responseBody);
-
-                List<String> results = StreamSupport.stream(root.spliterator(), false)
-                        .map(item -> item.path("translations").get(0).path("text").asText())
-                        .collect(Collectors.toList());
-
-                log.info("[AzureTranslatorIntegration] translateBatch end, count={}, targetLang={}, costMs={}",
-                        results.size(), targetLang, cost);
-                return results;
-            }
-
+            List<String> results = texts.stream()
+                    .map(text -> translate(text, sourceLang, targetLang))
+                    .collect(Collectors.toList());
+            log.info("[AzureTranslatorIntegration] translateBatch end, count={}, targetLang={}, costMs={}",
+                    results.size(), targetLang, System.currentTimeMillis() - start);
+            return results;
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {
             log.error("[AzureTranslatorIntegration] translateBatch error, count={}, source={}, target={}",
                     texts != null ? texts.size() : 0, sourceLang, targetLang, e);
-            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure 批量翻译异常: " + e.getMessage());
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure batch translation error: " + e.getMessage());
         }
     }
 
-    private String buildEndpoint(String targetLang, String sourceLang) {
-        StringBuilder url = new StringBuilder();
-        url.append(properties.getEndpoint());
-        url.append(TRANSLATE_API_PATH);
-        url.append("&to=").append(targetLang);
+    private TextTranslationClient translationClient() {
+        TextTranslationClient currentClient = translationClient;
+        if (currentClient != null) {
+            return currentClient;
+        }
+        synchronized (this) {
+            if (translationClient == null) {
+                if (properties.getKey() == null || properties.getKey().isBlank()) {
+                    throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure Translator key is blank");
+                }
+                TextTranslationClientBuilder builder = new TextTranslationClientBuilder()
+                        .credential(new AzureKeyCredential(properties.getKey()));
+                if (properties.getEndpoint() != null && !properties.getEndpoint().isBlank()) {
+                    builder.endpoint(properties.getEndpoint());
+                }
+                if (properties.getRegion() != null && !properties.getRegion().isBlank()) {
+                    builder.region(properties.getRegion());
+                }
+                translationClient = builder.buildClient();
+                log.info("[AzureTranslatorIntegration] official Azure Text Translation client initialized");
+            }
+            return translationClient;
+        }
+    }
+
+    private TranslateOptions buildTranslateOptions(String sourceLang, String targetLang) {
+        TranslateOptions options = new TranslateOptions()
+                .addTargetLanguage(normalizeLang(targetLang));
         if (!isAutoDetect(sourceLang)) {
-            url.append("&from=").append(sourceLang);
+            options.setSourceLanguage(normalizeLang(sourceLang));
         }
-        return url.toString();
+        return options;
     }
 
-    private void addAuthHeaders(Request.Builder builder) {
-        if (properties.getKey() != null && !properties.getKey().isBlank()) {
-            builder.header("Ocp-Apim-Subscription-Key", properties.getKey());
+    private String firstTranslatedText(TranslatedTextItem translation) {
+        if (translation == null || translation.getTranslations() == null || translation.getTranslations().isEmpty()) {
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure translation result is empty");
         }
-        if (properties.getRegion() != null && !properties.getRegion().isBlank()) {
-            builder.header("Ocp-Apim-Subscription-Region", properties.getRegion());
+        TranslationText translationText = translation.getTranslations().get(0);
+        if (translationText == null || translationText.getText() == null) {
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "Azure translation text is empty");
         }
+        return translationText.getText();
     }
 
     private boolean isAutoDetect(String sourceLang) {
-        return sourceLang == null || sourceLang.isBlank() || "auto".equalsIgnoreCase(sourceLang);
+        return sourceLang == null || sourceLang.isBlank() || Constants.LANG_AUTO.equalsIgnoreCase(sourceLang);
     }
 
-    /**
-     * Azure Translator v3 API 请求体 JSON 对象。
-     */
-    private record TextItem(String Text) {}
+    private String normalizeLang(String lang) {
+        if (lang == null) return Constants.LANG_ZH_CN;
+        return switch (lang.toLowerCase()) {
+            case "zh-cn", "zh-hans" -> Constants.LANG_ZH_CN;
+            case "id", "id-id", "in" -> Constants.LANG_ID_SHORT;
+            case "en", "en-us", "en-gb" -> Constants.LANG_EN_SHORT;
+            default -> lang;
+        };
+    }
 }

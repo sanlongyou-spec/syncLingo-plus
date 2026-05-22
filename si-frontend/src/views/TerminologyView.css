@@ -1,0 +1,235 @@
+.terminology-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.asset-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 14px;
+}
+
+.asset-tabs button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.asset-tabs button.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.terminology-editor,
+.terminology-table-panel {
+  min-height: 0;
+  border: 1px solid #d8d8dc;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.terminology-editor {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.terminology-editor h2 {
+  margin: 0 0 14px;
+  font-size: 17px;
+}
+
+.terminology-editor form {
+  display: grid;
+  gap: 12px;
+}
+
+.terminology-editor label {
+  display: grid;
+  gap: 5px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.terminology-editor input,
+.terminology-editor select,
+.terminology-editor textarea,
+.terminology-toolbar input,
+.terminology-toolbar select {
+  width: 100%;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  background: #fff;
+  color: #101828;
+  font-size: 13px;
+}
+
+.terminology-editor input,
+.terminology-editor select,
+.terminology-toolbar input,
+.terminology-toolbar select {
+  height: 38px;
+  padding: 0 10px;
+}
+
+.terminology-editor textarea {
+  min-height: 80px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.terminology-toggle {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminology-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
+.terminology-editor-actions,
+.terminology-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.terminology-editor-actions button,
+.terminology-toolbar button,
+.terminology-table-wrap button {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  background: #fff;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.13s, border-color 0.13s, color 0.13s;
+}
+
+.terminology-editor-actions button:hover,
+.terminology-toolbar button:hover,
+.terminology-table-wrap button:hover {
+  background: #f5f8ff;
+  border-color: #93c5fd;
+}
+
+/* 保存 / 批量导入 — 第一个提交按钮 */
+.terminology-editor-actions button[type="submit"],
+.terminology-editor-actions button:first-child {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.terminology-editor-actions button[type="submit"]:hover,
+.terminology-editor-actions button:first-child:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.terminology-editor-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 删除按钮 */
+.terminology-table-wrap button:last-child {
+  border-color: #fecdca;
+  color: #b42318;
+  background: #fffbfa;
+}
+
+.terminology-table-wrap button:last-child:hover {
+  background: #fff1f0;
+  border-color: #fca5a5;
+}
+
+.terminology-table-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.terminology-toolbar {
+  padding: 14px;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.terminology-toolbar input {
+  flex: 1;
+}
+
+.terminology-toolbar select {
+  width: 96px;
+}
+
+.terminology-error {
+  padding: 10px 14px;
+  border-bottom: 1px solid #fecaca;
+  background: #fff5f5;
+  color: #c53030;
+  font-size: 13px;
+}
+
+.terminology-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.terminology-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.terminology-table-wrap th,
+.terminology-table-wrap td {
+  padding: 11px 12px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+  vertical-align: top;
+}
+
+.terminology-table-wrap th {
+  position: sticky;
+  top: 0;
+  background: #fafafa;
+  color: #475467;
+  z-index: 1;
+}
+
+.terminology-table-wrap td:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.is-enabled {
+  color: #067647;
+}
+
+.is-disabled {
+  color: #b42318;
+}
+
+@media (max-width: 900px) {
+  .terminology-main {
+    grid-template-columns: 1fr;
+  }
+}

@@ -9,17 +9,89 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 public interface InterpretationSessionMapper {
 
-    @Insert("INSERT INTO interpretation_session (session_id, user_id, source_lang, target_lang, voice_id, status, start_time, create_time) " +
-            "VALUES (#{sessionId}, #{userId}, #{sourceLang}, #{targetLang}, #{voiceId}, #{status}, #{startTime}, NOW())")
+    @Update("ALTER TABLE interpretation_session ADD COLUMN asr_audio_ms BIGINT DEFAULT 0")
+    void addAsrAudioMsColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN translate_chars BIGINT DEFAULT 0")
+    void addTranslateCharsColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN tts_chars BIGINT DEFAULT 0")
+    void addTtsCharsColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN llm_input_tokens BIGINT DEFAULT 0")
+    void addLlmInputTokensColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN llm_output_tokens BIGINT DEFAULT 0")
+    void addLlmOutputTokensColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN title VARCHAR(128) DEFAULT '未命名同传' AFTER voice_id")
+    void addTitleColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER status")
+    void addDeletedColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN hotword_ids VARCHAR(2048) DEFAULT NULL AFTER voice_id")
+    void addHotwordIdsColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN enabled_languages VARCHAR(128) DEFAULT NULL AFTER hotword_ids")
+    void addEnabledLanguagesColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN meeting_summary TEXT DEFAULT NULL")
+    void addMeetingSummaryColumnIfNotExists();
+
+    @Update("UPDATE interpretation_session SET meeting_summary = #{summary} WHERE session_id = #{sessionId}")
+    int updateMeetingSummary(@Param("sessionId") String sessionId, @Param("summary") String summary);
+
+    @Insert("INSERT INTO interpretation_session (session_id, user_id, source_lang, target_lang, voice_id, hotword_ids, enabled_languages, title, status, deleted, start_time, asr_audio_ms, translate_chars, tts_chars, llm_input_tokens, llm_output_tokens, create_time) " +
+            "VALUES (#{sessionId}, #{userId}, #{sourceLang}, #{targetLang}, #{voiceId}, #{hotwordIds}, #{enabledLanguages}, #{title}, #{status}, 0, #{startTime}, 0, 0, 0, 0, 0, NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationSession session);
 
-    @Select("SELECT * FROM interpretation_session WHERE session_id = #{sessionId}")
+    @Select("SELECT * FROM interpretation_session WHERE session_id = #{sessionId} AND COALESCE(deleted, 0) = 0")
     InterpretationSession findBySessionId(String sessionId);
 
     @Update("UPDATE interpretation_session SET status = #{status}, end_time = #{endTime} WHERE session_id = #{sessionId}")
     int updateStatus(@Param("sessionId") String sessionId, @Param("status") String status, @Param("endTime") java.time.LocalDateTime endTime);
 
-    @Select("SELECT * FROM interpretation_session WHERE user_id = #{userId} ORDER BY create_time DESC")
+    @Update("UPDATE interpretation_session SET asr_audio_ms = COALESCE(asr_audio_ms, 0) + #{delta} WHERE session_id = #{sessionId}")
+    int addAsrAudioMs(@Param("sessionId") String sessionId, @Param("delta") long delta);
+
+    @Update("UPDATE interpretation_session SET translate_chars = COALESCE(translate_chars, 0) + #{delta} WHERE session_id = #{sessionId}")
+    int addTranslateChars(@Param("sessionId") String sessionId, @Param("delta") long delta);
+
+    @Update("UPDATE interpretation_session SET tts_chars = COALESCE(tts_chars, 0) + #{delta} WHERE session_id = #{sessionId}")
+    int addTtsChars(@Param("sessionId") String sessionId, @Param("delta") long delta);
+
+    @Update("UPDATE interpretation_session SET llm_input_tokens = COALESCE(llm_input_tokens, 0) + #{inputDelta}, llm_output_tokens = COALESCE(llm_output_tokens, 0) + #{outputDelta} WHERE session_id = #{sessionId}")
+    int addLlmTokens(@Param("sessionId") String sessionId, @Param("inputDelta") long inputDelta, @Param("outputDelta") long outputDelta);
+
+    @Select("SELECT * FROM interpretation_session WHERE user_id = #{userId} AND COALESCE(deleted, 0) = 0 ORDER BY create_time DESC")
     java.util.List<InterpretationSession> findByUserId(Long userId);
+
+    @Select("""
+            SELECT s.*,
+                   (SELECT COUNT(*) FROM interpretation_result r WHERE r.session_id = s.session_id) AS result_count
+            FROM interpretation_session s
+            WHERE s.user_id = #{userId}
+              AND COALESCE(s.deleted, 0) = 0
+              AND (
+                #{keyword} IS NULL OR #{keyword} = ''
+                OR s.title LIKE CONCAT('%', #{keyword}, '%')
+                OR s.session_id LIKE CONCAT('%', #{keyword}, '%')
+                OR EXISTS (
+                  SELECT 1 FROM interpretation_result r
+                  WHERE r.session_id = s.session_id
+                    AND (r.source_text LIKE CONCAT('%', #{keyword}, '%')
+                         OR r.translated_text LIKE CONCAT('%', #{keyword}, '%'))
+                )
+              )
+            ORDER BY s.create_time DESC
+            """)
+    java.util.List<InterpretationSession> searchByUserId(@Param("userId") Long userId, @Param("keyword") String keyword);
+
+    @Update("UPDATE interpretation_session SET title = #{title} WHERE session_id = #{sessionId} AND user_id = #{userId} AND COALESCE(deleted, 0) = 0")
+    int updateTitle(@Param("sessionId") String sessionId, @Param("userId") Long userId, @Param("title") String title);
+
+    @Update("UPDATE interpretation_session SET deleted = 1 WHERE session_id = #{sessionId} AND user_id = #{userId}")
+    int softDelete(@Param("sessionId") String sessionId, @Param("userId") Long userId);
 }

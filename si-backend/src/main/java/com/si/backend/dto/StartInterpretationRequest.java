@@ -4,6 +4,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 public class StartInterpretationRequest {
 
@@ -17,4 +19,8 @@ public class StartInterpretationRequest {
     private String targetLang;
 
     private String voiceId;
+
+    private List<Long> hotwordIds;
+
+    private List<String> enabledLanguages;
 }

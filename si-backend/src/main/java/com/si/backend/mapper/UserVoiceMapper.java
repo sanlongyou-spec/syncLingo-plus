@@ -9,8 +9,17 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 public interface UserVoiceMapper {
 
-    @Insert("INSERT INTO user_voice (user_id, voice_id, voice_name, duration_seconds, sample_url, create_time, update_time) " +
-            "VALUES (#{userId}, #{voiceId}, #{voiceName}, #{durationSeconds}, #{sampleUrl}, NOW(), NOW())")
+    @Update("ALTER TABLE user_voice ADD COLUMN authorized TINYINT DEFAULT 1")
+    void addAuthorizedColumnIfNotExists();
+
+    @Update("ALTER TABLE user_voice ADD COLUMN scope VARCHAR(64) DEFAULT 'ALL'")
+    void addScopeColumnIfNotExists();
+
+    @Update("ALTER TABLE user_voice ADD COLUMN disabled TINYINT DEFAULT 0")
+    void addDisabledColumnIfNotExists();
+
+    @Insert("INSERT INTO user_voice (user_id, voice_id, voice_name, duration_seconds, sample_url, authorized, scope, disabled, create_time, update_time) " +
+            "VALUES (#{userId}, #{voiceId}, #{voiceName}, #{durationSeconds}, #{sampleUrl}, #{authorized}, #{scope}, #{disabled}, NOW(), NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(UserVoice userVoice);
 
@@ -22,6 +31,9 @@ public interface UserVoiceMapper {
 
     @Update("UPDATE user_voice SET voice_id = #{voiceId}, voice_name = #{voiceName}, update_time = NOW() WHERE user_id = #{userId}")
     int updateByUserId(UserVoice userVoice);
+
+    @Update("UPDATE user_voice SET authorized = #{authorized}, disabled = #{disabled}, scope = #{scope}, update_time = NOW() WHERE voice_id = #{voiceId}")
+    int updateAuthorization(UserVoice userVoice);
 
     @Delete("DELETE FROM user_voice WHERE user_id = #{userId}")
     int deleteByUserId(Long userId);

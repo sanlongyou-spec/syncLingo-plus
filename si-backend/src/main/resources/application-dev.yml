@@ -11,9 +11,13 @@ azure:
     key: YOUR_AZURE_SPEECH_KEY
     region: southeastasia
     asr:
-      language: zh-CN,id-ID
+      language: ${AZURE_ASR_LANGUAGES:zh-CN,id-ID,en-US}
       sample-rate: 16000
-      end-silence-timeout-ms: 6000
+      end-silence-timeout-ms: ${AZURE_ASR_END_SILENCE_TIMEOUT_MS:1500}
+      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:2000}
+      segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
+      segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
+      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:150}
     tts:
       sample-rate: 24000
 

@@ -48,13 +48,16 @@ azure:
     region: ${AZURE_SPEECH_REGION:eastus}
     asr:
       model: default
-      # 支持自动语种检测模式：配置为 "auto" 使用 AutoDetectSourceLanguageConfig
-      # 或配置逗号分隔的多语种列表，如 "zh-CN,id-ID"
-      language: ${AZURE_ASR_LANGUAGES:zh-CN,id-ID}
+      # Use "auto" for auto-detect or comma-separated languages, such as "zh-CN,id-ID,en-US".
+      language: ${AZURE_ASR_LANGUAGES:zh-CN,id-ID,en-US}
       sample-rate: 16000
       format: audio/pcm
       channels: 1
-      end-silence-timeout-ms: 2500
+      end-silence-timeout-ms: ${AZURE_ASR_END_SILENCE_TIMEOUT_MS:1500}
+      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:2000}
+      segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
+      segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
+      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:150}
     tts:
       voice: zh-CN-XiaoxiaoMultilingualNeural
       sample-rate: 24000
@@ -62,22 +65,49 @@ azure:
     key: ${AZURE_TRANSLATOR_KEY:}
     region: ${AZURE_TRANSLATOR_REGION:eastus}
     timeout-seconds: 30
+speaker:
+  service:
+    enabled: ${SPEAKER_SERVICE_ENABLED:false}
+    url: ${SPEAKER_SERVICE_URL:http://localhost:7000}
+    min-score: ${SPEAKER_SERVICE_MIN_SCORE:0.25}
+    timeout-seconds: ${SPEAKER_SERVICE_TIMEOUT_SECONDS:15}
 
 google:
   translate:
     api-key: ${GOOGLE_TRANSLATE_API_KEY:}
-    # DashScope API Key（用于印尼语翻译压缩）
-    dashscope-api-key: ${DASHSCOPE_API_KEY:}
-    # 压缩模型
-    compression-model: ${COMPRESSION_MODEL:qwen3-max}
-    # DashScope Base URL
-    base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    glossary-enabled: ${GOOGLE_TRANSLATE_GLOSSARY_ENABLED:false}
+    project-id: ${GOOGLE_TRANSLATE_PROJECT_ID:}
+    location: ${GOOGLE_TRANSLATE_LOCATION:us-central1}
+    glossary-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID:}
+    glossary-zh-to-id-id: ${GOOGLE_TRANSLATE_GLOSSARY_ZH_TO_ID_ID:}
+    glossary-id-to-zh-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID_TO_ZH_ID:}
+    glossary-zh-to-en-id: ${GOOGLE_TRANSLATE_GLOSSARY_ZH_TO_EN_ID:}
+    glossary-en-to-zh-id: ${GOOGLE_TRANSLATE_GLOSSARY_EN_TO_ZH_ID:}
+    glossary-id-to-en-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID_TO_EN_ID:}
+    glossary-en-to-id-id: ${GOOGLE_TRANSLATE_GLOSSARY_EN_TO_ID_ID:}
+    glossary-ignore-case: ${GOOGLE_TRANSLATE_GLOSSARY_IGNORE_CASE:true}
+    glossary-fallback-enabled: ${GOOGLE_TRANSLATE_GLOSSARY_FALLBACK_ENABLED:true}
+openai:
+  api-key: ${OPENAI_API_KEY:}
+  base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+  referer: ${OPENAI_REFERER:}
+  title: ${OPENAI_TITLE:syncLingo-plus}
+  compression-enabled: ${OPENAI_COMPRESSION_ENABLED:true}
+  compression-min-text-length: ${OPENAI_COMPRESSION_MIN_TEXT_LENGTH:80}
+  compression-model: ${OPENAI_COMPRESSION_MODEL:gpt-5-nano}
+  compression-zh-to-id-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_ID_TARGET_RATIO:0.75}
+  compression-zh-to-en-enabled: ${OPENAI_COMPRESSION_ZH_TO_EN_ENABLED:true}
+  compression-zh-to-en-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_EN_TARGET_RATIO:0.85}
+  summary-model: ${OPENAI_SUMMARY_MODEL:gpt-5-mini}
+  compression-max-output-tokens: ${OPENAI_COMPRESSION_MAX_OUTPUT_TOKENS:512}
+  summary-max-output-tokens: ${OPENAI_SUMMARY_MAX_OUTPUT_TOKENS:1200}
 
 cartesia:
   api-key: ${CARTESIA_API_KEY:}
   api-url: ${CARTESIA_API_URL:wss://api.cartesia.ai}
   default-voice-id-chinese: ${CARTESIA_DEFAULT_VOICE_ID_ZH:6eb8965c-e295-47bd-a9e4-3eeebb3abcff}
   default-voice-id-indonesian: ${CARTESIA_DEFAULT_VOICE_ID_ID:a053f6bc-7df4-40de-96d4-de026bc47ce8}
+  default-voice-id-english: ${CARTESIA_DEFAULT_VOICE_ID_EN:default}
   tts:
     model: sonic
     sample-rate: 24000
@@ -95,3 +125,24 @@ jwt:
 app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174}
+
+bot:
+  api:
+    url: ${BOT_API_URL:http://localhost:3978}
+
+teams:
+  bot:
+    default-user-id: ${TEAMS_BOT_DEFAULT_USER_ID:0}
+    max-sessions: ${TEAMS_BOT_MAX_SESSIONS:5}
+    summary-preview-chars: ${TEAMS_BOT_SUMMARY_PREVIEW_CHARS:1200}
+    api-secret: ${TEAMS_BOT_API_SECRET:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true

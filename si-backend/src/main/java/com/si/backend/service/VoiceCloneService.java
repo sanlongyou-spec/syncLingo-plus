@@ -6,7 +6,9 @@ import com.si.backend.integration.CartesiaTtsIntegration;
 import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +27,28 @@ public class VoiceCloneService {
     public VoiceCloneService(UserVoiceMapper userVoiceMapper, CartesiaTtsIntegration cartesiaIntegration) {
         this.userVoiceMapper = userVoiceMapper;
         this.cartesiaIntegration = cartesiaIntegration;
+    }
+
+    @PostConstruct
+    public void initColumns() {
+        log.info("[VoiceCloneService] initColumns start");
+        addColumnIfMissing("authorized", userVoiceMapper::addAuthorizedColumnIfNotExists);
+        addColumnIfMissing("scope", userVoiceMapper::addScopeColumnIfNotExists);
+        addColumnIfMissing("disabled", userVoiceMapper::addDisabledColumnIfNotExists);
+        log.info("[VoiceCloneService] initColumns end");
+    }
+
+    private void addColumnIfMissing(String columnName, Runnable ddlAction) {
+        try {
+            ddlAction.run();
+            log.info("[VoiceCloneService] column added, column={}", columnName);
+        } catch (DataAccessException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Duplicate column")) {
+                log.info("[VoiceCloneService] column already exists, column={}", columnName);
+                return;
+            }
+            throw e;
+        }
     }
 
     /**
@@ -71,6 +95,9 @@ public class VoiceCloneService {
         userVoice.setVoiceId(voiceId);
         userVoice.setVoiceName(voiceName);
         userVoice.setDurationSeconds(audioSample.length / (Constants.DEFAULT_SAMPLE_RATE_ASR * 2));
+        userVoice.setAuthorized(true);
+        userVoice.setScope("ALL");
+        userVoice.setDisabled(false);
         userVoiceMapper.insert(userVoice);
 
         log.info("[VoiceCloneService] cloneVoice end, userId={}, voiceId={}, voiceName={}, durationSec={}",
@@ -118,5 +145,31 @@ public class VoiceCloneService {
         log.info("[VoiceCloneService] deleteUserVoice start, userId={}", userId);
         userVoiceMapper.deleteByUserId(userId);
         log.info("[VoiceCloneService] deleteUserVoice end, userId={}", userId);
+    }
+
+    public boolean isVoiceUsable(String voiceId) {
+        log.info("[VoiceCloneService] isVoiceUsable start, voiceId={}", voiceId);
+        if (voiceId == null || voiceId.isBlank() || Constants.VOICE_ID_DEFAULT.equalsIgnoreCase(voiceId)) {
+            log.info("[VoiceCloneService] isVoiceUsable end, voiceId={}, usable={}", voiceId, true);
+            return true;
+        }
+        UserVoice voice = userVoiceMapper.findByVoiceId(voiceId);
+        boolean usable = voice == null
+                || (Boolean.TRUE.equals(voice.getAuthorized()) && !Boolean.TRUE.equals(voice.getDisabled()));
+        log.info("[VoiceCloneService] isVoiceUsable end, voiceId={}, found={}, usable={}",
+                voiceId, voice != null, usable);
+        return usable;
+    }
+
+    public void updateAuthorization(String voiceId, Boolean authorized, Boolean disabled, String scope) {
+        log.info("[VoiceCloneService] updateAuthorization start, voiceId={}, authorized={}, disabled={}, scope={}",
+                voiceId, authorized, disabled, scope);
+        UserVoice voice = new UserVoice();
+        voice.setVoiceId(voiceId);
+        voice.setAuthorized(Boolean.TRUE.equals(authorized));
+        voice.setDisabled(Boolean.TRUE.equals(disabled));
+        voice.setScope(scope == null || scope.isBlank() ? "ALL" : scope);
+        userVoiceMapper.updateAuthorization(voice);
+        log.info("[VoiceCloneService] updateAuthorization end, voiceId={}", voiceId);
     }
 }

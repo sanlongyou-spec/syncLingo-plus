@@ -5,12 +5,23 @@
 export const STORAGE_KEYS = {
   USER_ID: 'si_user_id',
   TOKEN: 'si_token',
+  CURRENT_SESSION_ID: 'si_current_session_id',
 } as const
 
 export const ROUTES = {
   LOGIN: '#/login',
   HOME: '#/',
   VOICE_CLONE: '#/voice-clone',
+  HISTORY: '#/history',
+  TERMINOLOGY: '#/terminology',
+  MEETING_MATERIALS: '#/meeting-materials',
+  TEAMS_BOT: '#/teams-bot',
+} as const
+
+export const TEAMS_BOT_STORAGE_KEYS = {
+  RECIPIENTS: 'si_teams_recipients',
+  RECIPIENT_HISTORY: 'si_teams_recipient_history',
+  MEETING_LINK: 'si_teams_last_meeting_link',
 } as const
 
 export const HTTP_STATUS = {
@@ -32,12 +43,15 @@ export const LANGUAGE = {
   AUTO: 'auto',
   ZH_CN: 'zh-CN',
   ID_ID: 'id-ID',
+  EN_US: 'en-US',
   ZH: 'zh',
   ID: 'id',
+  EN: 'en',
 } as const
 
 export const LANGUAGE_LABELS: Record<string, string> = {
   [LANGUAGE.AUTO]: '自动检测',
   [LANGUAGE.ZH_CN]: '中文（简体）',
   [LANGUAGE.ID_ID]: '印尼语',
+  [LANGUAGE.EN_US]: '英语',
 }

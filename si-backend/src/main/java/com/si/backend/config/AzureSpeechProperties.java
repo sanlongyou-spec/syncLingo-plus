@@ -22,6 +22,12 @@ public class AzureSpeechProperties {
         private String format = "audio/pcm";
         private int channels = 1;
         private long endSilenceTimeoutMs = 6000L;
+        private long segmentationSilenceTimeoutMs = 2000L;
+        private String segmentationStrategy;
+        /** Speech_SegmentationMaximumTimeMs：单段最大时长（ms），配合 Time/Semantic 策略作为时间兜底（0 = 不设置） */
+        private long segmentationMaximumTimeMs = 0L;
+        /** 单段最大字符数；超过时在应用层强制切段（0 = 不限制） */
+        private int maxSegmentChars = 0;
     }
 
     @Data

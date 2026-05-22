@@ -24,6 +24,9 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <azure.ai.version>1.48.2</azure.ai.version>
+        <azure.translation.text.version>1.1.8</azure.translation.text.version>
+        <google.cloud.translate.version>2.91.0</google.cloud.translate.version>
+        <openai-java.version>4.35.0</openai-java.version>
         <okhttp.version>4.12.0</okhttp.version>
         <commons-pool2.version>2.12.0</commons-pool2.version>
         <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
@@ -44,6 +47,14 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.mybatis.spring.boot</groupId>
             <artifactId>mybatis-spring-boot-starter</artifactId>
             <version>${mybatis-spring-boot.version}</version>
@@ -57,6 +68,21 @@
             <groupId>com.microsoft.cognitiveservices.speech</groupId>
             <artifactId>client-sdk</artifactId>
             <version>${azure.ai.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-ai-translation-text</artifactId>
+            <version>${azure.translation.text.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-translate</artifactId>
+            <version>${google.cloud.translate.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.openai</groupId>
+            <artifactId>openai-java</artifactId>
+            <version>${openai-java.version}</version>
         </dependency>
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
