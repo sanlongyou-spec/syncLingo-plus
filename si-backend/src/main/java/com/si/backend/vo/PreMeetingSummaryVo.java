@@ -5,17 +5,13 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-/**
- * 会议纪要返回对象。
- */
 @Data
 @Builder
-@NoArgsConstructor
 @AllArgsConstructor
-public class MeetingSummaryVo {
-
-    private String sessionId;
-    private String title;
+@NoArgsConstructor
+public class PreMeetingSummaryVo {
+    private String fileId;
+    private String fileName;
     private String summary;
-    private Integer recordCount;
+    private String extractedText;
 }

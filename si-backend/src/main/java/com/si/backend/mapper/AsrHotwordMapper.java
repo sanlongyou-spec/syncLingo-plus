@@ -104,6 +104,9 @@ public interface AsrHotwordMapper {
             """)
     int markUsed(@Param("userId") Long userId, @Param("ids") List<Long> ids);
 
+    @Select("SELECT COUNT(*) FROM asr_hotword WHERE user_id = #{userId} AND phrase = #{phrase} AND (language IS NULL OR language = '' OR language = #{language})")
+    int countByUserIdPhraseAndLanguage(@Param("userId") Long userId, @Param("phrase") String phrase, @Param("language") String language);
+
     @Update("ALTER TABLE asr_hotword ADD COLUMN last_used_time DATETIME DEFAULT NULL AFTER expires_at")
     void addLastUsedTimeColumnIfNotExists();
 }

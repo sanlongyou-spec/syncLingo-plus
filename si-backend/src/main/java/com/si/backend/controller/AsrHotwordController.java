@@ -1,6 +1,7 @@
 package com.si.backend.controller;
 
 import com.si.backend.common.Result;
+import com.si.backend.dto.HotwordSuggestion;
 import com.si.backend.dto.SaveAsrHotwordRequest;
 import com.si.backend.facade.AsrHotwordFacade;
 import com.si.backend.vo.AsrHotwordVo;
@@ -80,5 +81,25 @@ public class AsrHotwordController {
         facade.delete(id, userId);
         log.info("[AsrHotwordController] delete end, id={}, userId={}", id, userId);
         return Result.ok();
+    }
+
+    @GetMapping("/extract-preview/{sessionId}")
+    public Result<List<HotwordSuggestion>> extractPreview(
+            @PathVariable String sessionId,
+            @RequestParam Long userId) {
+        log.info("[AsrHotwordController] extractPreview start, sessionId={}, userId={}", sessionId, userId);
+        List<HotwordSuggestion> suggestions = facade.previewExtractedHotwords(sessionId, userId);
+        log.info("[AsrHotwordController] extractPreview end, sessionId={}, count={}", sessionId, suggestions.size());
+        return Result.ok(suggestions);
+    }
+
+    @PostMapping("/extract-confirm")
+    public Result<List<AsrHotwordVo>> extractConfirm(
+            @RequestParam Long userId,
+            @RequestBody List<HotwordSuggestion> selected) {
+        log.info("[AsrHotwordController] extractConfirm start, userId={}, count={}", userId, selected != null ? selected.size() : 0);
+        List<AsrHotwordVo> result = facade.confirmExtractedHotwords(userId, selected);
+        log.info("[AsrHotwordController] extractConfirm end, userId={}, saved={}", userId, result.size());
+        return Result.ok(result);
     }
 }

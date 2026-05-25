@@ -4,6 +4,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
+import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SessionSpeakerVoiceService;
@@ -47,6 +48,7 @@ public class RealtimeInterpretationFacade {
     private final VoiceCloneService voiceCloneService;
     private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
     private final SpeakerIdentityService speakerIdentityService;
+    private final HotwordExtractionService hotwordExtractionService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -193,6 +195,10 @@ public class RealtimeInterpretationFacade {
      */
     public void stopInterpretation(String sessionId) {
         log.info("[RealtimeInterpretationFacade] stopInterpretation, sessionId={}", sessionId);
+        // Capture userId before session is removed from active map
+        Long userId = sessionService.getSession(sessionId)
+                .map(s -> s.getUserId())
+                .orElse(null);
         try {
             asrService.stopRecognition(sessionId);
         } catch (Exception e) {
@@ -215,6 +221,17 @@ public class RealtimeInterpretationFacade {
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);
         sessionSpeakerIdentityCallbackMap.remove(sessionId);
+        // Async hotword extraction — fire-and-forget, does not block stop
+        if (userId != null) {
+            final Long finalUserId = userId;
+            CompletableFuture.runAsync(() -> {
+                try {
+                    hotwordExtractionService.extractAndSaveFromSession(sessionId, finalUserId);
+                } catch (Exception e) {
+                    log.warn("[RealtimeInterpretationFacade] hotword auto-extraction failed, sessionId={}", sessionId, e);
+                }
+            });
+        }
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 

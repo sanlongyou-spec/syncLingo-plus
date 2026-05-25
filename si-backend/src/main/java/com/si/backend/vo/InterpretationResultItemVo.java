@@ -9,6 +9,7 @@ public class InterpretationResultItemVo {
 
     private Long id;
     private String sessionId;
+    private String meetingTitle;
     private String sourceText;
     private String translatedText;
     private String sourceLang;

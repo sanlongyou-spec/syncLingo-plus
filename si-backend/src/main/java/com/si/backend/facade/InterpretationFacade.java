@@ -61,6 +61,7 @@ public class InterpretationFacade {
                 request.getUserId(),
                 request.getSourceLang(),
                 request.getTargetLang(),
+                request.getTitle(),
                 request.getVoiceId(),
                 request.getHotwordIds(),
                 enabledLanguages
@@ -107,6 +108,7 @@ public class InterpretationFacade {
     public InterpretationResultItemVo saveResult(SaveInterpretationResultRequest request) {
         log.info("[InterpretationFacade] saveResult start, sessionId={}", request.getSessionId());
         InterpretationResultItemVo result = resultService.save(request);
+        result.setMeetingTitle(resolveSessionTitle(request.getSessionId()));
         log.info("[InterpretationFacade] saveResult end, sessionId={}, resultId={}",
                 request.getSessionId(), result.getId());
         return result;
@@ -114,25 +116,31 @@ public class InterpretationFacade {
 
     public List<InterpretationResultItemVo> listPublicResults(String sessionId) {
         log.info("[InterpretationFacade] listPublicResults start, sessionId={}", sessionId);
+        String meetingTitle = resolveSessionTitle(sessionId);
         List<InterpretationResultItemVo> results = resultService.listBySessionId(sessionId);
+        results.forEach(result -> result.setMeetingTitle(meetingTitle));
         log.info("[InterpretationFacade] listPublicResults end, sessionId={}, count={}", sessionId, results.size());
         return results;
     }
 
     public List<InterpretationRecordVo> getRecords(String sessionId) {
         log.info("[InterpretationFacade] getRecords start, sessionId={}", sessionId);
+        String meetingTitle = resolveSessionTitle(sessionId);
         List<InterpretationRecordVo> records = recordService.getSessionRecords(sessionId).stream()
                 .map(this::toVo)
                 .toList();
+        records.forEach(record -> record.setMeetingTitle(meetingTitle));
         log.info("[InterpretationFacade] getRecords end, sessionId={}, count={}", sessionId, records.size());
         return records;
     }
 
     public List<VoiceUsageRecordVo> getVoiceUsage(String sessionId) {
         log.info("[InterpretationFacade] getVoiceUsage start, sessionId={}", sessionId);
+        String meetingTitle = resolveSessionTitle(sessionId);
         List<VoiceUsageRecordVo> records = voiceUsageRecordService.getSessionUsage(sessionId).stream()
                 .map(this::toVo)
                 .toList();
+        records.forEach(record -> record.setMeetingTitle(meetingTitle));
         log.info("[InterpretationFacade] getVoiceUsage end, sessionId={}, count={}", sessionId, records.size());
         return records;
     }
@@ -216,6 +224,12 @@ public class InterpretationFacade {
                 .llmOutputTokens(session.getLlmOutputTokens())
                 .meetingSummary(session.getMeetingSummary())
                 .build();
+    }
+
+    private String resolveSessionTitle(String sessionId) {
+        return sessionService.getSession(sessionId)
+                .map(InterpretationSession::getTitle)
+                .orElse(null);
     }
 
     private InterpretationRecordVo toVo(InterpretationRecord record) {

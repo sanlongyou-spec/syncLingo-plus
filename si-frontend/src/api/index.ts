@@ -12,13 +12,34 @@ import type {
   SessionSpeakerIdentity,
   Terminology,
   AsrHotword,
-  UserGlossaryConfig,
+  HotwordSuggestion,
   UserLanguagePreference,
   MeetingSummaryVo,
-  MeetingMaterial,
+  PreMeetingFile,
+  PreMeetingAttendanceResult,
+  PreMeetingSummaryResult,
+  PreMeetingDailyUsage,
   TeamsSummarySendResponse,
+  MeetingParticipant,
   MeetingParticipantsResponse,
 } from '../types'
+
+const getApiErrorMessage = async (error: unknown, fallback: string): Promise<string> => {
+  const responseData = (error as { response?: { data?: unknown } })?.response?.data
+  if (responseData instanceof Blob) {
+    const text = await responseData.text()
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as { message?: string; error?: string }
+        return parsed.message || parsed.error || fallback
+      } catch {
+        return text
+      }
+    }
+  }
+  const errorLike = error as { response?: { data?: { message?: string; error?: string } }; message?: string }
+  return errorLike.response?.data?.message || errorLike.response?.data?.error || errorLike.message || fallback
+}
 
 export const startInterpretation = (params: StartInterpretationParams): Promise<Result<string>> =>
   client.post<Result<string>>('/api/interpretation/start', params).then(r => r.data)
@@ -134,14 +155,12 @@ export const deleteAsrHotword = (userId: number, id: number): Promise<Result<voi
 export const createAsrHotwordsBatch = (userId: number, params: AsrHotword[]): Promise<Result<AsrHotword[]>> =>
   client.post<Result<AsrHotword[]>>('/api/asr-hotwords/batch', params, { params: { userId } }).then(r => r.data)
 
-export const getUserGlossaries = (userId: number): Promise<Result<UserGlossaryConfig[]>> =>
-  client.get<Result<UserGlossaryConfig[]>>('/api/glossaries', { params: { userId } }).then(r => r.data)
+export const previewHotwordsFromSession = (sessionId: string, userId: number): Promise<Result<HotwordSuggestion[]>> =>
+  client.get<Result<HotwordSuggestion[]>>(`/api/asr-hotwords/extract-preview/${sessionId}`, { params: { userId } }).then(r => r.data)
 
-export const saveUserGlossary = (userId: number, params: UserGlossaryConfig): Promise<Result<UserGlossaryConfig>> =>
-  client.post<Result<UserGlossaryConfig>>('/api/glossaries', params, { params: { userId } }).then(r => r.data)
+export const confirmHotwordsFromSession = (userId: number, hotwords: HotwordSuggestion[]): Promise<Result<AsrHotword[]>> =>
+  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/extract-confirm', hotwords, { params: { userId } }).then(r => r.data)
 
-export const deleteUserGlossary = (userId: number, id: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/glossaries/${id}`, { params: { userId } }).then(r => r.data)
 
 export const getUserLanguagePreference = (userId: number): Promise<Result<UserLanguagePreference>> =>
   client.get<Result<UserLanguagePreference>>('/api/language-preferences', { params: { userId } }).then(r => r.data)
@@ -155,17 +174,53 @@ export const saveUserLanguagePreference = (
 export const getMeetingSummary = (sessionId: string): Promise<Result<MeetingSummaryVo>> =>
   client.get<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`).then(r => r.data)
 
-export const regenerateMeetingSummary = (sessionId: string): Promise<Result<MeetingSummaryVo>> =>
-  client.post<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`).then(r => r.data)
+export const regenerateMeetingSummary = (sessionId: string, customRequirements?: string): Promise<Result<MeetingSummaryVo>> =>
+  client.post<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`, customRequirements ? { customRequirements } : undefined).then(r => r.data)
 
-export const getMeetingMaterial = (sessionId: string): Promise<Result<MeetingMaterial>> =>
-  client.get<Result<MeetingMaterial>>(`/api/meeting-materials/sessions/${sessionId}`).then(r => r.data)
+export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[]>> => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
+    headers: { 'Content-Type': undefined },
+  }).then(r => r.data)
+}
 
-export const saveMeetingMaterial = (sessionId: string, params: MeetingMaterial): Promise<Result<MeetingMaterial>> =>
-  client.put<Result<MeetingMaterial>>(`/api/meeting-materials/sessions/${sessionId}`, params).then(r => r.data)
+export const summarizePreMeetingFile = (
+  fileId: string,
+  requirements: string,
+  userId?: number,
+): Promise<Result<PreMeetingSummaryResult>> =>
+  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, userId }, {
+    timeout: 300_000,
+  }).then(r => r.data)
 
-export const generateMeetingMaterialSummary = (sessionId: string): Promise<Result<MeetingMaterial>> =>
-  client.post<Result<MeetingMaterial>>(`/api/meeting-materials/sessions/${sessionId}/summary`).then(r => r.data)
+export const generatePreMeetingAttendance = (
+  fileId: string,
+  actualParticipants: MeetingParticipant[],
+): Promise<Result<PreMeetingAttendanceResult>> =>
+  client.post<Result<PreMeetingAttendanceResult>>('/api/pre-meeting/attendance', {
+    fileId,
+    actualParticipants,
+  }).then(r => r.data)
+
+export const exportPreMeetingAttendanceDocx = (
+  fileId: string,
+  actualParticipants: MeetingParticipant[],
+): Promise<Blob> =>
+  client.post<Blob>('/api/pre-meeting/attendance/export', {
+    fileId,
+    actualParticipants,
+  }, { responseType: 'blob', timeout: 60_000 })
+    .then(r => r.data)
+    .catch(async error => {
+      throw new Error(await getApiErrorMessage(error, '导出实际参会名单失败'))
+    })
+
+export const getPreMeetingUsage = (userId: number, days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
+  client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { userId, days } }).then(r => r.data)
+
+export const exportPreMeetingDocx = (fileId: string, summary: string): Promise<Blob> =>
+  client.post<Blob>(`/api/pre-meeting/export/${fileId}`, { summary }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
 
 export const sendTeamsSummaryToUsers = (
   content: string,
@@ -186,8 +241,8 @@ export const sendSummaryToMeetingChat = (content: string): Promise<{ sent: boole
       throw new Error(message)
     })
 
-export const joinMeeting = (meetingUrl: string): Promise<{ callId: string; threadId: string }> =>
-  client.post<{ callId: string; threadId: string }>('/bot-api/api/meetings/join', { meetingUrl })
+export const joinMeeting = (meetingUrl: string): Promise<{ callId: string; threadId: string; meetingTitle?: string | null }> =>
+  client.post<{ callId: string; threadId: string; meetingTitle?: string | null }>('/bot-api/api/meetings/join', { meetingUrl })
     .then(r => r.data)
     .catch(error => {
       const message = error?.response?.data?.error || error?.message || '机器人加入会议失败'
@@ -201,4 +256,3 @@ export const getMeetingParticipants = (): Promise<MeetingParticipantsResponse> =
       const message = error?.response?.data?.error || error?.message || '获取参会人员失败'
       throw new Error(message)
     })
-

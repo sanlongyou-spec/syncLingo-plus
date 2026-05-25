@@ -20,9 +20,9 @@ public class MeetingSummaryFacade {
         return summary;
     }
 
-    public MeetingSummaryVo regenerateSummary(String sessionId) {
+    public MeetingSummaryVo regenerateSummary(String sessionId, String customRequirements) {
         log.info("[MeetingSummaryFacade] regenerateSummary start, sessionId={}", sessionId);
-        MeetingSummaryVo summary = meetingSummaryService.regenerateSummary(sessionId);
+        MeetingSummaryVo summary = meetingSummaryService.regenerateSummary(sessionId, customRequirements);
         log.info("[MeetingSummaryFacade] regenerateSummary end, sessionId={}", sessionId);
         return summary;
     }

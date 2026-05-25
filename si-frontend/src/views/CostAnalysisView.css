@@ -1,0 +1,345 @@
+/* ─────────────────────────────────────────────────
+   Main layout
+───────────────────────────────────────────────── */
+.ca-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.25rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.ca-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #8e8e93;
+  font-size: 0.95rem;
+}
+
+/* ─────────────────────────────────────────────────
+   Range selector bar
+───────────────────────────────────────────────── */
+.ca-range-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ca-range-label {
+  font-size: 0.82rem;
+  color: #8e8e93;
+  margin-right: 0.25rem;
+}
+
+.ca-range-btn {
+  padding: 0.3rem 0.75rem;
+  border-radius: 20px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  font-size: 0.82rem;
+  color: #374151;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.ca-range-btn:hover {
+  background: #f3f4f6;
+}
+
+.ca-range-btn--active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.ca-range-count {
+  margin-left: auto;
+  font-size: 0.82rem;
+  color: #8e8e93;
+}
+
+/* ─────────────────────────────────────────────────
+   Stat cards
+───────────────────────────────────────────────── */
+.ca-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.ca-stat-card {
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  background: #fff;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ca-stat-card--total { border-left: 3px solid #1d4ed8; }
+.ca-stat-card--avg   { border-left: 3px solid #6366f1; }
+.ca-stat-card--asr   { border-left: 3px solid #3b82f6; }
+.ca-stat-card--trans { border-left: 3px solid #22c55e; }
+.ca-stat-card--tts   { border-left: 3px solid #a855f7; }
+.ca-stat-card--llm   { border-left: 3px solid #f59e0b; }
+
+.ca-stat-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.ca-stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #111827;
+  letter-spacing: -0.02em;
+}
+
+.ca-stat-sub {
+  font-size: 0.72rem;
+  color: #9ca3af;
+}
+
+/* ─────────────────────────────────────────────────
+   Chart row
+───────────────────────────────────────────────── */
+.ca-chart-row {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 0.75rem;
+}
+
+@media (max-width: 700px) {
+  .ca-chart-row { grid-template-columns: 1fr; }
+}
+
+/* ─────────────────────────────────────────────────
+   Shared card shell
+───────────────────────────────────────────────── */
+.ca-card {
+  background: #fff;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+}
+
+.ca-card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 0.65rem;
+}
+
+/* ─────────────────────────────────────────────────
+   Bar chart
+───────────────────────────────────────────────── */
+.ca-bar-legend {
+  display: flex;
+  gap: 0.85rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.ca-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.ca-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.ca-bar-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  overflow: visible;
+}
+
+.ca-bar-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 120px;
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+
+.ca-axis-label {
+  font-size: 9px;
+  fill: #9ca3af;
+  font-family: inherit;
+}
+
+/* ─────────────────────────────────────────────────
+   Donut chart
+───────────────────────────────────────────────── */
+.ca-card--donut {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.ca-donut-svg {
+  width: 160px;
+  height: 160px;
+  display: block;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.ca-donut-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 160px;
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+
+.ca-donut-center-label {
+  font-size: 11px;
+  fill: #6b7280;
+  font-family: inherit;
+}
+
+.ca-donut-center-value {
+  font-size: 10px;
+  fill: #111827;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.ca-donut-breakdown {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.ca-donut-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+}
+
+.ca-donut-row-label {
+  flex: 1;
+  color: #374151;
+}
+
+.ca-donut-row-pct {
+  color: #6b7280;
+  min-width: 36px;
+  text-align: right;
+}
+
+.ca-donut-row-val {
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+  min-width: 80px;
+  text-align: right;
+  font-weight: 500;
+}
+
+/* ─────────────────────────────────────────────────
+   Table
+───────────────────────────────────────────────── */
+.ca-card--table {
+  overflow: hidden;
+}
+
+.ca-table-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 320px;
+}
+
+.ca-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.ca-table thead tr {
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.ca-table th {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.ca-th-num {
+  text-align: right !important;
+}
+
+.ca-table tbody tr:hover {
+  background: #f9fafb;
+}
+
+.ca-table td {
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+
+.ca-td-title {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-td-meta {
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.ca-td-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ca-td-total {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.ca-table-empty {
+  padding: 1.5rem 0;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+
+/* ─────────────────────────────────────────────────
+   Disclaimer
+───────────────────────────────────────────────── */
+.ca-disclaimer {
+  font-size: 0.72rem;
+  color: #9ca3af;
+  line-height: 1.5;
+  padding: 0 0.1rem;
+}

@@ -422,16 +422,27 @@ export default function InterpretationView() {
     }
   }, [playPcm])
 
+  const resolveActiveMeetingTitle = async () => {
+    try {
+      const meetingData = await getMeetingParticipants()
+      return meetingData.meetingTitle?.trim() || undefined
+    } catch {
+      return undefined
+    }
+  }
+
   const startSession = async () => {
     setError('')
     setIsLoading(true)
     try {
       ttsChunkIndexByTaskRef.current.clear()
+      const meetingTitle = await resolveActiveMeetingTitle()
 
       const res = await startInterpretation({
         userId,
         sourceLang: LANGUAGE.AUTO,
         targetLang: LANGUAGE.AUTO,
+        title: meetingTitle,
         voiceId: voiceId || undefined,
         hotwordIds: selectedHotwordIds,
         enabledLanguages,
@@ -579,13 +590,13 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">T</span>
             <span>术语表</span>
           </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.MEETING_MATERIALS }}>
-            <span className="si-side-action-icon">M</span>
-            <span>会议资料总结</span>
-          </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TEAMS_BOT }}>
             <span className="si-side-action-icon">T</span>
             <span>Teams Bot</span>
+          </button>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.COST_ANALYSIS }}>
+            <span className="si-side-action-icon">$</span>
+            <span>成本分析</span>
           </button>
           {lastSessionId && (
             <button

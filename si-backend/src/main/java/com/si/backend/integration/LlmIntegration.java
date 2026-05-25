@@ -68,6 +68,24 @@ public class LlmIntegration {
             + "3. 待办事项\n"
             + "Keep proper nouns unchanged.";
 
+    private static final String HOTWORD_EXTRACTION_SYSTEM_PROMPT =
+            "You are an NLP assistant. Extract named entities and domain-specific terms from the meeting transcript that would benefit ASR speech recognition accuracy.\n"
+            + "Return a JSON array where each element has exactly three string fields:\n"
+            + "  phrase: the exact term as it appears in the text\n"
+            + "  category: one of 人名 / 地名 / 组织名 / 专业术语\n"
+            + "  language: one of zh-CN / id-ID / en-US (the language the term naturally belongs to)\n"
+            + "Rules: maximum 30 items; skip common words and stop words; proper nouns and domain terms only.\n"
+            + "Output ONLY a valid JSON array with no explanation or markdown fences.";
+
+    private static final String DOCUMENT_SUMMARY_SYSTEM_PROMPT =
+            "你是一个专业的报告分析助手。请对以下报告内容进行结构化总结。\n"
+            + "总结应包含以下部分：\n"
+            + "1. 报告概要\n"
+            + "2. 核心内容\n"
+            + "3. 重点结论\n"
+            + "4. 关键数据与事实\n"
+            + "请使用中文输出，保留专有名词、数字和数据原样。";
+
     private static final String MATERIAL_SUMMARY_SYSTEM_PROMPT =
             "You are an executive meeting minutes assistant. Use the prepared agenda, reports, and live transcript together.\n"
             + "Write in polished Chinese. Preserve names, numbers, project names, regions, and bilingual terms.\n"
@@ -131,12 +149,51 @@ public class LlmIntegration {
      * @return meeting summary
      * @throws IOException when OpenAI does not return usable text
      */
-    public String summarizeMeeting(String text) throws IOException {
-        log.info("[LlmIntegration] summarizeMeeting start, model={}, textLen={}",
+    public String extractHotwordsJson(String text) throws IOException {
+        log.info("[LlmIntegration] extractHotwordsJson start, model={}, textLen={}",
                 openAiProperties.getSummaryModel(), text != null ? text.length() : 0);
         String result = createTextResponse(
                 openAiProperties.getSummaryModel(),
-                MEETING_SUMMARY_SYSTEM_PROMPT,
+                HOTWORD_EXTRACTION_SYSTEM_PROMPT,
+                text,
+                800L
+        );
+        log.info("[LlmIntegration] extractHotwordsJson end, resultLen={}", result.length());
+        return result;
+    }
+
+    public String summarizeDocument(String text, String requirements) throws IOException {
+        log.info("[LlmIntegration] summarizeDocument start, model={}, textLen={}, hasRequirements={}",
+                openAiProperties.getDocumentSummaryModel(), text != null ? text.length() : 0,
+                requirements != null && !requirements.isBlank());
+        String systemPrompt = (requirements != null && !requirements.isBlank())
+                ? DOCUMENT_SUMMARY_SYSTEM_PROMPT + "\n\n[额外要求]\n" + requirements.trim()
+                : DOCUMENT_SUMMARY_SYSTEM_PROMPT;
+        String result = createTextResponse(
+                openAiProperties.getDocumentSummaryModel(),
+                systemPrompt,
+                text,
+                openAiProperties.getDocumentSummaryMaxOutputTokens()
+        );
+        log.info("[LlmIntegration] summarizeDocument end, textLen={}, resultLen={}",
+                text != null ? text.length() : 0, result.length());
+        return result;
+    }
+
+    public String summarizeMeeting(String text) throws IOException {
+        return summarizeMeeting(text, null);
+    }
+
+    public String summarizeMeeting(String text, String customRequirements) throws IOException {
+        log.info("[LlmIntegration] summarizeMeeting start, model={}, textLen={}, hasCustomRequirements={}",
+                openAiProperties.getSummaryModel(), text != null ? text.length() : 0,
+                customRequirements != null && !customRequirements.isBlank());
+        String systemPrompt = (customRequirements != null && !customRequirements.isBlank())
+                ? MEETING_SUMMARY_SYSTEM_PROMPT + "\n\n[用户额外要求]\n" + customRequirements.trim()
+                : MEETING_SUMMARY_SYSTEM_PROMPT;
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                systemPrompt,
                 text,
                 openAiProperties.getSummaryMaxOutputTokens()
         );

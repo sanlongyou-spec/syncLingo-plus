@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 public class VoiceUsageRecordVo {
     private Long id;
     private String sessionId;
+    private String meetingTitle;
     private Long userId;
     private String voiceId;
     private String targetLang;

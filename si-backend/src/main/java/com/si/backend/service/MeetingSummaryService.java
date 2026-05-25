@@ -2,9 +2,9 @@ package com.si.backend.service;
 
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
-import com.si.backend.entity.InterpretationRecord;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.integration.LlmIntegration;
+import com.si.backend.vo.InterpretationResultItemVo;
 import com.si.backend.vo.MeetingSummaryVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class MeetingSummaryService {
 
-    private final InterpretationRecordService recordService;
+    private final InterpretationResultService resultService;
     private final LlmIntegration llmIntegration;
     private final InterpretationSessionService sessionService;
 
@@ -41,6 +41,7 @@ public class MeetingSummaryService {
             log.info("[MeetingSummaryService] getSummary hit cache, sessionId={}", sessionId);
             return MeetingSummaryVo.builder()
                     .sessionId(sessionId)
+                    .title(session.getTitle())
                     .summary(session.getMeetingSummary())
                     .recordCount(null)
                     .build();
@@ -51,9 +52,10 @@ public class MeetingSummaryService {
     /**
      * 强制重新生成纪要并覆盖缓存。
      */
-    public MeetingSummaryVo regenerateSummary(String sessionId) {
-        log.info("[MeetingSummaryService] regenerateSummary start, sessionId={}", sessionId);
-        return generateAndSave(sessionId);
+    public MeetingSummaryVo regenerateSummary(String sessionId, String customRequirements) {
+        log.info("[MeetingSummaryService] regenerateSummary start, sessionId={}, hasCustomRequirements={}",
+                sessionId, customRequirements != null && !customRequirements.isBlank());
+        return generateAndSave(sessionId, customRequirements);
     }
 
     /**
@@ -72,28 +74,34 @@ public class MeetingSummaryService {
     // ── private ──────────────────────────────────────────────────────────
 
     private MeetingSummaryVo generateAndSave(String sessionId) {
-        List<InterpretationRecord> records = recordService.getSessionRecords(sessionId);
-        if (records.isEmpty()) {
-            log.warn("[MeetingSummaryService] generateAndSave empty records, sessionId={}", sessionId);
+        return generateAndSave(sessionId, null);
+    }
+
+    private MeetingSummaryVo generateAndSave(String sessionId, String customRequirements) {
+        InterpretationSession session = sessionService.getSession(sessionId).orElse(null);
+        List<InterpretationResultItemVo> results = resultService.listBySessionId(sessionId);
+        if (results.isEmpty()) {
+            log.warn("[MeetingSummaryService] generateAndSave empty results, sessionId={}", sessionId);
             throw BizException.of(ErrorCode.NOT_FOUND, "该会话没有可生成纪要的同传记录");
         }
 
-        String meetingText = records.stream()
-                .map(r -> String.format("[%d][%s→%s] %s => %s",
-                        r.getSeq(), r.getSourceLang(), r.getTargetLang(),
-                        r.getSourceText(), r.getTargetText()))
+        String meetingText = results.stream()
+                .map(r -> String.format("[%s→%s] %s => %s",
+                        r.getSourceLang(), r.getTargetLang(),
+                        r.getSourceText(), r.getTranslatedText()))
                 .collect(Collectors.joining("\n"));
 
         try {
-            String summary = llmIntegration.summarizeMeeting(meetingText);
+            String summary = llmIntegration.summarizeMeeting(meetingText, customRequirements);
             sessionService.addLlmTokens(sessionId, estimateTokens(meetingText), estimateTokens(summary));
             sessionService.saveMeetingSummary(sessionId, summary);
-            log.info("[MeetingSummaryService] generateAndSave done, sessionId={}, recordCount={}, summaryLen={}",
-                    sessionId, records.size(), summary.length());
+            log.info("[MeetingSummaryService] generateAndSave done, sessionId={}, resultCount={}, summaryLen={}",
+                    sessionId, results.size(), summary.length());
             return MeetingSummaryVo.builder()
                     .sessionId(sessionId)
+                    .title(session != null ? session.getTitle() : null)
                     .summary(summary)
-                    .recordCount(records.size())
+                    .recordCount(results.size())
                     .build();
         } catch (IOException e) {
             log.error("[MeetingSummaryService] generateAndSave LLM failed, sessionId={}", sessionId, e);

@@ -1,23 +1,23 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import {
+  confirmHotwordsFromSession,
   createAsrHotword,
   createAsrHotwordsBatch,
   createHotwordsFromTerminology,
   createTerminology,
   deleteAsrHotword,
   deleteTerminology,
-  deleteUserGlossary,
   getAsrHotwords,
   getTerminologies,
-  getUserGlossaries,
-  saveUserGlossary,
+  getUserInterpretationSessions,
+  previewHotwordsFromSession,
   updateAsrHotword,
   updateAsrHotwordEnabled,
   updateTerminology,
   updateTerminologyEnabled,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
-import type { AsrHotword, Terminology, UserGlossaryConfig } from '../types'
+import type { AsrHotword, HotwordSuggestion, InterpretationStatus, Terminology } from '../types'
 import './InterpretationView.css'
 import './TerminologyView.css'
 
@@ -41,29 +41,35 @@ const EMPTY_HOTWORD_FORM: AsrHotword = {
   enabled: true,
 }
 
-const EMPTY_GLOSSARY_FORM: UserGlossaryConfig = {
-  sourceLang: 'zh-CN',
-  targetLang: 'id',
-  glossaryId: '',
-  enabled: true,
-}
-
 type Filter = 'all' | 'enabled' | 'disabled'
-type Tab = 'terminology' | 'hotwords' | 'glossaries'
+type Tab = 'terminology' | 'hotwords'
+type ExtractStep = 'pick' | 'preview'
+
+function groupBy<T>(items: T[], key: (item: T) => string): [string, T[]][] {
+  const map: Record<string, T[]> = {}
+  for (const item of items) {
+    const k = key(item).trim() || '未分类'
+    if (!map[k]) map[k] = []
+    map[k].push(item)
+  }
+  return Object.entries(map).sort(([a], [b]) => {
+    if (a === '未分类') return 1
+    if (b === '未分类') return -1
+    return a.localeCompare(b, 'zh')
+  })
+}
 
 export default function TerminologyView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
   const [activeTab, setActiveTab] = useState<Tab>('terminology')
   const [terms, setTerms] = useState<Terminology[]>([])
   const [hotwords, setHotwords] = useState<AsrHotword[]>([])
-  const [glossaries, setGlossaries] = useState<UserGlossaryConfig[]>([])
   const [keyword, setKeyword] = useState('')
   const [enabledFilter, setEnabledFilter] = useState<Filter>('all')
   const [languageFilter, setLanguageFilter] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [termForm, setTermForm] = useState<Terminology>(EMPTY_TERM_FORM)
   const [hotwordForm, setHotwordForm] = useState<AsrHotword>(EMPTY_HOTWORD_FORM)
-  const [glossaryForm, setGlossaryForm] = useState<UserGlossaryConfig>(EMPTY_GLOSSARY_FORM)
   const [bulkHotwords, setBulkHotwords] = useState('')
   const [editingTermId, setEditingTermId] = useState<number | null>(null)
   const [editingHotwordId, setEditingHotwordId] = useState<number | null>(null)
@@ -71,11 +77,31 @@ export default function TerminologyView() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  const [collapsedTermGroups, setCollapsedTermGroups] = useState<Set<string>>(new Set())
+  const [collapsedHwGroups, setCollapsedHwGroups] = useState<Set<string>>(new Set())
+
+  const [extractModal, setExtractModal] = useState(false)
+  const [extractStep, setExtractStep] = useState<ExtractStep>('pick')
+  const [extractSessions, setExtractSessions] = useState<InterpretationStatus[]>([])
+  const [extractSessionId, setExtractSessionId] = useState('')
+  const [extractSuggestions, setExtractSuggestions] = useState<HotwordSuggestion[]>([])
+  const [extractSelected, setExtractSelected] = useState<Set<string>>(new Set())
+  const [extractLoading, setExtractLoading] = useState(false)
+
   const enabledParam = useMemo(() => {
     if (enabledFilter === 'enabled') return true
     if (enabledFilter === 'disabled') return false
     return undefined
   }, [enabledFilter])
+
+  const groupedTerms = useMemo(
+    () => groupBy(terms, t => t.category || ''),
+    [terms]
+  )
+  const groupedHotwords = useMemo(
+    () => groupBy(hotwords, h => h.category || ''),
+    [hotwords]
+  )
 
   const loadItems = async () => {
     setLoading(true)
@@ -84,12 +110,9 @@ export default function TerminologyView() {
       if (activeTab === 'terminology') {
         const res = await getTerminologies(userId, keyword, enabledParam)
         setTerms(res.data || [])
-      } else if (activeTab === 'hotwords') {
+      } else {
         const res = await getAsrHotwords(userId, keyword, enabledParam, languageFilter, categoryFilter)
         setHotwords(res.data || [])
-      } else {
-        const res = await getUserGlossaries(userId)
-        setGlossaries(res.data || [])
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
@@ -101,6 +124,84 @@ export default function TerminologyView() {
   useEffect(() => {
     void loadItems()
   }, [activeTab])
+
+  const toggleTermGroup = (cat: string) =>
+    setCollapsedTermGroups(prev => {
+      const next = new Set(prev)
+      next.has(cat) ? next.delete(cat) : next.add(cat)
+      return next
+    })
+
+  const toggleHwGroup = (cat: string) =>
+    setCollapsedHwGroups(prev => {
+      const next = new Set(prev)
+      next.has(cat) ? next.delete(cat) : next.add(cat)
+      return next
+    })
+
+  const openExtractModal = async () => {
+    setExtractModal(true)
+    setExtractStep('pick')
+    setExtractSessionId('')
+    setExtractSuggestions([])
+    setExtractSelected(new Set())
+    setExtractLoading(true)
+    try {
+      const res = await getUserInterpretationSessions(userId)
+      setExtractSessions((res.data || []).filter(s => s.status === 'STOPPED').slice(0, 20))
+    } catch {
+      setExtractSessions([])
+    } finally {
+      setExtractLoading(false)
+    }
+  }
+
+  const previewExtract = async () => {
+    if (!extractSessionId) return
+    setExtractLoading(true)
+    setError('')
+    try {
+      const res = await previewHotwordsFromSession(extractSessionId, userId)
+      const suggestions = res.data || []
+      setExtractSuggestions(suggestions)
+      setExtractSelected(new Set(
+        suggestions.filter(s => !s.exists).map(s => `${s.phrase}__${s.language}`)
+      ))
+      setExtractStep('preview')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '分析失败')
+    } finally {
+      setExtractLoading(false)
+    }
+  }
+
+  const toggleExtractItem = (key: string) =>
+    setExtractSelected(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+
+  const selectAllNew = () =>
+    setExtractSelected(new Set(
+      extractSuggestions.filter(s => !s.exists).map(s => `${s.phrase}__${s.language}`)
+    ))
+
+  const confirmExtract = async () => {
+    const selected = extractSuggestions.filter(s => extractSelected.has(`${s.phrase}__${s.language}`))
+    if (selected.length === 0) { setExtractModal(false); return }
+    setExtractLoading(true)
+    try {
+      await confirmHotwordsFromSession(userId, selected)
+      setExtractModal(false)
+      setActiveTab('hotwords')
+      await loadItems()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '添加失败')
+    } finally {
+      setExtractLoading(false)
+    }
+  }
 
   const submitTerm = async (event: FormEvent) => {
     event.preventDefault()
@@ -146,24 +247,8 @@ export default function TerminologyView() {
     }
   }
 
-  const submitGlossary = async (event: FormEvent) => {
-    event.preventDefault()
-    setSaving(true)
-    setError('')
-    try {
-      if (!glossaryForm.glossaryId) throw new Error('请填写 glossaryId')
-      await saveUserGlossary(userId, glossaryForm)
-      setGlossaryForm(EMPTY_GLOSSARY_FORM)
-      await loadItems()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '保存 glossary 失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   const submitBulkHotwords = async () => {
-    const rows = bulkHotwords.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    const rows = bulkHotwords.split(/\r?\n/).map(v => v.trim()).filter(Boolean)
     if (rows.length === 0) return
     await createAsrHotwordsBatch(userId, rows.map(phrase => ({
       phrase,
@@ -198,12 +283,6 @@ export default function TerminologyView() {
     await loadItems()
   }
 
-  const removeGlossary = async (item: UserGlossaryConfig) => {
-    if (!item.id || !window.confirm('删除这个 glossary 配置？')) return
-    await deleteUserGlossary(userId, item.id)
-    await loadItems()
-  }
-
   const toggleTermEnabled = async (item: Terminology) => {
     if (!item.id) return
     await updateTerminologyEnabled(userId, item.id, item.enabled === false)
@@ -222,12 +301,15 @@ export default function TerminologyView() {
     setActiveTab('hotwords')
   }
 
+  const LANG_LABEL: Record<string, string> = { 'zh-CN': '中文', 'id-ID': '印尼语', 'en-US': '英语' }
+  const SOURCE_LABEL: Record<string, string> = { TERMINOLOGY: '术语', MANUAL: '手工', AUTO_EXTRACTED: '自动' }
+
   return (
     <div className="si-root">
       <header className="si-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">语言资产</h1>
-          <span className="si-brand-sub">术语、ASR 热词和 glossary 按当前用户隔离</span>
+          <span className="si-brand-sub">术语和 ASR 热词按当前用户隔离</span>
         </div>
         <div className="si-topbar-right">
           <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.HOME }}>返回同传</button>
@@ -237,27 +319,27 @@ export default function TerminologyView() {
       <div className="asset-tabs">
         <button className={activeTab === 'terminology' ? 'is-active' : ''} onClick={() => setActiveTab('terminology')}>术语</button>
         <button className={activeTab === 'hotwords' ? 'is-active' : ''} onClick={() => setActiveTab('hotwords')}>ASR 热词</button>
-        <button className={activeTab === 'glossaries' ? 'is-active' : ''} onClick={() => setActiveTab('glossaries')}>Glossary</button>
       </div>
 
       <main className="terminology-main">
+        {/* ── 左侧编辑面板 ── */}
         {activeTab === 'terminology' && (
           <section className="terminology-editor">
             <h2>{editingTermId ? '编辑术语' : '新增术语'}</h2>
             <form onSubmit={submitTerm}>
-              <label>中文<input value={termForm.termZh || ''} onChange={event => setTermForm(prev => ({ ...prev, termZh: event.target.value }))} /></label>
-              <label>印尼语<input value={termForm.termId || ''} onChange={event => setTermForm(prev => ({ ...prev, termId: event.target.value }))} /></label>
-              <label>英语<input value={termForm.termEn || ''} onChange={event => setTermForm(prev => ({ ...prev, termEn: event.target.value }))} /></label>
-              <label>拼音<input value={termForm.pinyin || ''} onChange={event => setTermForm(prev => ({ ...prev, pinyin: event.target.value }))} /></label>
-              <label>分类<input value={termForm.category || ''} onChange={event => setTermForm(prev => ({ ...prev, category: event.target.value }))} /></label>
+              <label>中文<input value={termForm.termZh || ''} onChange={e => setTermForm(p => ({ ...p, termZh: e.target.value }))} /></label>
+              <label>印尼语<input value={termForm.termId || ''} onChange={e => setTermForm(p => ({ ...p, termId: e.target.value }))} /></label>
+              <label>英语<input value={termForm.termEn || ''} onChange={e => setTermForm(p => ({ ...p, termEn: e.target.value }))} /></label>
+              <label>拼音<input value={termForm.pinyin || ''} onChange={e => setTermForm(p => ({ ...p, pinyin: e.target.value }))} /></label>
+              <label>分类<input value={termForm.category || ''} onChange={e => setTermForm(p => ({ ...p, category: e.target.value }))} placeholder="如：人名、地名、专业术语" /></label>
               <label>审核状态
-                <select value={termForm.reviewStatus || 'APPROVED'} onChange={event => setTermForm(prev => ({ ...prev, reviewStatus: event.target.value }))}>
+                <select value={termForm.reviewStatus || 'APPROVED'} onChange={e => setTermForm(p => ({ ...p, reviewStatus: e.target.value }))}>
                   <option value="APPROVED">已审核</option>
                   <option value="NEED_REVIEW">待审核</option>
                 </select>
               </label>
-              <label className="terminology-editor-note">备注<textarea value={termForm.note || ''} onChange={event => setTermForm(prev => ({ ...prev, note: event.target.value }))} /></label>
-              <label className="terminology-toggle"><input type="checkbox" checked={termForm.enabled !== false} onChange={event => setTermForm(prev => ({ ...prev, enabled: event.target.checked }))} />启用</label>
+              <label className="terminology-editor-note">备注<textarea value={termForm.note || ''} onChange={e => setTermForm(p => ({ ...p, note: e.target.value }))} /></label>
+              <label className="terminology-toggle"><input type="checkbox" checked={termForm.enabled !== false} onChange={e => setTermForm(p => ({ ...p, enabled: e.target.checked }))} />启用</label>
               <div className="terminology-editor-actions">
                 <button type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>
                 {editingTermId && <button type="button" onClick={() => { setEditingTermId(null); setTermForm(EMPTY_TERM_FORM) }}>取消</button>}
@@ -270,65 +352,47 @@ export default function TerminologyView() {
           <section className="terminology-editor">
             <h2>{editingHotwordId ? '编辑热词' : '新增热词'}</h2>
             <form onSubmit={submitHotword}>
-              <label>热词<input value={hotwordForm.phrase || ''} onChange={event => setHotwordForm(prev => ({ ...prev, phrase: event.target.value }))} /></label>
+              <label>热词<input value={hotwordForm.phrase || ''} onChange={e => setHotwordForm(p => ({ ...p, phrase: e.target.value }))} /></label>
               <label>语种
-                <select value={hotwordForm.language || ''} onChange={event => setHotwordForm(prev => ({ ...prev, language: event.target.value }))}>
+                <select value={hotwordForm.language || ''} onChange={e => setHotwordForm(p => ({ ...p, language: e.target.value }))}>
                   <option value="zh-CN">中文</option><option value="id-ID">印尼语</option><option value="en-US">英语</option>
                 </select>
               </label>
-              <label>分类<input value={hotwordForm.category || ''} onChange={event => setHotwordForm(prev => ({ ...prev, category: event.target.value }))} /></label>
-              <label>权重<input type="number" min="0.1" max="2" step="0.1" value={hotwordForm.weight ?? 1} onChange={event => setHotwordForm(prev => ({ ...prev, weight: Number(event.target.value) }))} /></label>
-              <label className="terminology-toggle"><input type="checkbox" checked={hotwordForm.enabled !== false} onChange={event => setHotwordForm(prev => ({ ...prev, enabled: event.target.checked }))} />启用</label>
+              <label>分类<input value={hotwordForm.category || ''} onChange={e => setHotwordForm(p => ({ ...p, category: e.target.value }))} placeholder="如：人名、地名、专业术语" /></label>
+              <label>权重<input type="number" min="0.1" max="2" step="0.1" value={hotwordForm.weight ?? 1} onChange={e => setHotwordForm(p => ({ ...p, weight: Number(e.target.value) }))} /></label>
+              <label className="terminology-toggle"><input type="checkbox" checked={hotwordForm.enabled !== false} onChange={e => setHotwordForm(p => ({ ...p, enabled: e.target.checked }))} />启用</label>
               <div className="terminology-editor-actions">
                 <button type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>
                 {editingHotwordId && <button type="button" onClick={() => { setEditingHotwordId(null); setHotwordForm(EMPTY_HOTWORD_FORM) }}>取消</button>}
               </div>
-              <label className="terminology-editor-note">批量新增<textarea value={bulkHotwords} onChange={event => setBulkHotwords(event.target.value)} placeholder="每行一个热词" /></label>
+              <label className="terminology-editor-note">批量新增<textarea value={bulkHotwords} onChange={e => setBulkHotwords(e.target.value)} placeholder="每行一个热词" /></label>
               <div className="terminology-editor-actions"><button type="button" onClick={() => { void submitBulkHotwords() }}>批量导入</button></div>
             </form>
           </section>
         )}
 
-        {activeTab === 'glossaries' && (
-          <section className="terminology-editor">
-            <h2>用户 Glossary</h2>
-            <form onSubmit={submitGlossary}>
-              <label>源语种
-                <select value={glossaryForm.sourceLang || 'zh-CN'} onChange={event => setGlossaryForm(prev => ({ ...prev, sourceLang: event.target.value }))}>
-                  <option value="zh-CN">中文</option><option value="id">印尼语</option><option value="en">英语</option>
-                </select>
-              </label>
-              <label>目标语种
-                <select value={glossaryForm.targetLang || 'id'} onChange={event => setGlossaryForm(prev => ({ ...prev, targetLang: event.target.value }))}>
-                  <option value="zh-CN">中文</option><option value="id">印尼语</option><option value="en">英语</option>
-                </select>
-              </label>
-              <label>Glossary ID<input value={glossaryForm.glossaryId || ''} onChange={event => setGlossaryForm(prev => ({ ...prev, glossaryId: event.target.value }))} /></label>
-              <label className="terminology-toggle"><input type="checkbox" checked={glossaryForm.enabled !== false} onChange={event => setGlossaryForm(prev => ({ ...prev, enabled: event.target.checked }))} />启用</label>
-              <div className="terminology-editor-actions"><button type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button></div>
-            </form>
-          </section>
-        )}
-
+        {/* ── 右侧列表面板 ── */}
         <section className="terminology-table-panel">
-          {activeTab !== 'glossaries' && (
-            <form className="terminology-toolbar" onSubmit={event => { event.preventDefault(); void loadItems() }}>
-              <input value={keyword} onChange={event => setKeyword(event.target.value)} placeholder={activeTab === 'terminology' ? '搜索术语或分类' : '搜索热词或分类'} />
-              <select value={enabledFilter} onChange={event => setEnabledFilter(event.target.value as Filter)}>
-                <option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option>
-              </select>
-              {activeTab === 'hotwords' && (
-                <>
-                  <select value={languageFilter} onChange={event => setLanguageFilter(event.target.value)}>
-                    <option value="">全部语种</option><option value="zh-CN">中文</option><option value="id-ID">印尼语</option><option value="en-US">英语</option>
-                  </select>
-                  <input value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)} placeholder="分类" />
-                </>
-              )}
-              <button type="submit">查询</button>
-            </form>
-          )}
+          <form className="terminology-toolbar" onSubmit={e => { e.preventDefault(); void loadItems() }}>
+            <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder={activeTab === 'terminology' ? '搜索术语或分类' : '搜索热词或分类'} />
+            <select value={enabledFilter} onChange={e => setEnabledFilter(e.target.value as Filter)}>
+              <option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option>
+            </select>
+            {activeTab === 'hotwords' && (
+              <>
+                <select value={languageFilter} onChange={e => setLanguageFilter(e.target.value)}>
+                  <option value="">全部语种</option><option value="zh-CN">中文</option><option value="id-ID">印尼语</option><option value="en-US">英语</option>
+                </select>
+                <input value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} placeholder="分类" style={{ maxWidth: 80 }} />
+              </>
+            )}
+            <button type="submit">查询</button>
+            {activeTab === 'hotwords' && (
+              <button type="button" className="extract-btn" onClick={() => { void openExtractModal() }}>从历史提取热词</button>
+            )}
+          </form>
           {error && <div className="terminology-error">{error}</div>}
+
           <div className="terminology-table-wrap">
             {activeTab === 'terminology' && (
               <table>
@@ -336,46 +400,67 @@ export default function TerminologyView() {
                 <tbody>
                   {loading && <tr><td colSpan={7}>加载中...</td></tr>}
                   {!loading && terms.length === 0 && <tr><td colSpan={7}>暂无术语</td></tr>}
-                  {terms.map(item => (
-                    <tr key={item.id}>
-                      <td>{item.termZh || '-'}</td><td>{item.termId || '-'}</td><td>{item.termEn || '-'}</td><td>{item.category || '-'}</td>
-                      <td><span className={item.enabled === false ? 'is-disabled' : 'is-enabled'}>{item.enabled === false ? '停用' : '启用'}</span>{item.reviewStatus === 'NEED_REVIEW' ? ' / 待审核' : ''}</td>
-                      <td>{item.sourceSheet ? `${item.sourceSheet}:${item.sourceRow || ''}` : '手工'}</td>
-                      <td><button onClick={() => editTerm(item)}>编辑</button><button onClick={() => { void addAsHotwords(item) }}>加入热词</button><button onClick={() => { void toggleTermEnabled(item) }}>{item.enabled === false ? '启用' : '停用'}</button><button onClick={() => { void removeTerm(item) }}>删除</button></td>
-                    </tr>
+                  {!loading && groupedTerms.map(([cat, items]) => (
+                    <>
+                      <tr key={`g-${cat}`} className="term-group-header" onClick={() => toggleTermGroup(cat)}>
+                        <td colSpan={7}>
+                          <span className="term-group-toggle">{collapsedTermGroups.has(cat) ? '▶' : '▼'}</span>
+                          <span className="term-group-name">{cat}</span>
+                          <span className="term-group-count">{items.length} 条</span>
+                        </td>
+                      </tr>
+                      {!collapsedTermGroups.has(cat) && items.map(item => (
+                        <tr key={item.id}>
+                          <td>{item.termZh || '-'}</td><td>{item.termId || '-'}</td><td>{item.termEn || '-'}</td>
+                          <td>{item.category || '-'}</td>
+                          <td><span className={item.enabled === false ? 'is-disabled' : 'is-enabled'}>{item.enabled === false ? '停用' : '启用'}</span>{item.reviewStatus === 'NEED_REVIEW' ? ' / 待审核' : ''}</td>
+                          <td>{item.sourceSheet ? `${item.sourceSheet}:${item.sourceRow || ''}` : '手工'}</td>
+                          <td>
+                            <button onClick={() => editTerm(item)}>编辑</button>
+                            <button onClick={() => { void addAsHotwords(item) }}>加入热词</button>
+                            <button onClick={() => { void toggleTermEnabled(item) }}>{item.enabled === false ? '启用' : '停用'}</button>
+                            <button onClick={() => { void removeTerm(item) }}>删除</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </>
                   ))}
                 </tbody>
               </table>
             )}
+
             {activeTab === 'hotwords' && (
               <table>
                 <thead><tr><th>热词</th><th>语种</th><th>分类</th><th>权重</th><th>来源</th><th>最近使用</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody>
                   {loading && <tr><td colSpan={8}>加载中...</td></tr>}
                   {!loading && hotwords.length === 0 && <tr><td colSpan={8}>暂无热词</td></tr>}
-                  {hotwords.map(item => (
-                    <tr key={item.id}>
-                      <td>{item.phrase || '-'}</td><td>{item.language || '-'}</td><td>{item.category || '-'}</td><td>{item.weight ?? 1}</td>
-                      <td>{item.sourceType === 'TERMINOLOGY' ? '术语' : '手工'}</td><td>{item.lastUsedTime ? item.lastUsedTime.replace('T', ' ') : '-'}</td>
-                      <td><span className={item.enabled === false ? 'is-disabled' : 'is-enabled'}>{item.enabled === false ? '停用' : '启用'}</span></td>
-                      <td><button onClick={() => editHotword(item)}>编辑</button><button onClick={() => { void toggleHotwordEnabled(item) }}>{item.enabled === false ? '启用' : '停用'}</button><button onClick={() => { void removeHotword(item) }}>删除</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {activeTab === 'glossaries' && (
-              <table>
-                <thead><tr><th>源语种</th><th>目标语种</th><th>Glossary ID</th><th>状态</th><th>操作</th></tr></thead>
-                <tbody>
-                  {loading && <tr><td colSpan={5}>加载中...</td></tr>}
-                  {!loading && glossaries.length === 0 && <tr><td colSpan={5}>暂无 glossary 配置</td></tr>}
-                  {glossaries.map(item => (
-                    <tr key={item.id}>
-                      <td>{item.sourceLang}</td><td>{item.targetLang}</td><td>{item.glossaryId}</td>
-                      <td><span className={item.enabled === false ? 'is-disabled' : 'is-enabled'}>{item.enabled === false ? '停用' : '启用'}</span></td>
-                      <td><button onClick={() => { void removeGlossary(item) }}>删除</button></td>
-                    </tr>
+                  {!loading && groupedHotwords.map(([cat, items]) => (
+                    <>
+                      <tr key={`g-${cat}`} className="term-group-header" onClick={() => toggleHwGroup(cat)}>
+                        <td colSpan={8}>
+                          <span className="term-group-toggle">{collapsedHwGroups.has(cat) ? '▶' : '▼'}</span>
+                          <span className="term-group-name">{cat}</span>
+                          <span className="term-group-count">{items.length} 条</span>
+                        </td>
+                      </tr>
+                      {!collapsedHwGroups.has(cat) && items.map(item => (
+                        <tr key={item.id}>
+                          <td>{item.phrase || '-'}</td>
+                          <td>{LANG_LABEL[item.language || ''] || item.language || '-'}</td>
+                          <td>{item.category || '-'}</td>
+                          <td>{item.weight ?? 1}</td>
+                          <td>{SOURCE_LABEL[item.sourceType || ''] || item.sourceType || '-'}</td>
+                          <td>{item.lastUsedTime ? item.lastUsedTime.replace('T', ' ').slice(0, 16) : '-'}</td>
+                          <td><span className={item.enabled === false ? 'is-disabled' : 'is-enabled'}>{item.enabled === false ? '停用' : '启用'}</span></td>
+                          <td>
+                            <button onClick={() => editHotword(item)}>编辑</button>
+                            <button onClick={() => { void toggleHotwordEnabled(item) }}>{item.enabled === false ? '启用' : '停用'}</button>
+                            <button onClick={() => { void removeHotword(item) }}>删除</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </>
                   ))}
                 </tbody>
               </table>
@@ -383,6 +468,83 @@ export default function TerminologyView() {
           </div>
         </section>
       </main>
+
+      {/* ── 热词提取模态框 ── */}
+      {extractModal && (
+        <div className="extract-modal-overlay" onClick={() => setExtractModal(false)}>
+          <div className="extract-modal" onClick={e => e.stopPropagation()}>
+            <div className="extract-modal-header">
+              <span className="extract-modal-title">从历史会话提取热词</span>
+              <button className="extract-modal-close" onClick={() => setExtractModal(false)}>✕</button>
+            </div>
+
+            {extractStep === 'pick' && (
+              <div className="extract-modal-body">
+                <p className="extract-hint">选择一个已结束的会话，AI 将从会议文本中识别人名、地名、组织名和专业术语。</p>
+                {extractLoading ? (
+                  <div className="extract-loading">加载会话列表...</div>
+                ) : extractSessions.length === 0 ? (
+                  <div className="extract-loading">暂无已结束的会话</div>
+                ) : (
+                  <select className="extract-session-select" value={extractSessionId} onChange={e => setExtractSessionId(e.target.value)}>
+                    <option value="">-- 选择会话 --</option>
+                    {extractSessions.map(s => (
+                      <option key={s.sessionId} value={s.sessionId}>
+                        {s.title || '未命名同传'} · {s.startTime ? new Date(s.startTime).toLocaleDateString() : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <div className="extract-modal-actions">
+                  <button onClick={() => setExtractModal(false)}>取消</button>
+                  <button className="extract-btn-primary" disabled={!extractSessionId || extractLoading} onClick={() => { void previewExtract() }}>
+                    {extractLoading ? '分析中...' : '开始分析'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {extractStep === 'preview' && (
+              <div className="extract-modal-body">
+                <div className="extract-preview-toolbar">
+                  <span className="extract-hint">共识别 {extractSuggestions.length} 个词汇，选择要添加的项目：</span>
+                  <button onClick={selectAllNew}>仅选新词</button>
+                </div>
+                <div className="extract-suggestion-list">
+                  {extractSuggestions.length === 0 && (
+                    <div className="extract-loading">未识别到有效词汇</div>
+                  )}
+                  {extractSuggestions.map(s => {
+                    const key = `${s.phrase}__${s.language}`
+                    return (
+                      <label key={key} className="extract-suggestion-item">
+                        <input
+                          type="checkbox"
+                          checked={extractSelected.has(key)}
+                          disabled={!!s.exists}
+                          onChange={() => toggleExtractItem(key)}
+                        />
+                        <span className="extract-phrase">{s.phrase}</span>
+                        <span className="extract-cat">{s.category}</span>
+                        <span className="extract-lang">{LANG_LABEL[s.language] || s.language}</span>
+                        {s.exists
+                          ? <span className="badge-exists">已存在</span>
+                          : <span className="badge-new">新增</span>}
+                      </label>
+                    )
+                  })}
+                </div>
+                <div className="extract-modal-actions">
+                  <button onClick={() => setExtractStep('pick')}>重新选择</button>
+                  <button className="extract-btn-primary" disabled={extractSelected.size === 0 || extractLoading} onClick={() => { void confirmExtract() }}>
+                    {extractLoading ? '添加中...' : `确认添加 ${extractSelected.size} 个热词`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

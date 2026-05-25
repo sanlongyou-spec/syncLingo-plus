@@ -32,6 +32,7 @@ export interface StartInterpretationParams {
   userId: number
   sourceLang: string
   targetLang: string
+  title?: string
   voiceId?: string
   hotwordIds?: number[]
   enabledLanguages?: string[]
@@ -57,21 +58,44 @@ export interface InterpretationStatus {
 
 export interface MeetingSummaryVo {
   sessionId: string
+  title?: string
   summary: string
   recordCount: number | null
 }
 
-export interface MeetingMaterial {
-  id?: number
-  sessionId?: string
-  title?: string
-  agendaText?: string
-  reportText?: string
-  executiveNames?: string
-  summaryText?: string
-  recordCount?: number
-  createTime?: string
-  updateTime?: string
+export interface PreMeetingFile {
+  fileId: string
+  fileName: string
+}
+
+export interface PreMeetingSummaryResult {
+  fileId: string
+  fileName: string
+  summary: string
+  extractedText: string
+}
+
+export interface PreMeetingAttendanceRow {
+  name?: string | null
+  department?: string | null
+  role?: string | null
+  email?: string | null
+  actualName?: string | null
+  actualEmail?: string | null
+  status: 'present' | 'absent' | 'unexpected' | string
+  sourceText?: string | null
+}
+
+export interface PreMeetingAttendanceResult {
+  fileId: string
+  fileName: string
+  meetingTitle?: string | null
+  expectedCount: number
+  actualCount: number
+  presentCount: number
+  absentCount: number
+  unexpectedCount: number
+  rows: PreMeetingAttendanceRow[]
 }
 
 export interface TeamsSummarySendTarget {
@@ -103,12 +127,14 @@ export interface MeetingParticipant {
 export interface MeetingParticipantsResponse {
   callId?: string | null
   threadId?: string | null
+  meetingTitle?: string | null
   participants: MeetingParticipant[]
 }
 
 export interface InterpretationResultItem {
   id: number
   sessionId: string
+  meetingTitle?: string
   sourceText: string
   translatedText: string
   sourceLang?: string
@@ -198,13 +224,17 @@ export interface AsrHotword {
   lastUsedTime?: string
 }
 
-export interface UserGlossaryConfig {
-  id?: number
-  userId?: number
-  sourceLang?: string
-  targetLang?: string
-  glossaryId?: string
-  enabled?: boolean
+export interface HotwordSuggestion {
+  phrase: string
+  category: string
+  language: string
+  exists?: boolean
+}
+
+export interface PreMeetingDailyUsage {
+  date: string
+  llmInputTokens: number
+  llmOutputTokens: number
 }
 
 export interface UserLanguagePreference {

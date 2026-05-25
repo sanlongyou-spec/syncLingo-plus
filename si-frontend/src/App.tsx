@@ -8,8 +8,8 @@ import LoginView from './views/LoginView'
 import ShareView from './views/ShareView'
 import HistoryView from './views/HistoryView'
 import TerminologyView from './views/TerminologyView'
-import MeetingMaterialsView from './views/MeetingMaterialsView'
 import TeamsBotView from './views/TeamsBotView'
+import CostAnalysisView from './views/CostAnalysisView'
 import { STORAGE_KEYS, ROUTES } from './constants'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -42,14 +42,14 @@ function AuthenticatedWorkspace() {
           <TerminologyView />
         </div>
       )}
-      {location.pathname === '/meeting-materials' && (
-        <div className="route-overlay" role="dialog" aria-modal="true">
-          <MeetingMaterialsView />
-        </div>
-      )}
       {location.pathname === '/teams-bot' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
           <TeamsBotView />
+        </div>
+      )}
+      {location.pathname === '/cost-analysis' && (
+        <div className="route-overlay" role="dialog" aria-modal="true">
+          <CostAnalysisView />
         </div>
       )}
     </>

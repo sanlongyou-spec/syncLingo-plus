@@ -9,6 +9,10 @@ server:
 spring:
   application:
     name: si-backend
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:dev}
   datasource:
@@ -34,6 +38,8 @@ logging:
   level:
     root: INFO
     com.si.backend: DEBUG
+    org.apache.pdfbox: WARN
+    org.apache.fontbox: WARN
   pattern:
     console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
     file: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
@@ -75,18 +81,6 @@ speaker:
 google:
   translate:
     api-key: ${GOOGLE_TRANSLATE_API_KEY:}
-    glossary-enabled: ${GOOGLE_TRANSLATE_GLOSSARY_ENABLED:false}
-    project-id: ${GOOGLE_TRANSLATE_PROJECT_ID:}
-    location: ${GOOGLE_TRANSLATE_LOCATION:us-central1}
-    glossary-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID:}
-    glossary-zh-to-id-id: ${GOOGLE_TRANSLATE_GLOSSARY_ZH_TO_ID_ID:}
-    glossary-id-to-zh-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID_TO_ZH_ID:}
-    glossary-zh-to-en-id: ${GOOGLE_TRANSLATE_GLOSSARY_ZH_TO_EN_ID:}
-    glossary-en-to-zh-id: ${GOOGLE_TRANSLATE_GLOSSARY_EN_TO_ZH_ID:}
-    glossary-id-to-en-id: ${GOOGLE_TRANSLATE_GLOSSARY_ID_TO_EN_ID:}
-    glossary-en-to-id-id: ${GOOGLE_TRANSLATE_GLOSSARY_EN_TO_ID_ID:}
-    glossary-ignore-case: ${GOOGLE_TRANSLATE_GLOSSARY_IGNORE_CASE:true}
-    glossary-fallback-enabled: ${GOOGLE_TRANSLATE_GLOSSARY_FALLBACK_ENABLED:true}
 openai:
   api-key: ${OPENAI_API_KEY:}
   base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
@@ -99,8 +93,10 @@ openai:
   compression-zh-to-en-enabled: ${OPENAI_COMPRESSION_ZH_TO_EN_ENABLED:true}
   compression-zh-to-en-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_EN_TARGET_RATIO:0.85}
   summary-model: ${OPENAI_SUMMARY_MODEL:gpt-5-mini}
+  document-summary-model: ${OPENAI_DOCUMENT_SUMMARY_MODEL:gpt-5}
   compression-max-output-tokens: ${OPENAI_COMPRESSION_MAX_OUTPUT_TOKENS:512}
   summary-max-output-tokens: ${OPENAI_SUMMARY_MAX_OUTPUT_TOKENS:1200}
+  document-summary-max-output-tokens: ${OPENAI_DOCUMENT_SUMMARY_MAX_OUTPUT_TOKENS:4000}
 
 cartesia:
   api-key: ${CARTESIA_API_KEY:}

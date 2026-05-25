@@ -27,10 +27,19 @@ public class MeetingSummaryController {
     }
 
     @PostMapping("/{sessionId}")
-    public Result<MeetingSummaryVo> regenerateSummary(@PathVariable String sessionId) {
+    public Result<MeetingSummaryVo> regenerateSummary(
+            @PathVariable String sessionId,
+            @RequestBody(required = false) RegenerateSummaryRequest request) {
         log.info("[MeetingSummaryController] regenerateSummary start, sessionId={}", sessionId);
-        MeetingSummaryVo summary = facade.regenerateSummary(sessionId);
+        String customRequirements = request != null ? request.getCustomRequirements() : null;
+        MeetingSummaryVo summary = facade.regenerateSummary(sessionId, customRequirements);
         log.info("[MeetingSummaryController] regenerateSummary end, sessionId={}", sessionId);
         return Result.ok(summary);
+    }
+
+    public static class RegenerateSummaryRequest {
+        private String customRequirements;
+        public String getCustomRequirements() { return customRequirements; }
+        public void setCustomRequirements(String customRequirements) { this.customRequirements = customRequirements; }
     }
 }

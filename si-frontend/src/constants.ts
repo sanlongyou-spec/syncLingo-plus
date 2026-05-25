@@ -14,14 +14,15 @@ export const ROUTES = {
   VOICE_CLONE: '#/voice-clone',
   HISTORY: '#/history',
   TERMINOLOGY: '#/terminology',
-  MEETING_MATERIALS: '#/meeting-materials',
   TEAMS_BOT: '#/teams-bot',
+  COST_ANALYSIS: '#/cost-analysis',
 } as const
 
 export const TEAMS_BOT_STORAGE_KEYS = {
   RECIPIENTS: 'si_teams_recipients',
   RECIPIENT_HISTORY: 'si_teams_recipient_history',
   MEETING_LINK: 'si_teams_last_meeting_link',
+  PRE_MEETING_DEFAULT_REQ: 'si_pre_meeting_default_req',
 } as const
 
 export const HTTP_STATUS = {

@@ -40,26 +40,6 @@ const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
   URL.revokeObjectURL(url)
 }
 
-// ── 费用估算（单价均为参考值，仅供参考）───────────────────────
-// Azure Speech：$1.00/audio-hr；Azure Translator：$10/1M chars
-// Cartesia TTS：~$1.50/1M chars；LLM：$0.25/$1.25 per 1M in/out tokens
-const ASR_PER_MS    = 1.00  / 3_600_000
-const TRANS_PER_CHR = 10.00 / 1_000_000
-const TTS_PER_CHR   = 1.50  / 1_000_000
-const LLM_IN_PER_TK = 0.25  / 1_000_000
-const LLM_OUT_PER_TK = 1.25 / 1_000_000
-
-function calcCost(s: InterpretationStatus) {
-  const asr   = (s.asrAudioMs      ?? 0) * ASR_PER_MS
-  const trans  = (s.translateChars  ?? 0) * TRANS_PER_CHR
-  const tts    = (s.ttsChars        ?? 0) * TTS_PER_CHR
-  const llm    = (s.llmInputTokens  ?? 0) * LLM_IN_PER_TK
-              + (s.llmOutputTokens ?? 0) * LLM_OUT_PER_TK
-  return { asr, trans, tts, llm, total: asr + trans + tts + llm }
-}
-
-const fmtUsd = (v: number) => v < 0.000001 ? '< $0.000001' : `$${v.toFixed(6)}`
-
 const fmtMs = (ms: number) => {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
@@ -74,15 +54,20 @@ export default function HistoryView() {
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [results, setResults] = useState<InterpretationResultItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<'transcript' | 'summary' | 'cost'>('transcript')
+  const [activeTab, setActiveTab] = useState<'transcript' | 'summary'>('transcript')
   const [summaryText, setSummaryText] = useState<string | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const hasFetchedSummaryRef = useRef(false)
+  const SUMMARY_REQ_KEY = 'si_summary_requirements'
+  const [summaryRequirements, setSummaryRequirements] = useState<string>(
+    () => localStorage.getItem(SUMMARY_REQ_KEY) ?? ''
+  )
 
   const selectedSession = useMemo(
     () => sessions.find(item => item.sessionId === selectedSessionId),
     [sessions, selectedSessionId],
   )
+  const selectedMeetingTitle = selectedSession?.title || DEFAULT_HISTORY_TITLE
 
   const loadSessions = async (nextKeyword = keyword) => {
     setLoading(true)
@@ -139,13 +124,17 @@ export default function HistoryView() {
   const refetchSummary = async (sessionId: string) => {
     setSummaryLoading(true)
     try {
-      const res = await regenerateMeetingSummary(sessionId)
+      const res = await regenerateMeetingSummary(sessionId, summaryRequirements.trim() || undefined)
       setSummaryText(res.data?.summary ?? '')
     } catch {
       setSummaryText('')
     } finally {
       setSummaryLoading(false)
     }
+  }
+
+  const saveDefaultRequirements = () => {
+    localStorage.setItem(SUMMARY_REQ_KEY, summaryRequirements)
   }
 
   const renameSession = async (session: InterpretationStatus) => {
@@ -203,6 +192,13 @@ export default function HistoryView() {
     win.focus()
     setTimeout(() => win.print(), 400)
   }
+
+  const renderMeetingTitleStrip = () => selectedSession ? (
+    <div className="history-meeting-title-strip">
+      <span>会议名称</span>
+      <strong>{selectedMeetingTitle}</strong>
+    </div>
+  ) : null
 
   return (
     <div className="si-root">
@@ -300,17 +296,15 @@ export default function HistoryView() {
                 className={`history-tab-btn${activeTab === 'summary' ? ' history-tab-btn--active' : ''}`}
                 onClick={() => setActiveTab('summary')}
               >会议总结</button>
-              <button
-                className={`history-tab-btn${activeTab === 'cost' ? ' history-tab-btn--active' : ''}`}
-                onClick={() => setActiveTab('cost')}
-              >成本分析</button>
             </div>
           )}
 
           {/* 文本记录 Tab */}
           {activeTab === 'transcript' && (
-            <div className="si-tri-transcript-dock history-transcripts">
-              <div className="si-tri-transcript-dock-inner">
+            <div className="history-tab-content">
+              {renderMeetingTitleStrip()}
+              <div className="si-tri-transcript-dock history-transcripts">
+                <div className="si-tri-transcript-dock-inner">
                 {!selectedSession && <div className="si-tri-empty">请从左侧选择一条记录</div>}
                 {selectedSession && results.length === 0 && <div className="si-tri-empty">暂无文本</div>}
                 {results.map(item => (
@@ -322,6 +316,7 @@ export default function HistoryView() {
                   </div>
                 ))}
               </div>
+              </div>
             </div>
           )}
 
@@ -330,6 +325,7 @@ export default function HistoryView() {
             const displayed = summaryText ?? selectedSession.meetingSummary ?? null
             return (
               <div className="history-summary-tab">
+                {renderMeetingTitleStrip()}
                 {(summaryLoading || displayed === null) && (
                   <div className="history-summary-loading">
                     <span className="history-summary-spinner" />
@@ -338,6 +334,31 @@ export default function HistoryView() {
                 )}
                 {!summaryLoading && displayed !== null && displayed === '' && (
                   <div className="history-summary-empty">该会话没有可用的文字记录，无法生成总结</div>
+                )}
+                <div className="history-summary-requirements">
+                  <div className="history-summary-requirements-header">
+                    <label className="history-summary-requirements-label">总结要求（可选）</label>
+                    <button
+                      className="history-summary-requirements-default-btn"
+                      onClick={saveDefaultRequirements}
+                      title="将当前内容保存为默认要求"
+                    >设为默认</button>
+                  </div>
+                  <textarea
+                    className="history-summary-requirements-input"
+                    value={summaryRequirements}
+                    onChange={e => setSummaryRequirements(e.target.value)}
+                    placeholder="例如：重点突出决议和待办事项，输出中英双语，按议题分段..."
+                    rows={3}
+                  />
+                </div>
+                {!summaryLoading && (displayed === null || displayed === '') && (
+                  <div className="history-summary-regen-row">
+                    <button
+                      className="history-summary-regen-btn"
+                      onClick={() => { void refetchSummary(selectedSession.sessionId) }}
+                    >生成总结</button>
+                  </div>
                 )}
                 {!summaryLoading && displayed !== null && displayed !== '' && (
                   <>
@@ -366,62 +387,6 @@ export default function HistoryView() {
             )
           })()}
 
-          {/* 成本分析 Tab */}
-          {selectedSession && activeTab === 'cost' && (() => {
-            const cost = calcCost(selectedSession)
-            const hasSummary = !!(summaryText ?? selectedSession.meetingSummary)
-            return (
-              <div className="history-cost-tab">
-                <div className="history-cost-grid">
-                  <div className="history-cost-card history-cost-card--asr">
-                    <div className="history-cost-card-icon">🎙️</div>
-                    <div className="history-cost-card-label">语音识别 · ASR</div>
-                    <div className="history-cost-card-usage">{fmtMs(selectedSession.asrAudioMs ?? 0)} 音频时长</div>
-                    <div className="history-cost-card-price">{fmtUsd(cost.asr)}</div>
-                    <div className="history-cost-card-rate">Azure Speech · $1.00 / 音频小时</div>
-                  </div>
-                  <div className="history-cost-card history-cost-card--trans">
-                    <div className="history-cost-card-icon">🌐</div>
-                    <div className="history-cost-card-label">机器翻译</div>
-                    <div className="history-cost-card-usage">{(selectedSession.translateChars ?? 0).toLocaleString()} 字符</div>
-                    <div className="history-cost-card-price">{fmtUsd(cost.trans)}</div>
-                    <div className="history-cost-card-rate">Azure Translator · $10.00 / 百万字符</div>
-                  </div>
-                  <div className="history-cost-card history-cost-card--tts">
-                    <div className="history-cost-card-icon">🔊</div>
-                    <div className="history-cost-card-label">语音合成 · TTS</div>
-                    <div className="history-cost-card-usage">{(selectedSession.ttsChars ?? 0).toLocaleString()} 字符</div>
-                    <div className="history-cost-card-price">{fmtUsd(cost.tts)}</div>
-                    <div className="history-cost-card-rate">Cartesia · $1.50 / 百万字符</div>
-                  </div>
-                  <div className="history-cost-card history-cost-card--llm">
-                    <div className="history-cost-card-icon">🤖</div>
-                    <div className="history-cost-card-label">大语言模型 · LLM</div>
-                    <div className="history-cost-card-usage">
-                      输入 {(selectedSession.llmInputTokens ?? 0).toLocaleString()} tk &nbsp;·&nbsp;
-                      输出 {(selectedSession.llmOutputTokens ?? 0).toLocaleString()} tk
-                    </div>
-                    <div className="history-cost-card-price">{fmtUsd(cost.llm)}</div>
-                    <div className="history-cost-card-rate">$0.25 / $1.25 per M tokens (in/out)</div>
-                    {hasSummary && (
-                      <div className="history-cost-card-note">含会议总结生成用量</div>
-                    )}
-                  </div>
-                </div>
-                <div className="history-cost-total-row">
-                  <div>
-                    <div className="history-cost-total-label">本次总费用估算</div>
-                    <div className="history-cost-total-sub">ASR + 翻译 + TTS + LLM（含压缩与总结）</div>
-                  </div>
-                  <div className="history-cost-total-value">{fmtUsd(cost.total)}</div>
-                </div>
-                <div className="history-cost-disclaimer">
-                  单价参考各服务商公开定价，仅供参考，实际账单以服务商结算为准。<br />
-                  LLM 用量涵盖实时压缩（gpt-5-nano）与会议总结（gpt-5-mini）。
-                </div>
-              </div>
-            )
-          })()}
         </section>
       </main>
     </div>

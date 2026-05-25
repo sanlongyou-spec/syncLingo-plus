@@ -96,7 +96,6 @@ docker run -d --name si-backend -p 8080:8080 --env-file "%BACKEND_ENV_FILE%" ^
   -e SPEAKER_SERVICE_ENABLED=true ^
   -e SPEAKER_SERVICE_URL=http://host.docker.internal:7000 ^
   -e BOT_API_URL=http://host.docker.internal:3978 ^
-  --add-host=host.docker.internal:host-gateway ^
   si-backend:latest
 set "RUN_RESULT=%errorlevel%"
 if exist "%BACKEND_ENV_FILE%" del "%BACKEND_ENV_FILE%" >nul 2>nul

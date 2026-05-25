@@ -34,7 +34,11 @@ public class OpenAiProperties {
 
     private String summaryModel = "gpt-5-mini";
 
+    private String documentSummaryModel = "gpt-5";
+
     private long compressionMaxOutputTokens = 512L;
 
     private long summaryMaxOutputTokens = 1200L;
+
+    private long documentSummaryMaxOutputTokens = 4000L;
 }

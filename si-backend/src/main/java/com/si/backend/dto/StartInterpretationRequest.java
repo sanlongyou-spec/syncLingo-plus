@@ -18,6 +18,8 @@ public class StartInterpretationRequest {
     @NotBlank(message = "targetLang 不能为空")
     private String targetLang;
 
+    private String title;
+
     private String voiceId;
 
     private List<Long> hotwordIds;

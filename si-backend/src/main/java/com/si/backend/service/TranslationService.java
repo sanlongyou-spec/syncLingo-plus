@@ -55,28 +55,13 @@ public class TranslationService {
         validateLanguages(sourceLang, targetLang);
 
         long start = System.currentTimeMillis();
-        boolean useOfficialGlossary = translator.isGlossaryAvailable(userId, sourceLang, targetLang);
-        TerminologyService.TerminologyProtection terminologyProtection;
-        String protectedText;
-        if (useOfficialGlossary) {
-            log.info("[TranslationService] official Google glossary enabled, skip application terminology protection");
-            terminologyProtection = TerminologyService.TerminologyProtection.empty(text);
-            protectedText = text;
-        } else {
-            terminologyProtection = terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
-            protectedText = terminologyProtection.getProtectedText();
-        }
+        TerminologyService.TerminologyProtection terminologyProtection =
+                terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
+        String protectedText = terminologyProtection.getProtectedText();
 
         String result = translator.translate(protectedText, sourceLang, targetLang, userId);
-        if (!useOfficialGlossary) {
-            result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
-        }
-
+        result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
         result = compressIfNeeded(text, sourceLang, targetLang, result, start);
-
-        if (!useOfficialGlossary) {
-            result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
-        }
 
         log.info("[TranslationService] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
                 text.length(), targetLang, System.currentTimeMillis() - start, result != null ? result.length() : 0);

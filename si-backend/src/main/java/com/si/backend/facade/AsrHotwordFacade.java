@@ -1,9 +1,11 @@
 package com.si.backend.facade;
 
+import com.si.backend.dto.HotwordSuggestion;
 import com.si.backend.dto.SaveAsrHotwordRequest;
 import com.si.backend.entity.AsrHotword;
 import com.si.backend.entity.Terminology;
 import com.si.backend.service.AsrHotwordService;
+import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.TerminologyService;
 import com.si.backend.vo.AsrHotwordVo;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,7 @@ public class AsrHotwordFacade {
 
     private final AsrHotwordService hotwordService;
     private final TerminologyService terminologyService;
+    private final HotwordExtractionService extractionService;
 
     public List<AsrHotwordVo> list(Long userId, String keyword, Boolean enabled, String language, String category) {
         log.info("[AsrHotwordFacade] list start, userId={}", userId);
@@ -74,6 +77,22 @@ public class AsrHotwordFacade {
         log.info("[AsrHotwordFacade] delete start, id={}, userId={}", id, userId);
         hotwordService.delete(id, userId);
         log.info("[AsrHotwordFacade] delete end, id={}, userId={}", id, userId);
+    }
+
+    public List<HotwordSuggestion> previewExtractedHotwords(String sessionId, Long userId) {
+        log.info("[AsrHotwordFacade] previewExtractedHotwords start, sessionId={}, userId={}", sessionId, userId);
+        List<HotwordSuggestion> result = extractionService.previewFromSession(sessionId, userId);
+        log.info("[AsrHotwordFacade] previewExtractedHotwords end, sessionId={}, count={}", sessionId, result.size());
+        return result;
+    }
+
+    public List<AsrHotwordVo> confirmExtractedHotwords(Long userId, List<HotwordSuggestion> selected) {
+        log.info("[AsrHotwordFacade] confirmExtractedHotwords start, userId={}, count={}", userId, selected != null ? selected.size() : 0);
+        List<AsrHotwordVo> result = extractionService.confirmSuggestions(userId, selected).stream()
+                .map(this::toVo)
+                .toList();
+        log.info("[AsrHotwordFacade] confirmExtractedHotwords end, userId={}, saved={}", userId, result.size());
+        return result;
     }
 
     private AsrHotword toEntity(SaveAsrHotwordRequest request) {

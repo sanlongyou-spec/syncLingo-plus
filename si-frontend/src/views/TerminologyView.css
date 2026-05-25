@@ -233,3 +233,241 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 分组行 ────────────────────────────────────── */
+.term-group-header td {
+  background: #f0f4ff;
+  padding: 7px 12px !important;
+  cursor: pointer;
+  user-select: none;
+  display: flex !important;  /* override td:last-child flex rule */
+  align-items: center;
+  gap: 8px;
+}
+
+.term-group-header:hover td {
+  background: #e8eeff;
+}
+
+.term-group-toggle {
+  font-size: 10px;
+  color: #6b7280;
+}
+
+.term-group-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1e3a5f;
+}
+
+.term-group-count {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* ── 从历史提取按钮 ───────────────────────────── */
+.extract-btn {
+  background: #eff6ff !important;
+  border-color: #93c5fd !important;
+  color: #1d4ed8 !important;
+  white-space: nowrap;
+}
+
+.extract-btn:hover {
+  background: #dbeafe !important;
+}
+
+/* ── 提取模态框 ───────────────────────────────── */
+.extract-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.extract-modal {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 8px 40px rgba(15, 23, 42, 0.18);
+  width: 520px;
+  max-width: 96vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.extract-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.extract-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.extract-modal-close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.extract-modal-close:hover {
+  background: #f3f4f6;
+}
+
+.extract-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.extract-hint {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.extract-loading {
+  text-align: center;
+  padding: 20px 0;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.extract-session-select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #101828;
+  background: #fff;
+}
+
+.extract-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.extract-preview-toolbar button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d5dde8;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.extract-suggestion-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.extract-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.extract-suggestion-item:hover {
+  background: #f9fafb;
+}
+
+.extract-phrase {
+  flex: 1;
+  font-weight: 500;
+  color: #111827;
+}
+
+.extract-cat {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.extract-lang {
+  font-size: 11px;
+  color: #6b7280;
+  min-width: 36px;
+}
+
+.badge-new {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge-exists {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f3f4f6;
+  color: #9ca3af;
+}
+
+.extract-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.extract-modal-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.extract-btn-primary {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #fff !important;
+}
+
+.extract-btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

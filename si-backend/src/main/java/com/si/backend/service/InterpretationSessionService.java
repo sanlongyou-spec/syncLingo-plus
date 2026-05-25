@@ -72,6 +72,7 @@ public class InterpretationSessionService {
             Long userId,
             String sourceLang,
             String targetLang,
+            String title,
             String voiceId,
             List<Long> hotwordIds,
             List<String> enabledLanguages
@@ -87,7 +88,7 @@ public class InterpretationSessionService {
         session.setVoiceId(voiceId);
         session.setHotwordIds(joinHotwordIds(hotwordIds));
         session.setEnabledLanguages(joinLanguages(enabledLanguages));
-        session.setTitle(Constants.SESSION_DEFAULT_TITLE);
+        session.setTitle(normalizeTitle(title));
         session.setStatus(Constants.SESSION_STATUS_RUNNING);
         session.setDeleted(false);
         session.setStartTime(LocalDateTime.now());
@@ -143,6 +144,14 @@ public class InterpretationSessionService {
             return null;
         }
         return hotwordIds.stream().map(String::valueOf).reduce((left, right) -> left + "," + right).orElse(null);
+    }
+
+    private String normalizeTitle(String title) {
+        String normalizedTitle = title == null || title.isBlank() ? Constants.SESSION_DEFAULT_TITLE : title.trim();
+        if (normalizedTitle.length() > 128) {
+            return normalizedTitle.substring(0, 128);
+        }
+        return normalizedTitle;
     }
 
     private String joinLanguages(List<String> enabledLanguages) {
@@ -206,10 +215,7 @@ public class InterpretationSessionService {
     @Transactional
     public boolean updateTitle(String sessionId, Long userId, String title) {
         log.info("[InterpretationSessionService] updateTitle start, sessionId={}, userId={}", sessionId, userId);
-        String normalizedTitle = title == null || title.isBlank() ? Constants.SESSION_DEFAULT_TITLE : title.trim();
-        if (normalizedTitle.length() > 128) {
-            normalizedTitle = normalizedTitle.substring(0, 128);
-        }
+        String normalizedTitle = normalizeTitle(title);
         int updated = sessionMapper.updateTitle(sessionId, userId, normalizedTitle);
         InterpretationSession active = activeSessions.get(sessionId);
         if (active != null && userId.equals(active.getUserId())) {

@@ -42,3 +42,18 @@ surefire-reports/
 *.tmp
 *.bak
 *.orig
+
+# Claude Code session data
+.claude/
+
+# External large dependencies
+external/
+
+# Local build artifacts and generated outputs
+.tmp-build/
+outputs/
+
+# Speaker service generated files
+speaker-service/__pycache__/
+speaker-service/embeddings.json
+speaker-service/pretrained_models/

@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 public class InterpretationRecordVo {
     private Long id;
     private String sessionId;
+    private String meetingTitle;
     private Integer seq;
     private String sourceLang;
     private String targetLang;

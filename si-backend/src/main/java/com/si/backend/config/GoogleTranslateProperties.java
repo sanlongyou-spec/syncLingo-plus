@@ -13,16 +13,4 @@ import org.springframework.stereotype.Component;
 public class GoogleTranslateProperties {
 
     private String apiKey;
-    private Boolean glossaryEnabled = false;
-    private String projectId;
-    private String location = "us-central1";
-    private String glossaryId;
-    private String glossaryZhToIdId;
-    private String glossaryIdToZhId;
-    private String glossaryZhToEnId;
-    private String glossaryEnToZhId;
-    private String glossaryIdToEnId;
-    private String glossaryEnToIdId;
-    private Boolean glossaryIgnoreCase = true;
-    private Boolean glossaryFallbackEnabled = true;
 }
