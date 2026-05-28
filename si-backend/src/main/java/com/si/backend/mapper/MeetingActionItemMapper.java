@@ -35,6 +35,9 @@ public interface MeetingActionItemMapper {
     @Select("SELECT * FROM meeting_action_item WHERE session_id = #{sessionId} ORDER BY id ASC")
     List<MeetingActionItem> findBySessionId(String sessionId);
 
+    @Select("SELECT * FROM meeting_action_item WHERE user_id = #{userId} ORDER BY id DESC LIMIT #{limit}")
+    List<MeetingActionItem> findRecentByUserId(@Param("userId") Long userId, @Param("limit") int limit);
+
     @Select("SELECT * FROM meeting_action_item WHERE id = #{id}")
     MeetingActionItem findById(Long id);
 

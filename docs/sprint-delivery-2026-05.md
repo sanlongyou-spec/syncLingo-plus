@@ -730,7 +730,41 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 | N-17 | 停止会话预算警告（S10/S11）| 设置 `app.cost.budget.session-usd: 0.001`（极低阈值方便测试）→ 进行一段同传 → 停止 | 停止后约 300ms 弹出"⚠️ 预算提醒：本次会话费用..."警告框 |
 | N-18 | Admin 接口鉴权（P2）| 未设 `ADMIN_API_SECRET` 时调用 `POST /api/admin/embeddings/rebuild` | 返回成功（未保护模式，日志有 warn）；设置后不带 `X-Admin-Secret` 头返回 401 |
 
-### 8.3 存量功能回归（2026-05-25，本次未改动）
+### 8.3 Bot 全数据接入（2026-05-28 第三批）
+
+**本次改动目标：** Bot 可查询系统内一切已有信息；LLM 不自行编造答案，引用内容注明来源，AI 推断内容标注 `【AI补充】`。
+
+**数据接入现状：**
+
+| 数据类型 | Bot 能查到？ | 接入方式 |
+|---------|-----------|---------|
+| 同传文本记录 | ✅ | 向量 RAG（`interpretation_result`） |
+| 会议总结（AI 纪要）| ✅ | `appendMeetingSummary` 追加到上下文 |
+| 发言摘要 | ✅ | `appendSpeakerSummaries` 追加到上下文 |
+| 会前文件摘要（持久化）| ✅ | `appendFileSummaries` 追加到上下文 |
+| 行动项 | ✅（新增）| `buildActionItemsContext` 关键词触发 |
+| 成本数据（月度/当月）| ✅（新增）| `buildCostContext` 关键词触发 |
+
+**新增代码：**
+- `MeetingActionItemMapper.findRecentByUserId()` — 查询用户最近 30 条行动项
+- `TeamsBotQueryService.buildActionItemsContext()` — 问题含"行动项/待办/任务/跟进"时追加行动项清单
+- `TeamsBotQueryService.buildCostContext()` — 问题含"成本/费用/预算/花费"时追加月度成本摘要
+- `LlmIntegration.CROSS_MEETING_SYSTEM_PROMPT` 强化：
+  - 引用内容标注来源格式：`（来源：会议名称·日期）`
+  - 资料中没有的推断/解释内容前加 `【AI补充】` 标注
+  - 资料中确实没有的信息直接说明【资料中未记录】，不用自己知识填充
+
+**需人工测试：**
+
+| # | 测试项 | 操作步骤 | 预期结果 |
+|---|--------|---------|---------|
+| N-19 | Bot 查行动项 | 向 Bot 提问"有什么待办任务？" | 返回行动项清单，每条含状态标记和内容 |
+| N-20 | Bot 查成本 | 向 Bot 提问"本月花了多少钱？" | 返回当月会话数和估计费用（$X.XXXX） |
+| N-21 | 来源标注 | 向 Bot 提问与多场会议相关的内容 | 回答中出现 `（来源：会议名称·日期）` 标注 |
+| N-22 | AI 推断标注 | 问一个需要背景解释但资料中没有的问题 | LLM 背景解释前出现 `【AI补充】` 标注 |
+| N-23 | 无记录情况 | 问一个完全不在历史中的问题 | 返回"【资料中未记录】"，不编造答案 |
+
+### 8.4 存量功能回归（2026-05-25，本次未改动）
 
 （原文第四节 M-1 至 M-23 的清单，状态不变，此处不重复）
 

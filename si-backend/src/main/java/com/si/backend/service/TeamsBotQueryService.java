@@ -8,6 +8,10 @@ import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.SiUser;
 import com.si.backend.integration.LlmIntegration;
 import com.si.backend.mapper.UserMapper;
+import com.si.backend.config.CostRatesProperties;
+import com.si.backend.entity.MeetingActionItem;
+import com.si.backend.mapper.InterpretationSessionMapper;
+import com.si.backend.mapper.MeetingActionItemMapper;
 import com.si.backend.vo.TeamsBotQueryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +26,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Map;
+import java.util.Set;
+import java.time.YearMonth;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,6 +54,9 @@ public class TeamsBotQueryService {
     private final TeamsBotProperties teamsBotProperties;
     private final PreMeetingService preMeetingService;
     private final LlmIntegration llmIntegration;
+    private final MeetingActionItemMapper actionItemMapper;
+    private final InterpretationSessionMapper sessionMapper;
+    private final CostRatesProperties costRatesProperties;
 
     public TeamsBotQueryResponse query(TeamsBotQueryRequest request, String apiSecret) {
         String message = normalize(request.getMessage());
@@ -96,7 +106,18 @@ public class TeamsBotQueryService {
                     filter.speakerName(), filter.since());
 
             // B3: 带过滤参数的向量检索上下文构建
-            String context = preMeetingService.buildUnifiedContext(user.getId(), message, filter);
+            String ragContext = preMeetingService.buildUnifiedContext(user.getId(), message, filter);
+
+            // 行动项上下文（按关键词触发）
+            String actionContext = buildActionItemsContext(user.getId(), message);
+
+            // 成本数据上下文（按关键词触发）
+            String costContext = buildCostContext(user.getId(), message);
+
+            String context = ragContext
+                    + (actionContext.isBlank() ? "" : "\n" + actionContext)
+                    + (costContext.isBlank() ? "" : "\n" + costContext);
+
             if (context.isBlank()) {
                 String noDataReply = "在所有历史会议记录中，未找到与该问题相关的内容。请尝试换一个关键词。";
                 sendSseAndComplete(emitter, noDataReply);
@@ -481,6 +502,104 @@ public class TeamsBotQueryService {
 
     private String normalize(String value) {
         return value == null ? "" : value.trim();
+    }
+
+
+    /** Builds action-item context snippet when question is about tasks/todos. */
+    private String buildActionItemsContext(Long userId, String question) {
+        String lower = question.toLowerCase(Locale.ROOT);
+        boolean relevant = Set.of("行动项", "待办", "任务", "负责", "跟进",
+                "action", "todo", "完成", "follow").stream().anyMatch(lower::contains);
+        if (!relevant) return "";
+        try {
+            List<MeetingActionItem> items = actionItemMapper.findRecentByUserId(userId, 30);
+            if (items.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder("[行动项清单]\n");
+            for (MeetingActionItem item : items) {
+                sb.append("- [").append(item.getStatus()).append("] ");
+                if (item.getAssignee() != null && !item.getAssignee().isBlank()) {
+                    sb.append("【").append(item.getAssignee()).append("】");
+                }
+                sb.append(item.getContent());
+                if (item.getDeadline() != null && !item.getDeadline().isBlank()) {
+                    sb.append("（期限：").append(item.getDeadline()).append("）");
+                }
+                sb.append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("[TeamsBotQueryService] buildActionItemsContext failed: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    /** Builds cost summary context when question mentions cost/budget. */
+    private String buildCostContext(Long userId, String question) {
+        String lower = question.toLowerCase(Locale.ROOT);
+        boolean relevant = Set.of("成本", "费用", "花费", "预算", "多少钱",
+                "消费", "账单", "月度", "开销", "cost", "budget").stream().anyMatch(lower::contains);
+        if (!relevant) return "";
+        try {
+            String yearMonth = YearMonth.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM"));
+            Map<String, Object> current = sessionMapper.currentMonthSummaryByUser(userId, yearMonth);
+            java.util.List<Map<String, Object>> monthly = sessionMapper.monthlySummaryByUser(userId);
+            if ((current == null || current.isEmpty()) && (monthly == null || monthly.isEmpty())) return "";
+
+            double asrRate  = costRatesProperties.getRates().getAsrPerHourUsd();
+            double transRate = costRatesProperties.getRates().getTransPerMillionCharsUsd();
+            double ttsRate  = costRatesProperties.getRates().getTtsPerMillionCharsUsd();
+            double llmIn    = costRatesProperties.getRates().getLlmInPerMillionTokensUsd();
+            double llmOut   = costRatesProperties.getRates().getLlmOutPerMillionTokensUsd();
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("[成本数据 - ").append(yearMonth).append("]\n");
+
+            if (current != null && !current.isEmpty()) {
+                long sessions  = toLong(current.get("sessionCount"));
+                double cost    = calcMonthlyCost(current, asrRate, transRate, ttsRate, llmIn, llmOut);
+                sb.append("当月（").append(yearMonth).append("）：")
+                  .append(sessions).append(" 次会话，估计费用 $")
+                  .append(String.format("%.4f", cost)).append("\n");
+            }
+
+            if (monthly != null && monthly.size() > 1) {
+                sb.append("历史月度汇总：\n");
+                int shown = 0;
+                for (Map<String, Object> row : monthly) {
+                    if (shown++ >= 3) break;
+                    String month = String.valueOf(row.get("month"));
+                    long sessions = toLong(row.get("sessionCount"));
+                    double cost   = calcMonthlyCost(row, asrRate, transRate, ttsRate, llmIn, llmOut);
+                    sb.append("  ").append(month).append("：").append(sessions)
+                      .append(" 次会话，估计费用 $")
+                      .append(String.format("%.4f", cost)).append("\n");
+                }
+            }
+
+            double budget = costRatesProperties.getBudget().getMonthlyUsd();
+            if (budget > 0) {
+                sb.append("月度预算：$").append(String.format("%.2f", budget)).append("\n");
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("[TeamsBotQueryService] buildCostContext failed: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    private double calcMonthlyCost(Map<String, Object> row,
+            double asrRate, double transRate, double ttsRate, double llmIn, double llmOut) {
+        return toLong(row.get("totalAsrMs")) / 3_600_000.0 * asrRate
+                + toLong(row.get("totalTransChars")) / 1_000_000.0 * transRate
+                + toLong(row.get("totalTtsChars"))   / 1_000_000.0 * ttsRate
+                + toLong(row.get("totalLlmIn"))      / 1_000_000.0 * llmIn
+                + toLong(row.get("totalLlmOut"))     / 1_000_000.0 * llmOut;
+    }
+
+    private long toLong(Object val) {
+        if (val == null) return 0L;
+        if (val instanceof Number n) return n.longValue();
+        try { return Long.parseLong(val.toString()); } catch (Exception e) { return 0L; }
     }
 
     private record BotCommand(String name, String argument) {
