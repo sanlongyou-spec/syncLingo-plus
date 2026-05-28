@@ -28,6 +28,9 @@ import type {
   MeetingFile,
   SpeakerSummaryResult,
   SpeakerSummaryRecord,
+  MeetingActionItem,
+  CostRates,
+  MonthlyCostSummary,
 } from '../types'
 
 const getApiErrorMessage = async (error: unknown, fallback: string): Promise<string> => {
@@ -50,8 +53,14 @@ const getApiErrorMessage = async (error: unknown, fallback: string): Promise<str
 export const startInterpretation = (params: StartInterpretationParams): Promise<Result<string>> =>
   client.post<Result<string>>('/api/interpretation/start', params).then(r => r.data)
 
-export const stopInterpretation = (sessionId: string): Promise<Result<void>> =>
-  client.post<Result<void>>('/api/interpretation/stop', { sessionId }).then(r => r.data)
+export const stopInterpretation = (sessionId: string): Promise<Result<Record<string, unknown>>> =>
+  client.post<Result<Record<string, unknown>>>('/api/interpretation/stop', { sessionId }).then(r => r.data)
+
+export const getCostRates = (): Promise<Result<CostRates>> =>
+  client.get<Result<CostRates>>('/api/cost/rates').then(r => r.data)
+
+export const getCostMonthlySummary = (userId: number): Promise<Result<MonthlyCostSummary[]>> =>
+  client.get<Result<MonthlyCostSummary[]>>('/api/cost/monthly-summary', { params: { userId } }).then(r => r.data)
 
 export const getInterpretationStatus = (sessionId: string): Promise<Result<InterpretationStatus>> =>
   client.get<Result<InterpretationStatus>>(`/api/interpretation/status/${sessionId}`).then(r => r.data)
@@ -349,3 +358,23 @@ export const saveMeetingAttendance = (meetingId: number, attendanceJson: string)
 
 export const deleteMeeting = (meetingId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}`).then(r => r.data)
+
+export const getActionItems = (sessionId: string): Promise<Result<MeetingActionItem[]>> =>
+  client.get<Result<MeetingActionItem[]>>(`/api/meetings/sessions/${encodeURIComponent(sessionId)}/action-items`).then(r => r.data)
+
+export const extractActionItems = (
+  sessionId: string,
+  meetingId?: number | null,
+  userId?: number | null,
+): Promise<Result<MeetingActionItem[]>> =>
+  client.post<Result<MeetingActionItem[]>>(
+    `/api/meetings/sessions/${encodeURIComponent(sessionId)}/action-items/extract`,
+    { meetingId, userId },
+    { timeout: 60_000 },
+  ).then(r => r.data)
+
+export const updateActionItemStatus = (id: number, status: string): Promise<Result<MeetingActionItem>> =>
+  client.patch<Result<MeetingActionItem>>(`/api/meetings/action-items/${id}/status`, { status }).then(r => r.data)
+
+export const deleteActionItem = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/meetings/action-items/${id}`).then(r => r.data)

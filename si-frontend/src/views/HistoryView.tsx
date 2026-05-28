@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteInterpretationSession,
   deleteMeeting,
+  extractActionItems,
+  getActionItems,
   getMeetings,
   getMeetingSessions,
   getMeetingSummary,
@@ -11,12 +13,14 @@ import {
   regenerateSpeakerSummary,
   sendSummaryToMeetingChat,
   sendTeamsSummaryToUsers,
+  updateActionItemStatus,
 } from '../api'
 import { ROUTES, STORAGE_KEYS, TEAMS_BOT_STORAGE_KEYS } from '../constants'
 import type {
   InterpretationResultItem,
   InterpretationStatus,
   Meeting,
+  MeetingActionItem,
   MeetingFile,
   MeetingParticipant,
   PreMeetingAttendanceResult,
@@ -159,6 +163,10 @@ export default function HistoryView() {
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
 
+  // ── Action items tab ─────────────────────────────────────
+  const [actionItems, setActionItems] = useState<MeetingActionItem[]>([])
+  const [actionItemsLoading, setActionItemsLoading] = useState(false)
+  const [extractingActionItems, setExtractingActionItems] = useState(false)
 
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
   const allKnownParticipants = useMemo(() => {
@@ -248,6 +256,33 @@ export default function HistoryView() {
       .catch(() => setSpeakerRecords([]))
       .finally(() => setSpeakerLoading(false))
   }, [activeTab, selectedSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId) { setActionItems([]); return }
+    setActionItemsLoading(true)
+    getActionItems(selectedSessionId)
+      .then(res => setActionItems(res.data || []))
+      .catch(() => setActionItems([]))
+      .finally(() => setActionItemsLoading(false))
+  }, [selectedSessionId])
+
+  const handleExtractActionItems = async () => {
+    if (!selectedSessionId) return
+    setExtractingActionItems(true)
+    try {
+      const res = await extractActionItems(selectedSessionId, selectedMeetingId, userId)
+      setActionItems(res.data || [])
+    } catch { /* ignore */ }
+    finally { setExtractingActionItems(false) }
+  }
+
+  const handleToggleActionItem = async (item: MeetingActionItem) => {
+    const next = item.status === 'done' ? 'pending' : 'done'
+    try {
+      const res = await updateActionItemStatus(item.id, next)
+      setActionItems(prev => prev.map(a => a.id === item.id ? res.data : a))
+    } catch { /* ignore */ }
+  }
 
   const refetchSummary = async () => {
     if (!selectedSessionId) return
@@ -866,6 +901,48 @@ export default function HistoryView() {
                           <pre className="history-summary-text">{displayed}</pre>
                         </div>
                       </>
+                    )}
+
+                    {/* ── 行动项 ── */}
+                    {selectedSessionId && (
+                      <div className="history-action-items">
+                        <div className="history-action-items-header">
+                          <span className="history-action-items-title">行动项</span>
+                          <button
+                            className="history-action-items-extract-btn"
+                            onClick={() => { void handleExtractActionItems() }}
+                            disabled={extractingActionItems}
+                          >
+                            {extractingActionItems ? '提取中...' : actionItems.length > 0 ? '重新提取' : 'AI 提取行动项'}
+                          </button>
+                        </div>
+                        {actionItemsLoading && (
+                          <div className="history-summary-loading"><span className="history-summary-spinner" />加载中...</div>
+                        )}
+                        {!actionItemsLoading && actionItems.length === 0 && (
+                          <div className="history-action-items-empty">暂无行动项，点击"AI 提取行动项"从会议记录中提取</div>
+                        )}
+                        {!actionItemsLoading && actionItems.length > 0 && (
+                          <ul className="history-action-items-list">
+                            {actionItems.map(item => (
+                              <li key={item.id} className={`history-action-item${item.status === 'done' ? ' done' : ''}`}>
+                                <button
+                                  className="history-action-item-check"
+                                  onClick={() => { void handleToggleActionItem(item) }}
+                                  title={item.status === 'done' ? '标记为未完成' : '标记为完成'}
+                                >
+                                  {item.status === 'done' ? '✓' : '○'}
+                                </button>
+                                <div className="history-action-item-body">
+                                  {item.assignee && <span className="history-action-item-assignee">【{item.assignee}】</span>}
+                                  <span className="history-action-item-content">{item.content}</span>
+                                  {item.deadline && <span className="history-action-item-deadline">截止：{item.deadline}</span>}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
                   </div>
                 )

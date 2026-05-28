@@ -688,7 +688,12 @@ export default function InterpretationView() {
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null
-    await stopInterpretation(sid).catch((err: unknown) => {
+    await stopInterpretation(sid).then(res => {
+      const warning = res?.data?.budgetWarning as string | undefined
+      if (warning) {
+        setTimeout(() => alert(`⚠️ 预算提醒：${warning}`), 300)
+      }
+    }).catch((err: unknown) => {
       console.warn('[InterpretationView] stopInterpretation failed:', err)
     })
     wsRef.current?.close()

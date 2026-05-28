@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.si.backend.mapper.InterpretationEmbeddingMapper">
+
+    <!--
+        Load embeddings for a user's meetings, optionally filtered by meeting / speaker / date.
+        Capped at 2000 rows (most recent first) to keep in-memory cosine search fast.
+    -->
+    <select id="findByUserId" resultType="com.si.backend.entity.InterpretationEmbedding">
+        SELECT e.*
+        FROM interpretation_embedding e
+                 JOIN interpretation_session s ON e.session_id = s.session_id
+        WHERE s.user_id = #{userId}
+          AND COALESCE(s.deleted, 0) = 0
+          <if test="filterMeetingId != null">
+              AND e.meeting_id = #{filterMeetingId}
+          </if>
+          <if test="filterSpeakerName != null and filterSpeakerName != ''">
+              AND e.speaker_name LIKE CONCAT('%', #{filterSpeakerName}, '%')
+          </if>
+          <if test="filterSince != null and filterSince != ''">
+              AND s.start_time &gt;= #{filterSince}
+          </if>
+        ORDER BY e.id DESC
+        LIMIT 2000
+    </select>
+
+    <select id="findResultsWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT r.id          AS resultId,
+               r.session_id  AS sessionId,
+               r.source_text AS sourceText,
+               r.translated_text AS translatedText,
+               r.speaker_name    AS speakerName
+        FROM interpretation_result r
+                 LEFT JOIN interpretation_embedding e ON r.id = e.result_id
+        WHERE e.id IS NULL
+          AND r.source_text IS NOT NULL
+          AND r.source_text != ''
+        LIMIT #{limit}
+    </select>
+
+</mapper>

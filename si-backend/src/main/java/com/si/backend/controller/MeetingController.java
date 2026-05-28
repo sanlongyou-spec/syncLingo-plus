@@ -3,8 +3,10 @@ package com.si.backend.controller;
 import com.si.backend.common.Result;
 import com.si.backend.dto.CreateMeetingRequest;
 import com.si.backend.dto.SpeakerSummaryRequest;
+import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.facade.InterpretationFacade;
+import com.si.backend.service.MeetingActionItemService;
 import com.si.backend.service.MeetingService;
 import com.si.backend.service.SpeakerSummaryService;
 import com.si.backend.vo.InterpretationSessionVo;
@@ -35,6 +37,7 @@ public class MeetingController {
     private final MeetingService meetingService;
     private final SpeakerSummaryService speakerSummaryService;
     private final InterpretationFacade interpretationFacade;
+    private final MeetingActionItemService actionItemService;
 
     @PostMapping
     public Result<MeetingVo> create(@Valid @RequestBody CreateMeetingRequest request) {
@@ -145,5 +148,44 @@ public class MeetingController {
         String requirements = body != null ? body.get("requirements") : null;
         log.info("[MeetingController] regenerateSpeakerSummary, id={}", id);
         return Result.ok(speakerSummaryService.regenerate(id, requirements));
+    }
+
+    // ── 行动项接口 (A5) ────────────────────────────────────────────────────────
+
+    /** 从会话记录中提取行动项（LLM 生成并持久化） */
+    @PostMapping("/sessions/{sessionId}/action-items/extract")
+    public Result<List<MeetingActionItem>> extractActionItems(
+            @PathVariable String sessionId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Long meetingId = body != null && body.get("meetingId") != null
+                ? Long.valueOf(body.get("meetingId").toString()) : null;
+        Long userId = body != null && body.get("userId") != null
+                ? Long.valueOf(body.get("userId").toString()) : null;
+        log.info("[MeetingController] extractActionItems, sessionId={}", sessionId);
+        return Result.ok(actionItemService.extractAndSave(sessionId, meetingId, userId));
+    }
+
+    /** 查询会话的所有行动项 */
+    @GetMapping("/sessions/{sessionId}/action-items")
+    public Result<List<MeetingActionItem>> listActionItems(@PathVariable String sessionId) {
+        return Result.ok(actionItemService.listBySessionId(sessionId));
+    }
+
+    /** 更新行动项状态（pending / done / cancelled） */
+    @PatchMapping("/action-items/{id}/status")
+    public Result<MeetingActionItem> updateActionItemStatus(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> body) {
+        String status = body.get("status");
+        log.info("[MeetingController] updateActionItemStatus, id={}, status={}", id, status);
+        return Result.ok(actionItemService.updateStatus(id, status));
+    }
+
+    /** 删除行动项 */
+    @DeleteMapping("/action-items/{id}")
+    public Result<Void> deleteActionItem(@PathVariable Long id) {
+        log.info("[MeetingController] deleteActionItem, id={}", id);
+        actionItemService.delete(id);
+        return Result.ok();
     }
 }

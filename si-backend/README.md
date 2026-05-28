@@ -114,6 +114,12 @@ java -jar target/si-backend-1.0.0.jar --spring.profiles.active=dev
 { "type": "error", "code": "ASR_ERROR", "message": "..." }
 ```
 
+### 管理接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/admin/embeddings/rebuild?batchLimit=200` | 批量补建历史同传记录的语义嵌入（首次部署后执行一次） |
+
 ## 核心配置说明
 
 | 配置项 | 说明 |
@@ -122,3 +128,7 @@ java -jar target/si-backend-1.0.0.jar --spring.profiles.active=dev
 | `azure.translator.key` | Azure 翻译服务密钥 |
 | `cartesia.api-key` | Cartesia API 密钥（声色克隆 TTS） |
 | `voicemeeter.enabled` | 启用 VoiceMeeter 音频直通 |
+| `openai.api-key` | OpenAI API 密钥（LLM 摘要 + 向量嵌入） |
+| `openai.embedding-model` | 嵌入模型，默认 `text-embedding-3-small` |
+| `openai.embedding-top-k` | 向量检索返回条数上限，默认 20 |
+| `openai.embedding-min-score` | 余弦相似度最低阈值，默认 0.3 |

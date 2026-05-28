@@ -38,11 +38,11 @@ public class InterpretationController {
     }
 
     @PostMapping("/stop")
-    public Result<Void> stopInterpretation(@Valid @RequestBody StopInterpretationRequest request) {
+    public Result<java.util.Map<String, Object>> stopInterpretation(@Valid @RequestBody StopInterpretationRequest request) {
         log.info("[InterpretationController] stopInterpretation start, sessionId={}", request.getSessionId());
-        facade.stopInterpretation(request.getSessionId());
+        java.util.Map<String, Object> result = facade.stopInterpretation(request.getSessionId());
         log.info("[InterpretationController] stopInterpretation end, sessionId={}", request.getSessionId());
-        return Result.ok();
+        return Result.ok(result);
     }
 
     @GetMapping("/status/{sessionId}")

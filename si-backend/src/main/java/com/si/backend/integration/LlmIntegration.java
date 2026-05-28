@@ -550,6 +550,74 @@ public class LlmIntegration {
         }
     }
 
+    private static final String ACTION_ITEM_SYSTEM_PROMPT =
+            "你是会议行动项提取助手。从会议记录中提取所有明确的行动项（待办事项、跟进事项、决议等）。\n"
+            + "每条行动项单独一行，格式：【负责人（如有）】行动内容（截止时间（如有））\n"
+            + "如果没有明确的负责人或截止时间，省略对应部分。\n"
+            + "只输出行动项列表，每行一条，不要编号，不要解释，不要重复原文。\n"
+            + "如果没有找到行动项，只输出：无";
+
+    /**
+     * Extracts action items from meeting transcript text.
+     * Returns a newline-separated list of action items, or "无" if none found.
+     */
+    public String extractActionItems(String transcriptText) throws IOException {
+        if (transcriptText == null || transcriptText.isBlank()) return "无";
+        String input = transcriptText.length() > 12000
+                ? transcriptText.substring(0, 12000) : transcriptText;
+        log.info("[LlmIntegration] extractActionItems start, textLen={}", input.length());
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                ACTION_ITEM_SYSTEM_PROMPT,
+                input,
+                800L
+        );
+        log.info("[LlmIntegration] extractActionItems end, resultLen={}", result.length());
+        return result;
+    }
+
+    /**
+     * Calls the OpenAI Embeddings API and returns the float vector for {@code text}.
+     * Returns an empty array when the API key is missing or the text is blank.
+     */
+    public float[] embed(String text) throws IOException {
+        if (text == null || text.isBlank()) return new float[0];
+        if (openAiProperties.getApiKey() == null || openAiProperties.getApiKey().isBlank()) {
+            throw new IOException("OPENAI_API_KEY is blank");
+        }
+        String truncated = text.length() > 8000 ? text.substring(0, 8000) : text;
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("model", openAiProperties.getEmbeddingModel());
+        req.put("input", truncated);
+        String bodyJson = OBJECT_MAPPER.writeValueAsString(req);
+
+        String embUrl = openAiProperties.getBaseUrl().replaceAll("/+$", "") + "/embeddings";
+        HttpRequest.Builder rb = HttpRequest.newBuilder()
+                .uri(URI.create(embUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + openAiProperties.getApiKey())
+                .timeout(Duration.ofSeconds(30))
+                .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8));
+        if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {
+            rb.header("HTTP-Referer", openAiProperties.getReferer());
+        }
+        try {
+            HttpResponse<String> resp = STREAM_HTTP_CLIENT.send(rb.build(),
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resp.statusCode() != 200) {
+                throw new IOException("Embeddings API failed: HTTP " + resp.statusCode() + " " + resp.body());
+            }
+            JsonNode dataArr = OBJECT_MAPPER.readTree(resp.body()).path("data").get(0).path("embedding");
+            float[] vec = new float[dataArr.size()];
+            for (int i = 0; i < vec.length; i++) vec[i] = (float) dataArr.get(i).asDouble();
+            log.debug("[LlmIntegration] embed done, model={}, dims={}", openAiProperties.getEmbeddingModel(), vec.length);
+            return vec;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Embedding request interrupted", e);
+        }
+    }
+
     private String sanitizeErrorMessage(String message) {
         if (message == null || message.isBlank()) {
             return "unknown";

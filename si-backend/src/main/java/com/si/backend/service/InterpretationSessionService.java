@@ -1,5 +1,6 @@
 package com.si.backend.service;
 
+import com.si.backend.config.CostRatesProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.mapper.InterpretationSessionMapper;
 import com.si.backend.common.Constants;
@@ -11,6 +12,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -25,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InterpretationSessionService {
 
     private final InterpretationSessionMapper sessionMapper;
+    private final CostRatesProperties costRatesProperties;
     private final Map<String, InterpretationSession> activeSessions = new ConcurrentHashMap<>();
 
     @PostConstruct
@@ -110,11 +115,11 @@ public class InterpretationSessionService {
 
     /**
      * 停止同传会话，更新状态并从内存移除。
-     *
-     * @param sessionId 会话 ID
+     * Returns a map that may contain a {@code budgetWarning} string if session or monthly costs
+     * exceed configured thresholds.
      */
     @Transactional
-    public void stopSession(String sessionId) {
+    public Map<String, Object> stopSession(String sessionId) {
         log.info("[InterpretationSessionService] stopSession start, sessionId={}", sessionId);
         InterpretationSession session = activeSessions.remove(sessionId);
         LocalDateTime endTime = LocalDateTime.now();
@@ -122,24 +127,81 @@ public class InterpretationSessionService {
             session.setStatus(Constants.SESSION_STATUS_STOPPED);
             session.setEndTime(endTime);
             sessionMapper.updateStatus(sessionId, Constants.SESSION_STATUS_STOPPED, endTime);
-            log.info("[InterpretationSessionService] stopSession end, sessionId={}, status={}",
-                    sessionId, session.getStatus());
-            return;
+            log.info("[InterpretationSessionService] stopSession end, sessionId={}", sessionId);
+        } else {
+            InterpretationSession dbSession = sessionMapper.findBySessionId(sessionId);
+            if (dbSession == null) {
+                log.warn("[InterpretationSessionService] stopSession skip, session not found, sessionId={}", sessionId);
+                return Map.of();
+            }
+            if (Constants.SESSION_STATUS_STOPPED.equals(dbSession.getStatus())) {
+                log.info("[InterpretationSessionService] stopSession skip, already stopped, sessionId={}", sessionId);
+                return Map.of();
+            }
+            sessionMapper.updateStatus(sessionId, Constants.SESSION_STATUS_STOPPED, endTime);
+            session = dbSession;
+            log.info("[InterpretationSessionService] stopSession end (from db), sessionId={}", sessionId);
+        }
+        return buildStopResult(session);
+    }
+
+    private Map<String, Object> buildStopResult(InterpretationSession session) {
+        CostRatesProperties.Budget budget = costRatesProperties.getBudget();
+        CostRatesProperties.Rates rates = costRatesProperties.getRates();
+        double sessionCost = calcSessionCost(session, rates);
+        Map<String, Object> result = new HashMap<>();
+        result.put("sessionCostUsd", sessionCost);
+
+        if (budget.getSessionUsd() > 0 && sessionCost > budget.getSessionUsd()) {
+            result.put("budgetWarning", String.format(
+                    "本次会话费用 $%.4f 已超出单次预算 $%.2f", sessionCost, budget.getSessionUsd()));
         }
 
-        InterpretationSession dbSession = sessionMapper.findBySessionId(sessionId);
-        if (dbSession == null) {
-            log.warn("[InterpretationSessionService] stopSession skip, session not found, sessionId={}", sessionId);
-            return;
+        if (budget.getMonthlyUsd() > 0 && session.getUserId() != null) {
+            String yearMonth = YearMonth.now().format(DateTimeFormatter.ofPattern("yyyy-MM"));
+            Map<String, Object> monthly = sessionMapper.currentMonthSummaryByUser(session.getUserId(), yearMonth);
+            if (monthly != null) {
+                double monthlyCost = calcCostFromUsageMap(monthly, rates);
+                result.put("monthlyCostUsd", monthlyCost);
+                if (monthlyCost > budget.getMonthlyUsd()) {
+                    result.put("budgetWarning", String.format(
+                            "本月累计费用 $%.4f 已超出月度预算 $%.2f", monthlyCost, budget.getMonthlyUsd()));
+                }
+            }
         }
-        if (Constants.SESSION_STATUS_STOPPED.equals(dbSession.getStatus())) {
-            log.info("[InterpretationSessionService] stopSession skip, already stopped, sessionId={}", sessionId);
-            return;
-        }
+        return result;
+    }
 
-        sessionMapper.updateStatus(sessionId, Constants.SESSION_STATUS_STOPPED, endTime);
-        log.info("[InterpretationSessionService] stopSession end, sessionId={}, status={}",
-                sessionId, Constants.SESSION_STATUS_STOPPED);
+    private double calcSessionCost(InterpretationSession s, CostRatesProperties.Rates r) {
+        long asrMs = s.getAsrAudioMs() != null ? s.getAsrAudioMs() : 0L;
+        long tc    = s.getTranslateChars() != null ? s.getTranslateChars() : 0L;
+        long tts   = s.getTtsChars() != null ? s.getTtsChars() : 0L;
+        long llmIn = s.getLlmInputTokens() != null ? s.getLlmInputTokens() : 0L;
+        long llmOut = s.getLlmOutputTokens() != null ? s.getLlmOutputTokens() : 0L;
+        return asrMs  * r.getAsrPerHourUsd() / 3_600_000.0
+             + tc     * r.getTransPerMillionCharsUsd() / 1_000_000.0
+             + tts    * r.getTtsPerMillionCharsUsd() / 1_000_000.0
+             + llmIn  * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
+             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
+    }
+
+    private double calcCostFromUsageMap(Map<String, Object> row, CostRatesProperties.Rates r) {
+        long asrMs  = toLong(row.get("totalAsrMs"));
+        long tc     = toLong(row.get("totalTransChars"));
+        long tts    = toLong(row.get("totalTtsChars"));
+        long llmIn  = toLong(row.get("totalLlmIn"));
+        long llmOut = toLong(row.get("totalLlmOut"));
+        return asrMs  * r.getAsrPerHourUsd() / 3_600_000.0
+             + tc     * r.getTransPerMillionCharsUsd() / 1_000_000.0
+             + tts    * r.getTtsPerMillionCharsUsd() / 1_000_000.0
+             + llmIn  * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
+             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
+    }
+
+    private long toLong(Object val) {
+        if (val == null) return 0L;
+        if (val instanceof Number n) return n.longValue();
+        try { return Long.parseLong(val.toString()); } catch (NumberFormatException e) { return 0L; }
     }
 
     private String joinHotwordIds(List<Long> hotwordIds) {

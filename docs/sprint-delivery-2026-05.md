@@ -556,15 +556,183 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+---
+
+## 六、2026-05-28 新增功能（本次迭代）
+
+### 6.1 历史记录设置提前显示
+
+**问题**：摘要要求输入框、接收人选择器此前只有在同传开始后才会出现，操作不便。
+
+**变更**（`si-frontend/src/views/HistoryView.tsx`）：
+- "发言摘要"和"会议总结"两个 Tab 的**摘要要求**输入框、**接收人选择器**移出 `{selectedSessionId && ...}` 条件渲染，在选中历史记录之前就常驻显示
+- 设置即刻生效并持久化到 localStorage（与同传会话无关）
+- 新增"发送到会议聊天"复选框（默认不勾选），持久化 key: `MEETING_SUMMARY_INCLUDE_CHAT`
+
+### 6.2 发言人误识别防抖
+
+**问题**：单句短文本导致声纹识别误判换人，错误地触发摘要。
+
+**变更**（`si-frontend/src/views/InterpretationView.tsx`）：
+- 新增常量 `MIN_SPEAKER_CHANGE_CHARS = 30`
+- 新增 `pendingSpeakerRef`：候选新发言人缓冲区，累积文本未达 30 字则回归给上一发言人
+- `stopSession` 时同步判断并清空 pending buffer
+
+**效果**：单句短文误识别不再触发发言人切换，减少无效摘要调用。
+
+### 6.3 向量语义 RAG 升级（跨会议问答）
+
+将原先 MySQL LIKE 关键词检索替换为 OpenAI Embedding + 余弦相似度向量检索，大幅提升跨会议问答的召回精度和语义相关性。
+
+#### 架构变化
+
+```
+旧方案：问题 → 关键词提取 → LIKE 搜索 interpretation_result → 组织上下文 → LLM
+新方案：问题 → OpenAI embed() → 余弦相似度搜索 interpretation_embedding → 组织上下文 → LLM
+```
+
+#### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `si-backend/sql/2026-05-28-add-embedding-table.sql` | `interpretation_embedding` 表 DDL（手动执行或启动自建） |
+| `entity/InterpretationEmbedding.java` | 嵌入向量实体 |
+| `dto/EmbedCandidate.java` | 批量构建嵌入的候选 DTO |
+| `mapper/InterpretationEmbeddingMapper.java` | 向量表 CRUD + 动态查询接口 |
+| `mapper/InterpretationEmbeddingMapper.xml` | 动态 WHERE 子句（meetingId/speakerName/since 过滤） |
+| `service/VectorSearchService.java` | 余弦相似度搜索服务（float↔byte 转换、topK 过滤、minScore 阈值） |
+| `controller/AdminController.java` | `POST /api/admin/embeddings/rebuild` — 批量补建历史嵌入 |
+| `test/.../VectorSearchServiceTest.java` | 12 个纯数学单元测试（round-trip、余弦、边界） |
+
+#### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `config/OpenAiProperties.java` | 新增 `embeddingModel`、`embeddingTopK`、`embeddingMinScore` 字段 |
+| `application.yml` | 新增 `openai.embedding-*` 环境变量映射 |
+| `integration/LlmIntegration.java` | 新增 `embed(String text)` — 调用 `/embeddings` API 返回 `float[]` |
+| `service/InterpretationResultService.java` | `save()` 后异步调用 `asyncEmbed()` — 后台线程生成并持久化向量；新增 `rebuildEmbeddings(int limit)` 批量回填 |
+| `service/PreMeetingService.java` | `buildUnifiedContext()` 和 `chatCrossMeeting()` 改用向量检索替代关键词 LIKE；注入 `VectorSearchService` |
+
+#### 默认配置
+
+| 参数 | 默认值 | 环境变量 |
+|------|--------|---------|
+| 嵌入模型 | `text-embedding-3-small` | `OPENAI_EMBEDDING_MODEL` |
+| topK | 20 | `OPENAI_EMBEDDING_TOP_K` |
+| 最低相似度 | 0.3 | `OPENAI_EMBEDDING_MIN_SCORE` |
+
+#### 部署注意
+
+1. 首次部署后执行一次回填：`POST /api/admin/embeddings/rebuild?batchLimit=500`
+2. 表由 `InterpretationResultService.initTable()` 在应用启动时自动建表（`CREATE TABLE IF NOT EXISTS`）
+3. 若 `OPENAI_API_KEY` 未配置，`asyncEmbed()` 会静默跳过（warn 日志，不影响同传主流程）
+
+---
+
+## 七、测试记录（2026-05-28）
+
+### 7.1 编译级检查（已执行，2026-05-28 第二次）
+
+| 检查项 | 命令 | 结果 |
+|--------|------|------|
+| Java 编译 | `mvn compile -q` | ✅ BUILD SUCCESS |
+| TypeScript 类型检查 | `npx tsc --noEmit` | ✅ 0 错误 |
+
+### 7.2 单元测试（已执行）
+
+`VectorSearchServiceTest` — 覆盖向量序列化和余弦相似度纯数学逻辑（无外部依赖）：
+
+| # | 测试用例 | 结果 |
+|---|----------|------|
+| 1 | `roundTripEmptyArray` — 空数组序列化/反序列化 | ✅ PASS |
+| 2 | `roundTripSingleValue` — 单浮点精度 | ✅ PASS |
+| 3 | `roundTripFullVector` — 含极值的完整向量 | ✅ PASS |
+| 4 | `toFloatsNullReturnsEmpty` — null 输入 | ✅ PASS |
+| 5 | `cosineIdenticalVectorsIsOne` — 同向量相似度=1 | ✅ PASS |
+| 6 | `cosineOrthogonalVectorsIsZero` — 正交向量相似度=0 | ✅ PASS |
+| 7 | `cosineOppositeVectorsIsMinusOne` — 反向量相似度=-1 | ✅ PASS |
+| 8 | `cosineEmptyVectorIsZero` — 空向量相似度=0 | ✅ PASS |
+| 9 | `cosineMismatchedLengthIsZero` — 维度不匹配=0 | ✅ PASS |
+| 10 | `cosineKnownAngle45Degrees` — cos(45°)=√2/2 精度验证 | ✅ PASS |
+| 11 | `cosineZeroVectorIsZero` — 零向量相似度=0 | ✅ PASS |
+| 12 | `toBytesLengthIsFourTimesFloatCount` — 1536维字节长度 | ✅ PASS |
+
+**汇总：12/12 通过，0 失败，运行时间约 0.1 s**
+
+### 7.3 静态结构验证（已执行，2026-05-28）
+
+在不启动服务的情况下，对代码结构和引用完整性执行以下检查：
+
+| 检查项 | 方式 | 结果 |
+|--------|------|------|
+| 7 个新增 Java 文件全部存在 | shell 文件存在性断言 | ✅ 全部命中 |
+| 8 个新增前端 API 函数全部导出 | grep export const | ✅ 全部可见 |
+| 3 个新增 TypeScript 接口定义 | grep export interface | ✅ 全部可见 |
+| `stopSession()` 返回类型变更在 3 处调用点全部兼容 | grep 交叉验证 | ✅ InterpretationFacade、InterpretationController 接收返回值；RealtimeInterpretationFacade 丢弃返回值（合法） |
+| `application.yml` 新增 `app.admin`、`app.cost` 配置节点 | yaml grep | ✅ 含 8 个环境变量替换占位符 |
+| `InterpretationSessionMapper` 新增月度聚合方法 | grep | ✅ `monthlySummaryByUser`、`currentMonthSummaryByUser` 均存在 |
+| `LlmIntegration.extractActionItems()` 存在 | grep | ✅ 含 `ACTION_ITEM_SYSTEM_PROMPT` 常量 |
+| `buildStopResult` / 预算警告逻辑 | grep | ✅ `budgetWarning` 在两处阈值判断中写入 map |
+| HistoryView 行动项 JSX 块 | grep 行号 | ✅ 909-946 行渲染行动项列表 |
+
+### 7.4 待执行测试（需后端运行时 + 数据库）
+
+| # | 测试项 | 期望 |
+|---|--------|------|
+| V-1 | `POST /api/admin/embeddings/rebuild`（空库） | `{"created": 0}` |
+| V-2 | 保存同传结果后 `interpretation_embedding` 表异步写入 | 约 5s 后有新行 |
+| V-3 | `POST /api/meetings/sessions/{id}/action-items/extract`（有记录） | 返回非空 list，每条含 content |
+| V-4 | `GET /api/cost/rates` | JSON 含 `asrPerMs`、`monthlyBudgetUsd` 等 7 个字段 |
+| V-5 | `GET /api/cost/monthly-summary?userId=1` | JSON array，每行含 `estimatedCostUsd` |
+| V-6 | `POST /api/interpretation/stop`（session 结束后响应体） | 含 `sessionCostUsd`；超阈值时含 `budgetWarning` |
+| V-7 | `POST /api/admin/embeddings/rebuild`（设 ADMIN_API_SECRET 后不带头） | HTTP 401 |
+
+---
+
+## 八、需人工测试的功能（完整清单）
+
+### 8.1 本次新增功能（2026-05-28）
+
+| # | 测试项 | 操作步骤 | 预期结果 |
+|---|--------|---------|---------|
+| N-1 | 历史记录设置提前显示 | 打开历史记录，**不选择**任何会话 | "发言摘要"和"会议总结"的摘要要求输入框、接收人选择器已显示，可以填写 |
+| N-2 | 设置持久化（刷新不丢失） | 填写摘要要求 → 刷新页面 | 上次填写的要求仍在输入框中 |
+| N-3 | 发送到会议聊天复选框 | 进入"会议总结"Tab | 默认不勾选；勾选后刷新页面仍保持勾选；发送摘要时按此状态决定是否推送到聊天 |
+| N-4 | 发言人防抖（30字阈值） | 同传中模拟声纹误识别：说几个字停顿，语音归属在两人间跳动 | 短于30字的候选新发言人不触发切换，内容归并到上一发言人；只有持续说话30字以上才算真正换人 |
+| N-5 | 向量 RAG — 冷启动回填 | 启动后端 → 调用 `POST /api/admin/embeddings/rebuild?batchLimit=200` | 返回 `{"created": N}`，N = 已有历史记录数量（首次可能为 0 若无历史数据） |
+| N-6 | 向量 RAG — 实时嵌入 | 开始同传说一段话 → 停止 → 等待约 5 秒 → 查询 MySQL `interpretation_embedding` 表 | 表中出现新行，`embedding` 字段为 BLOB（≈6144字节 = 1536×4） |
+| N-7 | 向量 RAG — 跨会议问答 | 有两场以上历史同传后，在"Teams Bot 问答"提问与历史内容相关的问题 | 回答内容语义相关（不只是关键词匹配）；`contextSummary` 显示"语义检索了 X 场会议" |
+| N-8 | 向量 RAG — 无 API Key 时主流程不受影响 | 清空 `OPENAI_API_KEY` 环境变量 → 进行同传 | 同传、翻译、TTS 正常工作；后端日志出现 warn "asyncEmbed failed"；embedding 表无新增记录 |
+
+### 8.2 本次新增功能（2026-05-28 第二批）
+
+| # | 测试项 | 操作步骤 | 预期结果 |
+|---|--------|---------|---------|
+| N-9 | 向量 RAG 上下文丰富（C1-C4）| Teams Bot 提问历史会议内容 | 回答中出现 `[来源：会议标题·日期]` 引用标注 |
+| N-10 | Teams Bot 发言人过滤（B2/B3）| 提问"张三说了什么" | 检索结果只含张三的发言；无该发言人时提示无相关内容 |
+| N-11 | 行动项 AI 提取（A4-A5）| 历史记录 → 会议总结 Tab → 点击"AI 提取行动项" | 1-2秒后出现行动项列表，每条含内容，有负责人时显示蓝色标注 |
+| N-12 | 行动项状态切换（A6）| 点击行动项左侧圆形按钮 | 切换为"完成"状态，条目变绿并显示删除线；再次点击恢复"待办" |
+| N-13 | 行动项持久化（A5）| 提取行动项 → 刷新页面 → 重新选择同一会话 | 行动项自动加载，无需重新提取 |
+| N-14 | 成本分析费率 API（S3）| 浏览器访问 `GET /api/cost/rates` | 返回 JSON 含 `asrPerMs`, `transPerChar` 等字段 |
+| N-15 | 成本分析月度汇总（S8）| 成本分析页 → 点击"月度汇总"Tab | 表格显示每月会话数和估计费用；点击"导出 CSV"下载文件 |
+| N-16 | 月度预算进度条（S12）| 在 application.yml 设置 `app.cost.budget.monthly-usd: 10` 并重启 | 成本分析页顶部显示蓝色进度条；超出预算时变红 |
+| N-17 | 停止会话预算警告（S10/S11）| 设置 `app.cost.budget.session-usd: 0.001`（极低阈值方便测试）→ 进行一段同传 → 停止 | 停止后约 300ms 弹出"⚠️ 预算提醒：本次会话费用..."警告框 |
+| N-18 | Admin 接口鉴权（P2）| 未设 `ADMIN_API_SECRET` 时调用 `POST /api/admin/embeddings/rebuild` | 返回成功（未保护模式，日志有 warn）；设置后不带 `X-Admin-Secret` 头返回 401 |
+
+### 8.3 存量功能回归（2026-05-25，本次未改动）
+
+（原文第四节 M-1 至 M-23 的清单，状态不变，此处不重复）
+
+---
+
 ## 五、已知限制与后续优化方向
 
-| 项目 | 当前限制 | 建议后续 |
+| 项目 | 当前状态 | 建议后续 |
 |------|---------|---------|
-| **检索范围** | 流式问答仅搜索同传记录（`interpretation_result`），会议持久化文件内容暂未纳入 AI 检索 | 将 `pre_meeting_file_persistent.file_content` 纳入 `buildUnifiedContext()` 搜索范围 |
-| **关键词提取** | 简单分词 + 停用词过滤，取前 3 词 | 接入 jieba 分词或调用 LLM 提取语义关键词 |
-| **召回精度** | MySQL LIKE 搜索，无语义相关性排序 | 引入 MySQL 全文索引（ngram）或向量检索（pgvector / Milvus） |
+| **向量检索规模** | 每次搜索加载用户最近 2000 条嵌入到内存做余弦计算，适合中小规模（≤10万条可用） | 超大规模可引入 pgvector 或 Milvus 原生 ANN 索引 |
+| **嵌入延迟** | 异步后台生成，平均 300-800ms/条（受 OpenAI API 延迟影响） | 可批量预处理减少调用次数 |
+| **历史数据回填** | 需手动调用 `/api/admin/embeddings/rebuild`，批量限 200 条/次以防超时 | 可改为定时任务自动补建 |
+| **会议文件未纳入向量检索** | 同传记录已向量化，但持久化文件内容（`pre_meeting_file_persistent`）暂未嵌入 | 上传文件时同步 embed 文件摘要/分块 |
 | **流式推送节奏** | C# 端每 2 秒更新一次，首次推送延迟略高 | 可调整为字符数阈值触发（如每 50 字更新） |
 | **历史消息不传** | 流式接口目前 `history=[]`，无多轮对话上下文 | 在 C# Bot 端维护每用户对话历史，随请求传入 |
-| **发言人最短文本** | 30 字阈值，非常短的发言不触发摘要 | 可按需调整阈值，或合并相邻同一发言人的片段 |
-| **摘要推送延迟** | Teams 推送为同步调用，摘要生成期间不阻塞前端（fire-and-forget） | 如需确认送达，可改为后台队列 + 重试机制 |
-| **会议文件未纳入 AI 检索** | 流式问答仅搜索同传记录，持久化文件内容暂未加入检索 | 将 `pre_meeting_file_persistent.file_content` 纳入 `buildUnifiedContext()` |

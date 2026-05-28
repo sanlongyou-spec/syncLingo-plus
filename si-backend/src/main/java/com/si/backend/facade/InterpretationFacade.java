@@ -71,10 +71,11 @@ public class InterpretationFacade {
         return sessionId;
     }
 
-    public void stopInterpretation(String sessionId) {
+    public java.util.Map<String, Object> stopInterpretation(String sessionId) {
         log.info("[InterpretationFacade] stopInterpretation, sessionId={}", sessionId);
-        sessionService.stopSession(sessionId);
+        java.util.Map<String, Object> result = sessionService.stopSession(sessionId);
         CompletableFuture.runAsync(() -> meetingSummaryService.generateAndSaveAsync(sessionId));
+        return result;
     }
 
     public InterpretationSessionVo getSessionStatus(String sessionId) {

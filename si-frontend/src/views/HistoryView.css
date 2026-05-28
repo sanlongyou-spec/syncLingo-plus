@@ -987,6 +987,127 @@
 }
 
 /* ─────────────────────────────────────────────────
+   Action Items (A6/A7)
+───────────────────────────────────────────────── */
+.history-action-items {
+  margin-top: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 1rem;
+}
+
+.history-action-items-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.history-action-items-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.history-action-items-extract-btn {
+  font-size: 0.82rem;
+  padding: 0.3rem 0.75rem;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.history-action-items-extract-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.history-action-items-extract-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.history-action-items-empty {
+  font-size: 0.85rem;
+  color: #9ca3af;
+  padding: 0.5rem 0;
+}
+
+.history-action-items-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-action-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  transition: background 0.1s;
+}
+
+.history-action-item.done {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  opacity: 0.75;
+}
+
+.history-action-item-check {
+  flex-shrink: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  border: 1.5px solid #9ca3af;
+  background: #fff;
+  color: #16a34a;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.history-action-item.done .history-action-item-check {
+  border-color: #16a34a;
+  background: #dcfce7;
+}
+
+.history-action-item-body {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-size: 0.87rem;
+  color: #374151;
+}
+
+.history-action-item.done .history-action-item-content {
+  text-decoration: line-through;
+  color: #9ca3af;
+}
+
+.history-action-item-assignee {
+  font-weight: 600;
+  color: #2563eb;
+}
+
+.history-action-item-deadline {
+  font-size: 0.78rem;
+  color: #6b7280;
+  margin-left: 0.25rem;
+}
+
+/* ─────────────────────────────────────────────────
    Responsive
 ───────────────────────────────────────────────── */
 @media (max-width: 960px) {

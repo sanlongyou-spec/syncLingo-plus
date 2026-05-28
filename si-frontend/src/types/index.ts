@@ -315,3 +315,36 @@ export const VOICE_CLONE_LANGUAGE_OPTIONS = [
   { label: '印尼语', value: 'id' },
   { label: '英语', value: 'en' },
 ] as const
+
+export interface MeetingActionItem {
+  id: number
+  sessionId: string
+  meetingId?: number | null
+  userId?: number | null
+  assignee?: string | null
+  content: string
+  deadline?: string | null
+  status: 'pending' | 'done' | 'cancelled'
+  createTime?: string | null
+}
+
+export interface CostRates {
+  asrPerMs: number
+  transPerChar: number
+  ttsPerChar: number
+  llmInPerToken: number
+  llmOutPerToken: number
+  monthlyBudgetUsd: number
+  sessionBudgetUsd: number
+}
+
+export interface MonthlyCostSummary {
+  month: string
+  sessionCount: number
+  totalAsrMs: number
+  totalTransChars: number
+  totalTtsChars: number
+  totalLlmIn: number
+  totalLlmOut: number
+  estimatedCostUsd: number
+}

@@ -103,4 +103,33 @@ public interface InterpretationSessionMapper {
             "WHERE s.meeting_id = #{meetingId} AND COALESCE(s.deleted, 0) = 0 " +
             "ORDER BY s.create_time DESC")
     java.util.List<InterpretationSession> findByMeetingId(@Param("meetingId") Long meetingId);
+
+    @Select("""
+            SELECT DATE_FORMAT(start_time, '%Y-%m') AS month,
+                   COUNT(*)                          AS sessionCount,
+                   SUM(COALESCE(asr_audio_ms, 0))     AS totalAsrMs,
+                   SUM(COALESCE(translate_chars, 0))  AS totalTransChars,
+                   SUM(COALESCE(tts_chars, 0))        AS totalTtsChars,
+                   SUM(COALESCE(llm_input_tokens, 0)) AS totalLlmIn,
+                   SUM(COALESCE(llm_output_tokens, 0)) AS totalLlmOut
+            FROM interpretation_session
+            WHERE user_id = #{userId} AND COALESCE(deleted, 0) = 0 AND start_time IS NOT NULL
+            GROUP BY DATE_FORMAT(start_time, '%Y-%m')
+            ORDER BY month DESC
+            """)
+    java.util.List<java.util.Map<String, Object>> monthlySummaryByUser(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE(SUM(COALESCE(asr_audio_ms, 0)), 0)     AS totalAsrMs,
+                   COALESCE(SUM(COALESCE(translate_chars, 0)), 0)  AS totalTransChars,
+                   COALESCE(SUM(COALESCE(tts_chars, 0)), 0)        AS totalTtsChars,
+                   COALESCE(SUM(COALESCE(llm_input_tokens, 0)), 0) AS totalLlmIn,
+                   COALESCE(SUM(COALESCE(llm_output_tokens, 0)), 0) AS totalLlmOut,
+                   COUNT(*)                                         AS sessionCount
+            FROM interpretation_session
+            WHERE user_id = #{userId}
+              AND COALESCE(deleted, 0) = 0
+              AND DATE_FORMAT(start_time, '%Y-%m') = #{yearMonth}
+            """)
+    java.util.Map<String, Object> currentMonthSummaryByUser(@Param("userId") Long userId, @Param("yearMonth") String yearMonth);
 }

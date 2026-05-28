@@ -100,6 +100,9 @@ openai:
   compression-max-output-tokens: ${OPENAI_COMPRESSION_MAX_OUTPUT_TOKENS:512}
   summary-max-output-tokens: ${OPENAI_SUMMARY_MAX_OUTPUT_TOKENS:1200}
   document-summary-max-output-tokens: ${OPENAI_DOCUMENT_SUMMARY_MAX_OUTPUT_TOKENS:4000}
+  embedding-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
+  embedding-top-k: ${OPENAI_EMBEDDING_TOP_K:20}
+  embedding-min-score: ${OPENAI_EMBEDDING_MIN_SCORE:0.3}
 
 cartesia:
   api-key: ${CARTESIA_API_KEY:}
@@ -124,6 +127,18 @@ jwt:
 app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5174}
+  admin:
+    api-secret: ${ADMIN_API_SECRET:}
+  cost:
+    rates:
+      asr-per-hour-usd: ${COST_ASR_PER_HOUR_USD:1.00}
+      trans-per-million-chars-usd: ${COST_TRANS_PER_MILLION_CHARS_USD:10.00}
+      tts-per-million-chars-usd: ${COST_TTS_PER_MILLION_CHARS_USD:1.50}
+      llm-in-per-million-tokens-usd: ${COST_LLM_IN_PER_MILLION_TOKENS_USD:0.25}
+      llm-out-per-million-tokens-usd: ${COST_LLM_OUT_PER_MILLION_TOKENS_USD:1.25}
+    budget:
+      monthly-usd: ${COST_BUDGET_MONTHLY_USD:0.0}
+      session-usd: ${COST_BUDGET_SESSION_USD:0.0}
 
 bot:
   api:

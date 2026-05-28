@@ -41,4 +41,10 @@ public class OpenAiProperties {
     private long summaryMaxOutputTokens = 1200L;
 
     private long documentSummaryMaxOutputTokens = 4000L;
+
+    private String embeddingModel = "text-embedding-3-small";
+
+    private int embeddingTopK = 20;
+
+    private float embeddingMinScore = 0.3f;
 }

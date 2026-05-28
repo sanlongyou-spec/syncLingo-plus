@@ -31,8 +31,6 @@ import org.apache.poi.xwpf.usermodel.UnderlinePatterns;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.si.backend.dto.CrossMeetingSnippet;
-
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -84,6 +82,10 @@ public class PreMeetingService {
     private final LlmIntegration llmIntegration;
     private final PreMeetingUsageMapper usageMapper;
     private final InterpretationResultMapper interpretationResultMapper;
+    private final VectorSearchService vectorSearchService;
+    private final com.si.backend.mapper.InterpretationSessionMapper interpretationSessionMapper;
+    private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
+    private final com.si.backend.mapper.PersistentPreMeetingFileMapper persistentFileMapper;
 
     private record PreMeetingDoc(String fileName, String ext, String text, byte[] originalBytes) {}
     private record ExpectedParticipant(String name, String department, String email, String sourceText) {}
@@ -969,23 +971,13 @@ public class PreMeetingService {
             int days) throws IOException {
 
         String since = days > 0 ? LocalDate.now().minusDays(days).toString() : null;
-        List<String> keywords = extractKeywords(question);
-        log.info("[PreMeetingService] chatCrossMeeting, userId={}, keywords={}, days={}", userId, keywords, days);
+        log.info("[PreMeetingService] chatCrossMeeting vector, userId={}, days={}", userId, days);
 
-        Map<String, List<CrossMeetingSnippet>> bySession = new LinkedHashMap<>();
-        Set<String> seen = new HashSet<>();
+        float[] queryVec = llmIntegration.embed(question);
+        List<VectorSearchService.SearchResult> hits =
+                vectorSearchService.search(userId, queryVec, null, null, since, 40);
 
-        for (String keyword : keywords) {
-            List<CrossMeetingSnippet> hits = interpretationResultMapper
-                    .searchSnippetsByKeyword(userId, keyword, since == null ? "" : since, 60);
-            for (CrossMeetingSnippet hit : hits) {
-                String dedup = hit.getSessionId() + " " + hit.getSourceText();
-                if (!seen.add(dedup)) continue;
-                bySession.computeIfAbsent(hit.getSessionId(), k -> new ArrayList<>()).add(hit);
-            }
-        }
-
-        if (bySession.isEmpty()) {
+        if (hits.isEmpty()) {
             String range = days > 0 ? "过去 " + days + " 天的" : "所有";
             return PreMeetingChatVo.builder()
                     .answer("在" + range + "会议记录中，未找到与该问题相关的内容。")
@@ -994,35 +986,47 @@ public class PreMeetingService {
                     .build();
         }
 
+        Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
+        for (VectorSearchService.SearchResult hit : hits) {
+            bySession.computeIfAbsent(hit.sessionId(), k -> new ArrayList<>()).add(hit);
+        }
+
         StringBuilder context = new StringBuilder();
         List<String> sessionLabels = new ArrayList<>();
         int sessionCount = 0;
 
-        for (Map.Entry<String, List<CrossMeetingSnippet>> entry : bySession.entrySet()) {
+        for (Map.Entry<String, List<VectorSearchService.SearchResult>> entry : bySession.entrySet()) {
             if (sessionCount++ >= 5) break;
-            List<CrossMeetingSnippet> snippets = entry.getValue();
-            CrossMeetingSnippet first = snippets.get(0);
+            List<VectorSearchService.SearchResult> snippets = entry.getValue();
+            VectorSearchService.SearchResult first = snippets.get(0);
 
-            String title = (first.getSessionTitle() != null && !first.getSessionTitle().isBlank())
-                    ? first.getSessionTitle() : entry.getKey().substring(0, 8);
-            String date = first.getSessionStartTime() != null
-                    ? first.getSessionStartTime().toString().substring(0, 10) : "日期未知";
+            String title = (first.sessionTitle() != null && !first.sessionTitle().isBlank())
+                    ? first.sessionTitle() : entry.getKey().substring(0, 8);
+            String date = first.sessionDate() != null ? first.sessionDate() : "日期未知";
             String label = title + " (" + date + ")";
             sessionLabels.add(label);
 
-            context.append("[会议：").append(title).append(" | ").append(date).append("]\n");
+            // C4: 带来源标记
+            context.append("[来源：").append(title).append("·").append(date).append("]\n");
             int count = 0;
-            for (CrossMeetingSnippet snippet : snippets) {
+            for (VectorSearchService.SearchResult snippet : snippets) {
                 if (count++ >= 20) break;
-                context.append(snippet.getSourceText())
-                        .append(" → ").append(snippet.getTranslatedText()).append("\n");
+                if (snippet.speakerName() != null && !snippet.speakerName().isBlank()) {
+                    context.append(snippet.speakerName()).append(": ");
+                }
+                context.append(snippet.sourceText())
+                        .append(" → ").append(snippet.translatedText()).append("\n");
             }
+            // C1/C2/C3: 叠加结构化内容
+            appendMeetingSummary(context, entry.getKey());
+            appendSpeakerSummaries(context, entry.getKey());
+            appendFileSummaries(context, entry.getKey());
             context.append("\n");
         }
 
         String answer = llmIntegration.chatCrossMeeting(context.toString(), question, history);
         int refCount = Math.min(3, sessionLabels.size());
-        String contextSummary = "检索了 " + bySession.size() + " 场会议，引用：" +
+        String contextSummary = "语义检索了 " + bySession.size() + " 场会议，引用：" +
                 String.join("、", sessionLabels.subList(0, refCount));
 
         return PreMeetingChatVo.builder()
@@ -1032,68 +1036,118 @@ public class PreMeetingService {
                 .build();
     }
 
-    private static final Set<String> CHAT_STOPWORDS = Set.of(
-            "的", "是", "有", "在", "了", "和", "与", "或", "什么", "哪些", "哪个",
-            "如何", "怎么", "关于", "请", "告诉", "我", "你", "他", "她", "它",
-            "这", "那", "吗", "呢", "吧", "啊", "过", "着", "被", "把", "让",
-            "给", "说", "讲", "提", "到", "从", "对", "为", "以", "上", "下",
-            "中", "会议", "记录", "同传", "历史");
-
-    private List<String> extractKeywords(String question) {
-        if (question == null || question.isBlank()) return List.of();
-        List<String> keywords = new ArrayList<>();
-        for (String part : question.split("[\\s，。？！,.?!、；;]+")) {
-            String w = part.trim();
-            if (w.length() >= 2 && !CHAT_STOPWORDS.contains(w)) {
-                keywords.add(w);
-                if (keywords.size() >= 3) break;
-            }
-        }
-        if (keywords.isEmpty()) {
-            keywords.add(question.substring(0, Math.min(4, question.length())).trim());
-        }
-        return keywords;
+    /** Filter dimensions extracted from a natural-language question (B2/B3). */
+    public record QuestionFilter(Long meetingId, String speakerName, String since) {
+        public static final QuestionFilter EMPTY = new QuestionFilter(null, null, null);
     }
 
     public String buildUnifiedContext(long userId, String question) {
-        List<String> keywords = extractKeywords(question);
-        Map<String, List<CrossMeetingSnippet>> bySession = new LinkedHashMap<>();
-        Set<String> seen = new HashSet<>();
+        return buildUnifiedContext(userId, question, QuestionFilter.EMPTY);
+    }
 
-        for (String keyword : keywords) {
-            List<CrossMeetingSnippet> hits = interpretationResultMapper
-                    .searchSnippetsByKeyword(userId, keyword, "", 60);
-            for (CrossMeetingSnippet hit : hits) {
-                String dedup = hit.getSessionId() + " " + hit.getSourceText();
-                if (!seen.add(dedup)) continue;
-                bySession.computeIfAbsent(hit.getSessionId(), k -> new ArrayList<>()).add(hit);
+    public String buildUnifiedContext(long userId, String question, QuestionFilter filter) {
+        log.info("[PreMeetingService] buildUnifiedContext vector, userId={}", userId);
+        try {
+            float[] queryVec = llmIntegration.embed(question);
+            List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
+                    userId, queryVec,
+                    filter.meetingId(), filter.speakerName(), filter.since(), 40);
+            if (hits.isEmpty()) return "";
+
+            Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
+            for (VectorSearchService.SearchResult hit : hits) {
+                bySession.computeIfAbsent(hit.sessionId(), k -> new ArrayList<>()).add(hit);
             }
-        }
 
-        if (bySession.isEmpty()) return "";
+            StringBuilder context = new StringBuilder();
+            int sessionCount = 0;
+            for (Map.Entry<String, List<VectorSearchService.SearchResult>> entry : bySession.entrySet()) {
+                if (sessionCount++ >= 5) break;
+                List<VectorSearchService.SearchResult> snippets = entry.getValue();
+                VectorSearchService.SearchResult first = snippets.get(0);
+                String title = (first.sessionTitle() != null && !first.sessionTitle().isBlank())
+                        ? first.sessionTitle() : entry.getKey().substring(0, 8);
+                String date = first.sessionDate() != null ? first.sessionDate() : "日期未知";
 
-        StringBuilder context = new StringBuilder();
-        int sessionCount = 0;
-        for (Map.Entry<String, List<CrossMeetingSnippet>> entry : bySession.entrySet()) {
-            if (sessionCount++ >= 5) break;
-            List<CrossMeetingSnippet> snippets = entry.getValue();
-            CrossMeetingSnippet first = snippets.get(0);
-            String title = (first.getSessionTitle() != null && !first.getSessionTitle().isBlank())
-                    ? first.getSessionTitle() : entry.getKey().substring(0, 8);
-            String date = first.getSessionStartTime() != null
-                    ? first.getSessionStartTime().toString().substring(0, 10) : "日期未知";
-            context.append("[会议：").append(title).append(" | ").append(date).append("]\n");
-            int count = 0;
-            for (CrossMeetingSnippet snippet : snippets) {
-                if (count++ >= 20) break;
-                context.append(snippet.getSourceText())
-                        .append(" → ").append(snippet.getTranslatedText()).append("\n");
+                // C4: 带来源标记的区块头
+                context.append("[来源：").append(title).append("·").append(date).append("]\n");
+
+                // 同传片段
+                int count = 0;
+                for (VectorSearchService.SearchResult snippet : snippets) {
+                    if (count++ >= 20) break;
+                    if (snippet.speakerName() != null && !snippet.speakerName().isBlank()) {
+                        context.append(snippet.speakerName()).append(": ");
+                    }
+                    context.append(snippet.sourceText())
+                            .append(" → ").append(snippet.translatedText()).append("\n");
+                }
+
+                // C1: 会议总结
+                appendMeetingSummary(context, entry.getKey());
+
+                // C2: 发言摘要
+                appendSpeakerSummaries(context, entry.getKey());
+
+                // C3: 会前文件摘要
+                appendFileSummaries(context, entry.getKey());
+
+                context.append("\n");
             }
-            context.append("\n");
+            log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions={}",
+                    userId, bySession.size());
+            return context.toString();
+        } catch (Exception e) {
+            log.warn("[PreMeetingService] buildUnifiedContext embed failed: {}", e.getMessage());
+            return "";
         }
-        log.info("[PreMeetingService] buildUnifiedContext, userId={}, keywords={}, sessions={}",
-                userId, keywords, bySession.size());
-        return context.toString();
+    }
+
+    private void appendMeetingSummary(StringBuilder context, String sessionId) {
+        try {
+            var session = interpretationSessionMapper.findBySessionId(sessionId);
+            if (session != null && session.getMeetingSummary() != null
+                    && !session.getMeetingSummary().isBlank()) {
+                String summary = session.getMeetingSummary();
+                if (summary.length() > 800) summary = summary.substring(0, 800) + "…";
+                context.append("[会议总结]\n").append(summary).append("\n");
+            }
+        } catch (Exception e) {
+            log.debug("[PreMeetingService] appendMeetingSummary failed: {}", e.getMessage());
+        }
+    }
+
+    private void appendSpeakerSummaries(StringBuilder context, String sessionId) {
+        try {
+            var summaries = speakerSummaryMapper.findBySessionId(sessionId);
+            for (var s : summaries) {
+                if (s.getSummary() == null || s.getSummary().isBlank()) continue;
+                String label = s.getSpeakerName() != null ? s.getSpeakerName() : s.getSpeakerId();
+                if (s.getTitle() != null && !s.getTitle().isBlank()) label += "·" + s.getTitle();
+                String body = s.getSummary().length() > 400
+                        ? s.getSummary().substring(0, 400) + "…" : s.getSummary();
+                context.append("[发言摘要 - ").append(label).append("]\n").append(body).append("\n");
+            }
+        } catch (Exception e) {
+            log.debug("[PreMeetingService] appendSpeakerSummaries failed: {}", e.getMessage());
+        }
+    }
+
+    private void appendFileSummaries(StringBuilder context, String sessionId) {
+        try {
+            var session = interpretationSessionMapper.findBySessionId(sessionId);
+            if (session == null || session.getMeetingId() == null) return;
+            var files = persistentFileMapper.findByMeetingId(session.getMeetingId());
+            for (var f : files) {
+                if (f.getSummary() == null || f.getSummary().isBlank()) continue;
+                String body = f.getSummary().length() > 400
+                        ? f.getSummary().substring(0, 400) + "…" : f.getSummary();
+                context.append("[文件摘要 - ").append(f.getFileName()).append("]\n")
+                        .append(body).append("\n");
+            }
+        } catch (Exception e) {
+            log.debug("[PreMeetingService] appendFileSummaries failed: {}", e.getMessage());
+        }
     }
 
     public String getFileName(String fileId) {

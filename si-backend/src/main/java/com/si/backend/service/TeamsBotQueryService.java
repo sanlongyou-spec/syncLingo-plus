@@ -16,11 +16,13 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -88,7 +90,13 @@ public class TeamsBotQueryService {
         }
 
         try {
-            String context = preMeetingService.buildUnifiedContext(user.getId(), message);
+            // B2: 从自然语言中提取过滤维度（发言人、会议标题关键词、时间范围）
+            PreMeetingService.QuestionFilter filter = extractQuestionFilter(message);
+            log.info("[TeamsBotQueryService] queryStream filter, speakerName={}, since={}",
+                    filter.speakerName(), filter.since());
+
+            // B3: 带过滤参数的向量检索上下文构建
+            String context = preMeetingService.buildUnifiedContext(user.getId(), message, filter);
             if (context.isBlank()) {
                 String noDataReply = "在所有历史会议记录中，未找到与该问题相关的内容。请尝试换一个关键词。";
                 sendSseAndComplete(emitter, noDataReply);
@@ -115,6 +123,67 @@ public class TeamsBotQueryService {
             }
             emitter.completeWithError(e);
         }
+    }
+
+    /**
+     * B1: 意图检测 — 判断消息是否已知指令。
+     * 已知指令由 parseCommand() 路由；未知的自然语言问题走向量 RAG 路径。
+     */
+    public boolean isKnownCommand(String message) {
+        String lower = normalize(message).toLowerCase(Locale.ROOT);
+        return lower.isBlank()
+                || isHelpCommand(lower)
+                || isListCommand(lower)
+                || argumentAfterPrefix(message, lower, List.of("摘要", "总结", "纪要", "summary")).isPresent()
+                || argumentAfterPrefix(message, lower, List.of("搜索", "查", "查询", "search")).isPresent()
+                || isSessionId(message);
+    }
+
+    /**
+     * B2: 从自然语言问题中提取过滤维度（发言人姓名、时间范围）。
+     * 规则优先，无法匹配时返回空过滤器。
+     */
+    PreMeetingService.QuestionFilter extractQuestionFilter(String question) {
+        String speakerName = extractSpeakerName(question);
+        String since = extractSinceDate(question);
+        return new PreMeetingService.QuestionFilter(null, speakerName, since);
+    }
+
+    private static final Pattern SPEAKER_PATTERN = Pattern.compile(
+            "(?:关于|关于|(?:是)?([\\p{IsHan}]{2,4})(?:说|提到|讲|谈|汇报|表示|提出|指出|强调))");
+    private static final Pattern SPEAKER_PLAIN = Pattern.compile(
+            "^([\\p{IsHan}]{2,4})(?:说|提到|讲|谈|说的|说过|汇报)");
+
+    private String extractSpeakerName(String question) {
+        Matcher m = SPEAKER_PLAIN.matcher(question.trim());
+        if (m.find()) return m.group(1);
+        m = SPEAKER_PATTERN.matcher(question);
+        if (m.find() && m.group(1) != null) return m.group(1);
+        return null;
+    }
+
+    private static final Pattern DATE_N_DAYS = Pattern.compile("(\\d+)\\s*天前");
+    private static final Pattern DATE_N_WEEKS = Pattern.compile("(\\d+)\\s*周前|上\\s*(\\d+)?\\s*周");
+    private static final Pattern DATE_MONTH = Pattern.compile("上个?月|本月|这个?月");
+    private static final Pattern DATE_WEEK = Pattern.compile("本周|这周|上周");
+    private static final Pattern DATE_YESTERDAY = Pattern.compile("昨天|昨日");
+
+    private String extractSinceDate(String question) {
+        Matcher m = DATE_N_DAYS.matcher(question);
+        if (m.find()) return LocalDate.now().minusDays(Long.parseLong(m.group(1))).toString();
+        m = DATE_N_WEEKS.matcher(question);
+        if (m.find()) return LocalDate.now().minusWeeks(1).toString();
+        if (DATE_WEEK.matcher(question).find())
+            return LocalDate.now().with(java.time.DayOfWeek.MONDAY).toString();
+        if (DATE_MONTH.matcher(question).find()) {
+            boolean lastMonth = question.contains("上个月") || question.contains("上月");
+            return lastMonth
+                    ? LocalDate.now().minusMonths(1).withDayOfMonth(1).toString()
+                    : LocalDate.now().withDayOfMonth(1).toString();
+        }
+        if (DATE_YESTERDAY.matcher(question).find())
+            return LocalDate.now().minusDays(1).toString();
+        return null;
     }
 
     private void sendSseAndComplete(SseEmitter emitter, String text) {

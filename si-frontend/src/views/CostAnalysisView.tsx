@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getUserInterpretationSessions, getPreMeetingUsage } from '../api'
+import { getCostMonthlySummary, getCostRates, getPreMeetingUsage, getUserInterpretationSessions } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
-import type { InterpretationStatus, PreMeetingDailyUsage } from '../types'
+import type { CostRates, InterpretationStatus, MonthlyCostSummary, PreMeetingDailyUsage } from '../types'
 import './CostAnalysisView.css'
-
-// ── 费率常量 ─────────────────────────────────────────────
-const ASR_PER_MS     = 1.00  / 3_600_000
-const TRANS_PER_CHR  = 10.00 / 1_000_000
-const TTS_PER_CHR    = 1.50  / 1_000_000
-const LLM_IN_PER_TK  = 0.25  / 1_000_000
-const LLM_OUT_PER_TK = 1.25  / 1_000_000
 
 interface Cost { asr: number; trans: number; tts: number; llm: number; total: number }
 
-function calcCost(s: InterpretationStatus): Cost {
-  const asr   = (s.asrAudioMs     ?? 0) * ASR_PER_MS
-  const trans  = (s.translateChars ?? 0) * TRANS_PER_CHR
-  const tts    = (s.ttsChars       ?? 0) * TTS_PER_CHR
-  const llm    = (s.llmInputTokens ?? 0) * LLM_IN_PER_TK
-              + (s.llmOutputTokens ?? 0) * LLM_OUT_PER_TK
+function calcCost(s: InterpretationStatus, rates: CostRates): Cost {
+  const asr   = (s.asrAudioMs     ?? 0) * rates.asrPerMs
+  const trans  = (s.translateChars ?? 0) * rates.transPerChar
+  const tts    = (s.ttsChars       ?? 0) * rates.ttsPerChar
+  const llm    = (s.llmInputTokens ?? 0) * rates.llmInPerToken
+              + (s.llmOutputTokens ?? 0) * rates.llmOutPerToken
   return { asr, trans, tts, llm, total: asr + trans + tts + llm }
+}
+
+const DEFAULT_RATES: CostRates = {
+  asrPerMs: 1.00 / 3_600_000,
+  transPerChar: 10.00 / 1_000_000,
+  ttsPerChar: 1.50 / 1_000_000,
+  llmInPerToken: 0.25 / 1_000_000,
+  llmOutPerToken: 1.25 / 1_000_000,
+  monthlyBudgetUsd: 0,
+  sessionBudgetUsd: 0,
 }
 
 const fmtUsd  = (v: number) => v < 0.000001 ? '< $0.000001' : `$${v.toFixed(4)}`
@@ -152,6 +155,8 @@ function BarChart({ days }: { days: { label: string; asr: number; trans: number;
   )
 }
 
+type CostTab = 'sessions' | 'monthly'
+
 // ── 主组件 ────────────────────────────────────────────────
 export default function CostAnalysisView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
@@ -159,15 +164,22 @@ export default function CostAnalysisView() {
   const [preMeetingUsage, setPreMeetingUsage] = useState<PreMeetingDailyUsage[]>([])
   const [loading, setLoading]                 = useState(true)
   const [range, setRange]                     = useState<DateRange>('30d')
+  const [rates, setRates]                     = useState<CostRates>(DEFAULT_RATES)
+  const [monthly, setMonthly]                 = useState<MonthlyCostSummary[]>([])
+  const [costTab, setCostTab]                 = useState<CostTab>('sessions')
 
   useEffect(() => {
     setLoading(true)
     Promise.all([
       getUserInterpretationSessions(userId).then(res => res.data || []).catch(() => []),
       getPreMeetingUsage(userId).then(res => res.data || []).catch(() => []),
-    ]).then(([s, p]) => {
+      getCostRates().then(res => res.data).catch(() => null),
+      getCostMonthlySummary(userId).then(res => res.data || []).catch(() => []),
+    ]).then(([s, p, r, m]) => {
       setSessions(s)
       setPreMeetingUsage(p)
+      if (r) setRates(r)
+      setMonthly(m)
     }).finally(() => setLoading(false))
   }, [userId])
 
@@ -191,7 +203,7 @@ export default function CostAnalysisView() {
     let asr = 0, trans = 0, tts = 0, llm = 0
     let asrMs = 0, transChars = 0, ttsChars = 0, llmIn = 0, llmOut = 0
     for (const s of filtered) {
-      const c = calcCost(s)
+      const c = calcCost(s, rates)
       asr += c.asr; trans += c.trans; tts += c.tts; llm += c.llm
       asrMs += s.asrAudioMs ?? 0
       transChars += s.translateChars ?? 0
@@ -200,13 +212,13 @@ export default function CostAnalysisView() {
       llmOut += s.llmOutputTokens ?? 0
     }
     for (const p of filteredPreMeeting) {
-      const pmLlm = (p.llmInputTokens ?? 0) * LLM_IN_PER_TK + (p.llmOutputTokens ?? 0) * LLM_OUT_PER_TK
+      const pmLlm = (p.llmInputTokens ?? 0) * rates.llmInPerToken + (p.llmOutputTokens ?? 0) * rates.llmOutPerToken
       llm += pmLlm
       llmIn += p.llmInputTokens ?? 0
       llmOut += p.llmOutputTokens ?? 0
     }
     return { asr, trans, tts, llm, total: asr + trans + tts + llm, asrMs, transChars, ttsChars, llmIn, llmOut }
-  }, [filtered, filteredPreMeeting])
+  }, [filtered, filteredPreMeeting, rates])
 
   // 按日聚合（用于柱状图）
   const dailyData = useMemo(() => {
@@ -215,19 +227,17 @@ export default function CostAnalysisView() {
       const day = s.startTime?.slice(0, 10)
       if (!day) continue
       if (!map[day]) map[day] = { asr: 0, trans: 0, tts: 0, llm: 0 }
-      const c = calcCost(s)
+      const c = calcCost(s, rates)
       map[day].asr += c.asr; map[day].trans += c.trans
       map[day].tts += c.tts; map[day].llm += c.llm
     }
     for (const p of filteredPreMeeting) {
       if (!map[p.date]) map[p.date] = { asr: 0, trans: 0, tts: 0, llm: 0 }
-      map[p.date].llm += (p.llmInputTokens ?? 0) * LLM_IN_PER_TK + (p.llmOutputTokens ?? 0) * LLM_OUT_PER_TK
+      map[p.date].llm += (p.llmInputTokens ?? 0) * rates.llmInPerToken + (p.llmOutputTokens ?? 0) * rates.llmOutPerToken
     }
-    // 填充区间内所有日期（确保没有数据的天也显示）
     const cutoff = cutoffDate(range)
     const days: { label: string; asr: number; trans: number; tts: number; llm: number }[] = []
     if (range === 'all') {
-      // 只显示有数据的日期
       Object.keys(map).sort().forEach(label => days.push({ label, ...map[label] }))
     } else {
       const d = new Date(cutoff!)
@@ -239,16 +249,34 @@ export default function CostAnalysisView() {
       }
     }
     return days
-  }, [filtered, filteredPreMeeting, range])
+  }, [filtered, filteredPreMeeting, range, rates])
 
   // 按费用排序的 Top 10
   const topSessions = useMemo(() =>
     [...filtered]
-      .map(s => ({ ...s, cost: calcCost(s) }))
+      .map(s => ({ ...s, cost: calcCost(s, rates) }))
       .sort((a, b) => b.cost.total - a.cost.total)
       .slice(0, 10),
-    [filtered]
+    [filtered, rates]
   )
+
+  // S12: current-month budget progress
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const currentMonthRow = monthly.find(m => m.month === currentMonth)
+  const currentMonthCost = currentMonthRow?.estimatedCostUsd ?? 0
+  const monthlyBudget = rates.monthlyBudgetUsd
+
+  const exportMonthlyCSV = () => {
+    const header = 'Month,Sessions,ASR(ms),Trans(chars),TTS(chars),LLM-in,LLM-out,Cost(USD)'
+    const rows = monthly.map(m =>
+      [m.month, m.sessionCount, m.totalAsrMs, m.totalTransChars, m.totalTtsChars,
+       m.totalLlmIn, m.totalLlmOut, m.estimatedCostUsd.toFixed(6)].join(',')
+    )
+    const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'cost-monthly.csv'; a.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div className="si-root">
@@ -268,6 +296,35 @@ export default function CostAnalysisView() {
           <div className="ca-loading">加载中...</div>
         ) : (
           <>
+            {/* S12: Monthly budget progress bar */}
+            {monthlyBudget > 0 && (
+              <div className="ca-budget-bar-wrap">
+                <div className="ca-budget-bar-header">
+                  <span>本月预算进度</span>
+                  <span>{fmtUsd(currentMonthCost)} / {fmtUsd(monthlyBudget)}</span>
+                </div>
+                <div className="ca-budget-bar-track">
+                  <div
+                    className={`ca-budget-bar-fill${currentMonthCost >= monthlyBudget ? ' ca-budget-bar-fill--over' : ''}`}
+                    style={{ width: `${Math.min(100, (currentMonthCost / monthlyBudget) * 100).toFixed(1)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Tab switcher S8 */}
+            <div className="ca-tab-bar">
+              <button
+                className={`ca-tab-btn${costTab === 'sessions' ? ' ca-tab-btn--active' : ''}`}
+                onClick={() => setCostTab('sessions')}
+              >会话明细</button>
+              <button
+                className={`ca-tab-btn${costTab === 'monthly' ? ' ca-tab-btn--active' : ''}`}
+                onClick={() => setCostTab('monthly')}
+              >月度汇总</button>
+            </div>
+
+            {costTab === 'sessions' && <>
             {/* 时间范围选择器 */}
             <div className="ca-range-bar">
               <span className="ca-range-label">时间范围</span>
@@ -399,8 +456,52 @@ export default function CostAnalysisView() {
               )}
             </div>
 
+            </>}
+
+            {/* S8: Monthly summary tab */}
+            {costTab === 'monthly' && (
+              <div className="ca-card ca-card--table">
+                <div className="ca-monthly-header">
+                  <div className="ca-card-title">月度费用汇总</div>
+                  <button className="ca-range-btn" onClick={exportMonthlyCSV}>导出 CSV</button>
+                </div>
+                {monthly.length === 0 ? (
+                  <div className="ca-table-empty">暂无月度数据</div>
+                ) : (
+                  <div className="ca-table-wrap">
+                    <table className="ca-table">
+                      <thead>
+                        <tr>
+                          <th>月份</th>
+                          <th className="ca-th-num">会话数</th>
+                          <th className="ca-th-num">ASR 时长</th>
+                          <th className="ca-th-num">翻译字符</th>
+                          <th className="ca-th-num">TTS 字符</th>
+                          <th className="ca-th-num">LLM tokens</th>
+                          <th className="ca-th-num">预计费用</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {monthly.map(m => (
+                          <tr key={m.month} className={m.month === currentMonth ? 'ca-tr-current' : ''}>
+                            <td className="ca-td-title">{m.month}</td>
+                            <td className="ca-td-num">{m.sessionCount}</td>
+                            <td className="ca-td-num">{fmtMs(m.totalAsrMs)}</td>
+                            <td className="ca-td-num">{m.totalTransChars.toLocaleString()}</td>
+                            <td className="ca-td-num">{m.totalTtsChars.toLocaleString()}</td>
+                            <td className="ca-td-num">{(m.totalLlmIn + m.totalLlmOut).toLocaleString()}</td>
+                            <td className="ca-td-num ca-td-total">{fmtUsd(m.estimatedCostUsd)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="ca-disclaimer">
-              单价参考各服务商公开定价（Azure Speech $1.00/h · Azure Translator $10.00/M chars · Cartesia TTS $1.50/M chars · LLM $0.25/$1.25 per M in/out tokens），实际账单以服务商结算为准。
+              单价参考各服务商公开定价，实际账单以服务商结算为准。
             </div>
           </>
         )}
