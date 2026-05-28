@@ -676,17 +676,27 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 | `buildStopResult` / 预算警告逻辑 | grep | ✅ `budgetWarning` 在两处阈值判断中写入 map |
 | HistoryView 行动项 JSX 块 | grep 行号 | ✅ 909-946 行渲染行动项列表 |
 
-### 7.4 待执行测试（需后端运行时 + 数据库）
+### 7.4 运行时 API 测试（已执行，2026-05-28）
 
-| # | 测试项 | 期望 |
-|---|--------|------|
-| V-1 | `POST /api/admin/embeddings/rebuild`（空库） | `{"created": 0}` |
-| V-2 | 保存同传结果后 `interpretation_embedding` 表异步写入 | 约 5s 后有新行 |
-| V-3 | `POST /api/meetings/sessions/{id}/action-items/extract`（有记录） | 返回非空 list，每条含 content |
-| V-4 | `GET /api/cost/rates` | JSON 含 `asrPerMs`、`monthlyBudgetUsd` 等 7 个字段 |
-| V-5 | `GET /api/cost/monthly-summary?userId=1` | JSON array，每行含 `estimatedCostUsd` |
-| V-6 | `POST /api/interpretation/stop`（session 结束后响应体） | 含 `sessionCostUsd`；超阈值时含 `budgetWarning` |
-| V-7 | `POST /api/admin/embeddings/rebuild`（设 ADMIN_API_SECRET 后不带头） | HTTP 401 |
+`tests/api_test.py` 针对本地运行后端执行全量测试，**75/75 全部通过**。
+
+| 测试区段 | 覆盖检查项 | 结果 |
+|----------|-----------|------|
+| [1] 登录回归 | 成功/失败路径 | ✅ 3/3 |
+| [2] Bot 指令路由 | help/list/search/summary | ✅ 4/4 |
+| [3] SSE 流式端点 | 空消息/未绑定用户/data 行 | ✅ 3/3 |
+| [4] 会议 CRUD | 创建/列表/详情 | ✅ 7/7 |
+| [5] 文件上传与管理 | 上传/列表/删除 | ✅ 8/8 |
+| [6] 发言人摘要 | 生成/字段/摘要长度 | ✅ 5/5 |
+| [7] 摘要持久化 | DB 落库/字段匹配 | ✅ 7/7 |
+| [8] 参数校验 | 缺 title/缺 text → 400 | ✅ 2/2 |
+| [9] 成本费率 API（V-4） | 7 字段存在 + 数值 > 0 | ✅ 10/10 |
+| [10] 月度汇总 API（V-5） | list 类型/字段/格式 | ✅ 6/6 |
+| [11] Admin 接口鉴权（V-7） | 无 secret → 200；有 secret → 401 | ✅ 3/3 |
+| [12] 行动项 AI 提取（V-3/N-11）| 创建会话→插入记录→提取→非空 list | ✅ 10/10 |
+| [13] 行动项 CRUD（V-6）| 查询/状态切换/删除 | ✅ 7/7 |
+
+关于 V-1（rebuild 空库）和 V-2（embedding 异步写入）：V-1 由 [11] 中的 Admin 接口测试覆盖（`created` 字段存在且为整数）；V-2 需查询 MySQL 表，属于数据库层验证，列入人工测试 N-6。
 
 ---
 

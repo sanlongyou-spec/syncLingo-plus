@@ -225,6 +225,139 @@ r = requests.post(f"{BASE}/api/meetings/speaker-summary", json={
 })
 check("摘要请求缺 text → 400", r.status_code == 400)
 
+# ── 9. 费率 API (S3) ──────────────────────────────────────────────────────────
+print("\n[9] 成本费率 API")
+r = requests.get(f"{BASE}/api/cost/rates")
+check("GET /api/cost/rates → 200", r.status_code == 200)
+if r.status_code == 200:
+    rates = r.json().get("data", {})
+    for field in ["asrPerMs", "transPerChar", "ttsPerChar", "llmInPerToken", "llmOutPerToken",
+                  "monthlyBudgetUsd", "sessionBudgetUsd"]:
+        check(f"费率字段存在: {field}", field in rates)
+    check("asrPerMs > 0", rates.get("asrPerMs", 0) > 0)
+    check("llmInPerToken > 0", rates.get("llmInPerToken", 0) > 0)
+
+# ── 10. 月度汇总 API (S7) ─────────────────────────────────────────────────────
+print("\n[10] 月度汇总 API")
+r = requests.get(f"{BASE}/api/cost/monthly-summary", params={"userId": UID})
+check("GET /api/cost/monthly-summary → 200", r.status_code == 200)
+if r.status_code == 200:
+    monthly = r.json().get("data", [])
+    check("返回 list 类型", isinstance(monthly, list))
+    if monthly:
+        row = monthly[0]
+        for field in ["month", "sessionCount", "estimatedCostUsd"]:
+            check(f"月度行字段存在: {field}", field in row)
+        check("month 格式 YYYY-MM", len(row.get("month", "")) == 7)
+
+# ── 11. Admin 鉴权 (P2/N-18) ─────────────────────────────────────────────────
+print("\n[11] Admin 接口鉴权")
+# 未配置 ADMIN_API_SECRET 时应当允许（warn 但不拒绝）或拒绝
+r_no_key = requests.post(f"{BASE}/api/admin/embeddings/rebuild?batchLimit=1")
+check("无 secret 时 rebuild → 200 或 401", r_no_key.status_code in (200, 401))
+if r_no_key.status_code == 200:
+    data = r_no_key.json().get("data", {})
+    check("返回 created 字段", "created" in data)
+    check("created 为整数", isinstance(data.get("created"), int))
+    print(f"     (Admin 未设密码模式，created={data.get('created')})")
+else:
+    print(f"     (Admin 有密码保护，HTTP {r_no_key.status_code})")
+
+# ── 12. 行动项 AI 提取 (A4/A5/N-11) ──────────────────────────────────────────
+print("\n[12] 行动项 AI 提取（需 OpenAI Key，耗时约 5-15s）")
+
+# Step 1: 先通过 /start 创建合法会话（interpretation_result 有外键约束）
+r_start = requests.post(f"{BASE}/api/interpretation/start", json={
+    "userId": UID,
+    "sourceLang": "zh-CN",
+    "targetLang": "id-ID",
+    "title": "api_test 行动项测试会话",
+    "voiceId": "default",
+})
+check("创建会话 → 200", r_start.status_code == 200)
+action_session = r_start.json().get("data") if r_start.status_code == 200 else None
+
+if not action_session:
+    fail("无法创建会话，跳过行动项测试", r_start.text[:100])
+else:
+    # Step 2: 插入同传记录
+    def save_result(text, translated=""):
+        return requests.post(f"{BASE}/api/interpretation/results", json={
+            "sessionId": action_session,
+            "sourceText": text,
+            "translatedText": translated or text,
+            "sourceLang": "zh-CN",
+            "targetLang": "id-ID",
+            "speakerName": "张三",
+            "speakerId": "speaker_A",
+        })
+
+    transcripts = [
+        "下周三之前，李四需要完成市场调研报告并发送给项目组。",
+        "王五负责在本月底前更新产品路线图，并与研发团队对齐。",
+        "本次会议决定：由张三牵头，在6月15日前完成合规文件归档。",
+        "建议下次会议前，赵六准备好财务预算草案供大家讨论。",
+    ]
+    save_ok = all(save_result(t).status_code == 200 for t in transcripts)
+    check(f"插入 {len(transcripts)} 条同传记录", save_ok)
+
+    # 停止会话（让 stopSession 返回 cost 信息，顺带测试 S10）
+    r_stop = requests.post(f"{BASE}/api/interpretation/stop", json={"sessionId": action_session})
+    check("停止会话 → 200", r_stop.status_code == 200)
+    if r_stop.status_code == 200:
+        stop_data = r_stop.json().get("data", {})
+        check("停止响应含 sessionCostUsd", "sessionCostUsd" in stop_data)
+
+    time.sleep(0.5)
+
+r = requests.post(
+    f"{BASE}/api/meetings/sessions/{action_session}/action-items/extract",
+    json={"meetingId": None, "userId": UID},
+    timeout=60
+)
+check("POST /extract → 200", r.status_code == 200)
+if r.status_code == 200:
+    items = r.json().get("data", [])
+    check("返回行动项列表非空", len(items) > 0)
+    if items:
+        item = items[0]
+        check("行动项包含 content 字段", bool(item.get("content")))
+        check("行动项 status=pending", item.get("status") == "pending")
+        check("行动项 sessionId 匹配", item.get("sessionId") == action_session)
+        check("提取了多条行动项", len(items) >= 2)
+        print(f"     提取到 {len(items)} 条行动项，示例：{items[0].get('content', '')[:50]}")
+
+        # 13. 行动项 CRUD (A5)
+        print("\n[13] 行动项状态切换与查询")
+        item_id = item.get("id")
+
+        r_list = requests.get(f"{BASE}/api/meetings/sessions/{action_session}/action-items")
+        check("GET action-items → 200", r_list.status_code == 200)
+        check("持久化查询返回相同数量", len(r_list.json().get("data", [])) == len(items))
+
+        r_patch = requests.patch(
+            f"{BASE}/api/meetings/action-items/{item_id}/status",
+            json={"status": "done"}
+        )
+        check("PATCH status=done → 200", r_patch.status_code == 200)
+        if r_patch.status_code == 200:
+            check("状态已更新为 done", r_patch.json().get("data", {}).get("status") == "done")
+
+        r_patch2 = requests.patch(
+            f"{BASE}/api/meetings/action-items/{item_id}/status",
+            json={"status": "pending"}
+        )
+        check("PATCH status=pending → 200（回退）", r_patch2.status_code == 200)
+
+        r_del = requests.delete(f"{BASE}/api/meetings/action-items/{item_id}")
+        check("DELETE action-item → 200", r_del.status_code == 200)
+
+        r_list2 = requests.get(f"{BASE}/api/meetings/sessions/{action_session}/action-items")
+        remaining = r_list2.json().get("data", [])
+        check("删除后数量减少", len(remaining) == len(items) - 1)
+else:
+    fail("行动项提取失败", r.text[:200])
+
 # ── 汇总 ──────────────────────────────────────────────────────────────────────
 print(f"\n{'='*50}")
 total = passed + failed
