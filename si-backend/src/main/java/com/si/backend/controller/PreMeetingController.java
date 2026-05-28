@@ -4,9 +4,12 @@ import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.common.Result;
 import com.si.backend.dto.PreMeetingAttendanceRequest;
+import com.si.backend.dto.PreMeetingChatRequest;
 import com.si.backend.dto.PreMeetingSummarizeRequest;
+import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.PreMeetingService;
 import com.si.backend.vo.PreMeetingAttendanceVo;
+import com.si.backend.vo.PreMeetingChatVo;
 import com.si.backend.vo.PreMeetingDailyUsageVo;
 import com.si.backend.vo.PreMeetingFileVo;
 import com.si.backend.vo.PreMeetingSummaryVo;
@@ -24,6 +27,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @RestController
@@ -32,9 +36,12 @@ import java.util.Map;
 public class PreMeetingController {
 
     private final PreMeetingService preMeetingService;
+    private final HotwordExtractionService hotwordExtractionService;
 
     @PostMapping("/upload")
-    public Result<List<PreMeetingFileVo>> upload(@RequestParam("file") MultipartFile file) {
+    public Result<List<PreMeetingFileVo>> upload(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "userId", required = false) Long userId) {
         if (file == null || file.isEmpty()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的文件");
         }
@@ -42,6 +49,19 @@ public class PreMeetingController {
             List<PreMeetingFileVo> files = preMeetingService.upload(file);
             if (files.isEmpty()) {
                 throw BizException.of(ErrorCode.BAD_REQUEST, "压缩包中未找到可解析的 Word 或 PDF 文件");
+            }
+            // Async hotword extraction from uploaded file content
+            if (userId != null) {
+                final Long finalUserId = userId;
+                final List<String> fileIds = files.stream().map(PreMeetingFileVo::getFileId).toList();
+                CompletableFuture.runAsync(() -> fileIds.forEach(fileId -> {
+                    try {
+                        String text = preMeetingService.getDocText(fileId);
+                        hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
+                    } catch (Exception e) {
+                        log.warn("[PreMeetingController] hotword extraction failed for fileId={}", fileId, e);
+                    }
+                }));
             }
             return Result.ok(files);
         } catch (BizException e) {
@@ -116,6 +136,35 @@ public class PreMeetingController {
         } catch (Exception e) {
             log.error("[PreMeetingController] exportAttendance failed, fileId={}", request.getFileId(), e);
             throw BizException.of(ErrorCode.BAD_REQUEST, "导出实际参加情况失败：" + e.getMessage());
+        }
+    }
+
+    @PostMapping("/chat")
+    public Result<PreMeetingChatVo> chat(@RequestBody PreMeetingChatRequest request) {
+        if (request == null || request.getQuestion() == null || request.getQuestion().isBlank()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "问题不能为空");
+        }
+        try {
+            PreMeetingChatVo result;
+            if (request.isCrossMeeting()) {
+                result = preMeetingService.chatCrossMeeting(
+                        request.getUserId(),
+                        request.getQuestion(),
+                        request.getHistory(),
+                        request.getDays());
+            } else {
+                result = preMeetingService.chat(
+                        request.getFileId(),
+                        request.getSessionId(),
+                        request.getQuestion(),
+                        request.getHistory());
+            }
+            return Result.ok(result);
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] chat failed, crossMeeting={}", request.isCrossMeeting(), e);
+            throw BizException.of(ErrorCode.TRANSLATE_ERROR, "问答失败：" + e.getMessage());
         }
     }
 

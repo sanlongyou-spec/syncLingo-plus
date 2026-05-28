@@ -1,5 +1,6 @@
 package com.si.backend.service;
 
+import com.si.backend.common.Constants;
 import com.si.backend.dto.SaveSpeakerIdentityRequest;
 import com.si.backend.entity.SpeakerIdentity;
 import com.si.backend.integration.SpeakerServiceIntegration;
@@ -129,24 +130,31 @@ public class SpeakerIdentityService {
     }
 
     public SpeakerResolution resolveOrIdentify(String sessionId, String speakerId, byte[] recentPcm) {
-        if (!isValidSpeakerId(speakerId)) {
+        if (!hasSpeakerId(speakerId)) {
             return SpeakerResolution.unknown(sessionId, speakerId);
         }
+        boolean transientUnknownSpeaker = isUnknownSpeakerId(speakerId);
         String key = buildKey(sessionId, speakerId);
-        SessionSpeakerIdentity existing = sessionIdentityMap.get(key);
-        if (existing != null && !STATUS_UNKNOWN.equals(existing.getStatus())) {
-            return existing.toResolution();
+        if (!transientUnknownSpeaker) {
+            SessionSpeakerIdentity existing = sessionIdentityMap.get(key);
+            if (existing != null && !STATUS_UNKNOWN.equals(existing.getStatus())) {
+                return existing.toResolution();
+            }
         }
         if (!speakerServiceIntegration.isEnabled()) {
             SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
-            sessionIdentityMap.putIfAbsent(key, unknown);
+            if (!transientUnknownSpeaker) {
+                sessionIdentityMap.putIfAbsent(key, unknown);
+            }
             return unknown.toResolution();
         }
 
         List<SpeakerIdentity> candidates = mapper.findAllWithSpeakerProfile();
         if (candidates.isEmpty() || recentPcm == null || recentPcm.length == 0) {
             SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
-            sessionIdentityMap.putIfAbsent(key, unknown);
+            if (!transientUnknownSpeaker) {
+                sessionIdentityMap.putIfAbsent(key, unknown);
+            }
             return unknown.toResolution();
         }
 
@@ -169,14 +177,18 @@ public class SpeakerIdentityService {
                         .status(STATUS_IDENTIFIED)
                         .source(SOURCE_SPEAKER_SERVICE)
                         .build();
-                sessionIdentityMap.put(key, resolved);
+                if (!transientUnknownSpeaker) {
+                    sessionIdentityMap.put(key, resolved);
+                }
                 log.info("[SpeakerIdentityService] speaker identified, sessionId={}, speakerId={}, personName={}, score={}",
                         sessionId, speakerId, personName, ssResult.get().getScore());
                 return resolved.toResolution();
             }
         }
         SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
-        sessionIdentityMap.putIfAbsent(key, unknown);
+        if (!transientUnknownSpeaker) {
+            sessionIdentityMap.putIfAbsent(key, unknown);
+        }
         return unknown.toResolution();
     }
 
@@ -215,6 +227,9 @@ public class SpeakerIdentityService {
     }
 
     public String resolveVoiceId(String sessionId, String speakerId) {
+        if (!hasSpeakerId(speakerId) || isUnknownSpeakerId(speakerId)) {
+            return null;
+        }
         SessionSpeakerIdentity mapping = sessionIdentityMap.get(buildKey(sessionId, speakerId));
         return mapping != null ? mapping.getCartesiaVoiceId() : null;
     }
@@ -224,7 +239,7 @@ public class SpeakerIdentityService {
     }
 
     public String getCachedSpeakerName(String sessionId, String speakerId) {
-        if (speakerId == null || speakerId.isBlank()) return null;
+        if (!hasSpeakerId(speakerId) || isUnknownSpeakerId(speakerId)) return null;
         SessionSpeakerIdentity existing = sessionIdentityMap.get(buildKey(sessionId, speakerId));
         if (existing != null && existing.getPersonName() != null && !existing.getPersonName().isBlank()) {
             return existing.getPersonName();
@@ -332,10 +347,12 @@ public class SpeakerIdentityService {
         return sessionId + ":" + speakerId;
     }
 
-    private boolean isValidSpeakerId(String speakerId) {
-        return speakerId != null
-                && !speakerId.isBlank()
-                && !"unknown".equalsIgnoreCase(speakerId);
+    private boolean hasSpeakerId(String speakerId) {
+        return speakerId != null && !speakerId.isBlank();
+    }
+
+    private boolean isUnknownSpeakerId(String speakerId) {
+        return speakerId != null && Constants.SPEAKER_ID_UNKNOWN.equalsIgnoreCase(speakerId.trim());
     }
 
     private String normalize(String value) {

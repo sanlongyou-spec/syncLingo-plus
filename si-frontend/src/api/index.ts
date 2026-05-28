@@ -19,9 +19,15 @@ import type {
   PreMeetingAttendanceResult,
   PreMeetingSummaryResult,
   PreMeetingDailyUsage,
+  ChatMessage,
+  PreMeetingChatResponse,
   TeamsSummarySendResponse,
   MeetingParticipant,
   MeetingParticipantsResponse,
+  Meeting,
+  MeetingFile,
+  SpeakerSummaryResult,
+  SpeakerSummaryRecord,
 } from '../types'
 
 const getApiErrorMessage = async (error: unknown, fallback: string): Promise<string> => {
@@ -177,11 +183,13 @@ export const getMeetingSummary = (sessionId: string): Promise<Result<MeetingSumm
 export const regenerateMeetingSummary = (sessionId: string, customRequirements?: string): Promise<Result<MeetingSummaryVo>> =>
   client.post<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`, customRequirements ? { customRequirements } : undefined).then(r => r.data)
 
-export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[]>> => {
+export const uploadPreMeetingFile = (file: File, userId?: number): Promise<Result<PreMeetingFile[]>> => {
   const form = new FormData()
   form.append('file', file)
+  const params = userId != null ? { userId } : {}
   return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
     headers: { 'Content-Type': undefined },
+    params,
   }).then(r => r.data)
 }
 
@@ -222,6 +230,27 @@ export const getPreMeetingUsage = (userId: number, days = 365): Promise<Result<P
 export const exportPreMeetingDocx = (fileId: string, summary: string): Promise<Blob> =>
   client.post<Blob>(`/api/pre-meeting/export/${fileId}`, { summary }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
 
+export const chatWithPreMeeting = (
+  question: string,
+  history: ChatMessage[],
+  options?: {
+    fileId?: string
+    sessionId?: string
+    crossMeeting?: boolean
+    userId?: number
+    days?: number
+  },
+): Promise<Result<PreMeetingChatResponse>> =>
+  client.post<Result<PreMeetingChatResponse>>('/api/pre-meeting/chat', {
+    question,
+    history,
+    fileId: options?.fileId || null,
+    sessionId: options?.sessionId || null,
+    crossMeeting: options?.crossMeeting || false,
+    userId: options?.userId || 1,
+    days: options?.days || 0,
+  }, { timeout: 120_000 }).then(r => r.data)
+
 export const sendTeamsSummaryToUsers = (
   content: string,
   recipients: string[],
@@ -256,3 +285,67 @@ export const getMeetingParticipants = (): Promise<MeetingParticipantsResponse> =
       const message = error?.response?.data?.error || error?.message || '获取参会人员失败'
       throw new Error(message)
     })
+
+// ── Meeting management ───────────────────────────────────────────────────────
+
+export const createMeeting = (params: {
+  userId: number
+  title: string
+  scheduledTime?: string
+  note?: string
+}): Promise<Result<Meeting>> =>
+  client.post<Result<Meeting>>('/api/meetings', params).then(r => r.data)
+
+export const getMeetings = (userId: number): Promise<Result<Meeting[]>> =>
+  client.get<Result<Meeting[]>>('/api/meetings', { params: { userId } }).then(r => r.data)
+
+export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Result<MeetingFile>> => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<Result<MeetingFile>>(`/api/meetings/${meetingId}/files`, form, {
+    headers: { 'Content-Type': undefined },
+  }).then(r => r.data)
+}
+
+export const getMeetingFiles = (meetingId: number): Promise<Result<MeetingFile[]>> =>
+  client.get<Result<MeetingFile[]>>(`/api/meetings/${meetingId}/files`).then(r => r.data)
+
+export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}`).then(r => r.data)
+
+export const generateSpeakerSummary = (params: {
+  userId: number
+  sessionId: string
+  speakerId?: string
+  speakerName?: string
+  requirements?: string
+  text: string
+}): Promise<Result<SpeakerSummaryResult>> =>
+  client.post<Result<SpeakerSummaryResult>>('/api/meetings/speaker-summary', params, {
+    timeout: 60_000,
+  }).then(r => r.data)
+
+export const getSpeakerSummaries = (sessionId: string): Promise<Result<SpeakerSummaryRecord[]>> =>
+  client.get<Result<SpeakerSummaryRecord[]>>(`/api/meetings/speaker-summaries/${encodeURIComponent(sessionId)}`).then(r => r.data)
+
+export const regenerateSpeakerSummary = (
+  id: number,
+  requirements?: string,
+): Promise<Result<SpeakerSummaryResult>> =>
+  client.post<Result<SpeakerSummaryResult>>(
+    `/api/meetings/speaker-summaries/${id}/regenerate`,
+    requirements ? { requirements } : undefined,
+    { timeout: 60_000 },
+  ).then(r => r.data)
+
+export const getMeetingSessions = (meetingId: number): Promise<Result<InterpretationStatus[]>> =>
+  client.get<Result<InterpretationStatus[]>>(`/api/meetings/${meetingId}/sessions`).then(r => r.data)
+
+export const saveMeetingFileSummary = (meetingId: number, fileId: number, summary: string): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}/summary`, { summary }).then(r => r.data)
+
+export const saveMeetingAttendance = (meetingId: number, attendanceJson: string): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/meetings/${meetingId}/attendance`, { attendanceJson }).then(r => r.data)
+
+export const deleteMeeting = (meetingId: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/meetings/${meetingId}`).then(r => r.data)

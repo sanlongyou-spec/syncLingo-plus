@@ -6,6 +6,11 @@ export const STORAGE_KEYS = {
   USER_ID: 'si_user_id',
   TOKEN: 'si_token',
   CURRENT_SESSION_ID: 'si_current_session_id',
+  SPEAKER_SUMMARY_RECIPIENTS: 'si_speaker_summary_recipients',
+  MEETING_SUMMARY_RECIPIENTS: 'si_meeting_summary_recipients',
+  MEETING_SUMMARY_INCLUDE_CHAT: 'si_meeting_summary_include_chat',
+  SPEAKER_SUMMARY_REQUIREMENTS: 'si_speaker_summary_requirements',
+  MEETING_SUMMARY_REQUIREMENTS: 'si_meeting_summary_requirements',
 } as const
 
 export const ROUTES = {
@@ -23,6 +28,11 @@ export const TEAMS_BOT_STORAGE_KEYS = {
   RECIPIENT_HISTORY: 'si_teams_recipient_history',
   MEETING_LINK: 'si_teams_last_meeting_link',
   PRE_MEETING_DEFAULT_REQ: 'si_pre_meeting_default_req',
+  LAST_ATTENDANCE: 'si_last_attendance',
+  LAST_SCHEDULE_FILE: 'si_last_schedule_file',
+  MEETING_THREAD_ID: 'si_meeting_thread_id',
+  LAST_SELECTED_MEETING_ID: 'si_teams_last_meeting_id',
+  ALL_KNOWN_PARTICIPANTS: 'si_all_known_participants',
 } as const
 
 export const HTTP_STATUS = {

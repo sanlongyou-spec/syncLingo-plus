@@ -6,12 +6,16 @@ import com.si.backend.config.TeamsBotProperties;
 import com.si.backend.dto.TeamsBotQueryRequest;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.SiUser;
+import com.si.backend.integration.LlmIntegration;
 import com.si.backend.mapper.UserMapper;
 import com.si.backend.vo.TeamsBotQueryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +43,8 @@ public class TeamsBotQueryService {
     private final InterpretationSessionService sessionService;
     private final UserMapper userMapper;
     private final TeamsBotProperties teamsBotProperties;
+    private final PreMeetingService preMeetingService;
+    private final LlmIntegration llmIntegration;
 
     public TeamsBotQueryResponse query(TeamsBotQueryRequest request, String apiSecret) {
         String message = normalize(request.getMessage());
@@ -66,6 +72,59 @@ public class TeamsBotQueryService {
         };
         log.info("[TeamsBotQueryService] query end, userId={}, command={}", user.getId(), command.name());
         return buildResponse(replyText, true, user.getId(), command.name());
+    }
+
+    public void queryStream(TeamsBotQueryRequest request, String apiSecret, SseEmitter emitter) {
+        String message = normalize(request.getMessage());
+        log.info("[TeamsBotQueryService] queryStream start, aadId={}, messageLen={}",
+                request.getAadId(), message.length());
+        ensureAuthorized(apiSecret);
+
+        SiUser user = resolveUser(request);
+        if (user == null) {
+            log.info("[TeamsBotQueryService] queryStream user not matched, aadId={}", request.getAadId());
+            sendSseAndComplete(emitter, noBindingText(request));
+            return;
+        }
+
+        try {
+            String context = preMeetingService.buildUnifiedContext(user.getId(), message);
+            if (context.isBlank()) {
+                String noDataReply = "在所有历史会议记录中，未找到与该问题相关的内容。请尝试换一个关键词。";
+                sendSseAndComplete(emitter, noDataReply);
+                return;
+            }
+            llmIntegration.streamChatUnified(context, message, List.of(), chunk -> {
+                try {
+                    emitter.send(SseEmitter.event().data(chunk));
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
+            emitter.send(SseEmitter.event().data("[DONE]"));
+            emitter.complete();
+            log.info("[TeamsBotQueryService] queryStream done, userId={}", user.getId());
+        } catch (UncheckedIOException | IOException e) {
+            log.warn("[TeamsBotQueryService] queryStream emitter write failed", e);
+            emitter.completeWithError(e);
+        } catch (Exception e) {
+            log.error("[TeamsBotQueryService] queryStream failed, userId={}", user.getId(), e);
+            try {
+                emitter.send(SseEmitter.event().data("[ERROR]"));
+            } catch (IOException ignored) {
+            }
+            emitter.completeWithError(e);
+        }
+    }
+
+    private void sendSseAndComplete(SseEmitter emitter, String text) {
+        try {
+            emitter.send(SseEmitter.event().data(text));
+            emitter.send(SseEmitter.event().data("[DONE]"));
+            emitter.complete();
+        } catch (IOException e) {
+            emitter.completeWithError(e);
+        }
     }
 
     private SiUser resolveUser(TeamsBotQueryRequest request) {

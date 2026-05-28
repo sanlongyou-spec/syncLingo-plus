@@ -1,18 +1,28 @@
 package com.si.backend.integration;
 
-import com.openai.client.OpenAIClient;
-import com.openai.client.okhttp.OpenAIOkHttpClient;
-import com.openai.models.responses.Response;
-import com.openai.models.responses.ResponseCreateParams;
-import com.openai.models.responses.ResponseOutputItem;
-import com.openai.models.responses.ResponseOutputMessage;
-import com.openai.models.responses.ResponseOutputText;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.si.backend.config.OpenAiProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import com.si.backend.dto.PreMeetingChatRequest.ChatTurn;
+
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * OpenAI LLM integration for real-time Indonesian compression and meeting summaries.
@@ -86,6 +96,23 @@ public class LlmIntegration {
             + "4. 关键数据与事实\n"
             + "请使用中文输出，保留专有名词、数字和数据原样。";
 
+    private static final String CHAT_SYSTEM_PROMPT =
+            "你是一个专业的会议助手，能够基于提供的参考资料（会议文件或同传记录）回答用户问题。\n"
+            + "规则：\n"
+            + "1. 只基于参考资料中的内容作答，不要编造资料中没有的信息。\n"
+            + "2. 如果参考资料中找不到答案，直接说明【资料中未提及】。\n"
+            + "3. 回答简洁、准确，保留原文中的专有名词、数字和数据。\n"
+            + "4. 使用中文回答。";
+
+    private static final String CROSS_MEETING_SYSTEM_PROMPT =
+            "你是一个会议记录检索助手。用户的问题需要在多场历史会议的同传记录中查找答案。\n"
+            + "规则：\n"
+            + "1. 只基于提供的会议记录内容回答，不要编造记录中没有的信息。\n"
+            + "2. 如果多场会议都有相关内容，按会议逐一列出并对比。\n"
+            + "3. 如果找不到相关内容，直接说明【未找到相关记录】。\n"
+            + "4. 回答结构清晰，保留原文中的专有名词、数字和数据。\n"
+            + "5. 使用中文回答。";
+
     private static final String MATERIAL_SUMMARY_SYSTEM_PROMPT =
             "You are an executive meeting minutes assistant. Use the prepared agenda, reports, and live transcript together.\n"
             + "Write in polished Chinese. Preserve names, numbers, project names, regions, and bilingual terms.\n"
@@ -100,11 +127,15 @@ public class LlmIntegration {
             + "6. 待办事项与责任人\n"
             + "7. 风险、问题与后续跟进";
 
+    private static final HttpClient STREAM_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final OpenAiProperties openAiProperties;
-    private volatile OpenAIClient openAIClient;
 
     /**
-     * Compresses Indonesian translated text through OpenAI Responses API.
+     * Compresses Indonesian translated text through OpenAI chat/completions API.
      *
      * @param text Indonesian text to compress
      * @return compressed Indonesian text
@@ -202,6 +233,26 @@ public class LlmIntegration {
         return result;
     }
 
+    public String summarizeMeetingRetry(String text) throws IOException {
+        String systemPrompt = "你是专业会议秘书，负责整理正式商务会议纪要。\n"
+                + "以下内容是真实商务会议的同声传译文本记录（含中文、英语或印尼语），请提炼结构化中文纪要。\n"
+                + "按以下格式输出：\n"
+                + "## 会议摘要\n（简要概述会议内容）\n"
+                + "## 重点事项\n（逐条列出关键议题与结论）\n"
+                + "## 待办事项\n（列出需要跟进的行动项）\n"
+                + "保留专有名词和数字原样，只输出纪要正文，无需解释。";
+        String userMessage = "【商务会议同声传译记录】\n\n" + text;
+        log.info("[LlmIntegration] summarizeMeetingRetry start, textLen={}", text != null ? text.length() : 0);
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                systemPrompt,
+                userMessage,
+                openAiProperties.getSummaryMaxOutputTokens()
+        );
+        log.info("[LlmIntegration] summarizeMeetingRetry end, resultLen={}", result.length());
+        return result;
+    }
+
     public String summarizeMeetingWithMaterials(
             String transcript,
             String agendaText,
@@ -225,52 +276,278 @@ public class LlmIntegration {
         return result;
     }
 
+    public String summarizeSpeakerSegment(String speakerName, String text) throws IOException {
+        return summarizeSpeakerSegment(speakerName, text, null);
+    }
+
+    public String summarizeSpeakerSegment(String speakerName, String text, String requirements) throws IOException {
+        String systemPrompt = "你是会议纪要助手。针对下面这段发言内容生成结构化中文摘要。\n"
+                + "第一行输出「标题：」加上简短的发言主题标题（不超过10个字）。\n"
+                + "然后空一行，根据内容要点逐条列出，每条以「•」开头。\n"
+                + "要点数量根据内容自然决定，不强制数量限制，完整覆盖发言要点即可。\n"
+                + "保留专有名词、数字、决议和行动项。\n"
+                + "只输出标题行和要点列表，不要其他说明。"
+                + (requirements != null && !requirements.isBlank() ? "\n额外要求：" + requirements : "");
+        String userMessage = "发言人：" + speakerName + "\n\n内容：\n" + text;
+        log.info("[LlmIntegration] summarizeSpeakerSegment start, speaker={}, textLen={}, hasReq={}", speakerName, text.length(), requirements != null && !requirements.isBlank());
+        String result = createTextResponse(
+                openAiProperties.getDocumentSummaryModel(),
+                systemPrompt,
+                userMessage,
+                1200L
+        );
+        log.info("[LlmIntegration] summarizeSpeakerSegment end, resultLen={}", result.length());
+        return result;
+    }
+
+    public String summarizeSpeakerSegmentRetry(String speakerName, String text) throws IOException {
+        String systemPrompt = "你是专业会议秘书，负责整理正式业务会议的发言要点。"
+                + "以下内容来自真实会议的中文发言记录，请提炼为结构化摘要。\n"
+                + "输出格式（严格遵守）：\n"
+                + "第一行：「标题：」加发言主题（不超过10字）\n"
+                + "第二行起：用「•」逐条列出核心观点、数据、决议和行动项\n"
+                + "只输出标题行与要点，不要前言、解释或评论。";
+        String userMessage = "【会议发言人】" + speakerName + "\n\n【发言记录】\n" + text;
+        log.info("[LlmIntegration] summarizeSpeakerSegmentRetry start, speaker={}, textLen={}", speakerName, text.length());
+        String result = createTextResponse(
+                openAiProperties.getDocumentSummaryModel(),
+                systemPrompt,
+                userMessage,
+                1200L
+        );
+        log.info("[LlmIntegration] summarizeSpeakerSegmentRetry end, resultLen={}", result.length());
+        return result;
+    }
+
+    public String chat(String context, String question, List<ChatTurn> history) throws IOException {
+        log.info("[LlmIntegration] chat start, model={}, contextLen={}, historySize={}",
+                openAiProperties.getDocumentSummaryModel(),
+                context != null ? context.length() : 0,
+                history != null ? history.size() : 0);
+
+        StringBuilder input = new StringBuilder();
+        if (context != null && !context.isBlank()) {
+            input.append("[参考资料]\n").append(context).append("\n\n");
+        }
+        if (history != null) {
+            for (ChatTurn turn : history) {
+                if ("user".equals(turn.getRole())) {
+                    input.append("用户：").append(turn.getContent()).append("\n");
+                } else {
+                    input.append("助手：").append(turn.getContent()).append("\n");
+                }
+            }
+        }
+        input.append("用户：").append(question);
+
+        String result = createTextResponse(
+                openAiProperties.getDocumentSummaryModel(),
+                CHAT_SYSTEM_PROMPT,
+                input.toString(),
+                openAiProperties.getDocumentSummaryMaxOutputTokens()
+        );
+        log.info("[LlmIntegration] chat end, answerLen={}", result.length());
+        return result;
+    }
+
+    public String chatCrossMeeting(String context, String question, List<ChatTurn> history) throws IOException {
+        log.info("[LlmIntegration] chatCrossMeeting start, model={}, contextLen={}, historySize={}",
+                openAiProperties.getDocumentSummaryModel(),
+                context != null ? context.length() : 0,
+                history != null ? history.size() : 0);
+
+        StringBuilder input = new StringBuilder();
+        if (context != null && !context.isBlank()) {
+            input.append("[历史会议记录]\n").append(context).append("\n\n");
+        }
+        if (history != null) {
+            for (ChatTurn turn : history) {
+                if ("user".equals(turn.getRole())) {
+                    input.append("用户：").append(turn.getContent()).append("\n");
+                } else {
+                    input.append("助手：").append(turn.getContent()).append("\n");
+                }
+            }
+        }
+        input.append("用户：").append(question);
+
+        String result = createTextResponse(
+                openAiProperties.getDocumentSummaryModel(),
+                CROSS_MEETING_SYSTEM_PROMPT,
+                input.toString(),
+                openAiProperties.getDocumentSummaryMaxOutputTokens()
+        );
+        log.info("[LlmIntegration] chatCrossMeeting end, answerLen={}", result.length());
+        return result;
+    }
+
+    public void streamChatUnified(
+            String context,
+            String question,
+            List<ChatTurn> history,
+            Consumer<String> chunkConsumer) throws IOException {
+        log.info("[LlmIntegration] streamChatUnified start, model={}, contextLen={}, historySize={}",
+                openAiProperties.getDocumentSummaryModel(),
+                context != null ? context.length() : 0,
+                history != null ? history.size() : 0);
+
+        StringBuilder inputBuilder = new StringBuilder();
+        if (context != null && !context.isBlank()) {
+            inputBuilder.append("[历史会议记录]\n").append(context).append("\n\n");
+        }
+        if (history != null) {
+            for (ChatTurn turn : history) {
+                inputBuilder.append("user".equals(turn.getRole()) ? "用户：" : "助手：")
+                        .append(turn.getContent()).append("\n");
+            }
+        }
+        inputBuilder.append("用户：").append(question);
+
+        String requestBodyJson = buildStreamRequestJson(
+                openAiProperties.getDocumentSummaryModel(),
+                CROSS_MEETING_SYSTEM_PROMPT,
+                inputBuilder.toString(),
+                openAiProperties.getDocumentSummaryMaxOutputTokens());
+
+        String chatUrl = openAiProperties.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(chatUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + openAiProperties.getApiKey())
+                .timeout(Duration.ofSeconds(120))
+                .POST(HttpRequest.BodyPublishers.ofString(requestBodyJson, StandardCharsets.UTF_8));
+
+        if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {
+            requestBuilder.header("HTTP-Referer", openAiProperties.getReferer());
+        }
+        if (openAiProperties.getTitle() != null && !openAiProperties.getTitle().isBlank()) {
+            requestBuilder.header("X-Title", openAiProperties.getTitle());
+        }
+
+        long start = System.currentTimeMillis();
+        try {
+            HttpResponse<java.io.InputStream> response = STREAM_HTTP_CLIENT.send(
+                    requestBuilder.build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() != 200) {
+                String body = new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
+                log.error("[LlmIntegration] streamChatUnified failed, status={}, body={}",
+                        response.statusCode(), body);
+                throw new IOException("OpenAI streaming request failed: HTTP " + response.statusCode());
+            }
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("data: ")) {
+                        String data = line.substring(6).trim();
+                        if ("[DONE]".equals(data)) break;
+                        String chunk = parseDeltaContent(data);
+                        if (chunk != null && !chunk.isEmpty()) {
+                            chunkConsumer.accept(chunk);
+                        }
+                    }
+                }
+            }
+            log.info("[LlmIntegration] streamChatUnified complete, costMs={}", System.currentTimeMillis() - start);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Streaming interrupted", e);
+        }
+    }
+
+    private String buildStreamRequestJson(String model, String systemPrompt, String userMessage, long maxTokens) throws IOException {
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("model", model);
+        req.put("stream", true);
+        req.put("max_tokens", maxTokens);
+        List<Map<String, String>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "system", "content", systemPrompt));
+        messages.add(Map.of("role", "user", "content", userMessage));
+        req.put("messages", messages);
+        try {
+            return OBJECT_MAPPER.writeValueAsString(req);
+        } catch (Exception e) {
+            throw new IOException("Failed to build stream request JSON", e);
+        }
+    }
+
+    private String parseDeltaContent(String jsonData) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(jsonData);
+            JsonNode choices = root.path("choices");
+            if (choices.isArray() && !choices.isEmpty()) {
+                JsonNode content = choices.get(0).path("delta").path("content");
+                if (!content.isMissingNode() && !content.isNull()) {
+                    return content.asText();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
     private String nullToBlank(String value) {
         return value == null ? "" : value;
     }
 
     private String createTextResponse(
             String model,
-            String instructions,
-            String input,
+            String systemPrompt,
+            String userMessage,
             long maxOutputTokens
     ) throws IOException {
-        if (input == null || input.isBlank()) {
+        if (userMessage == null || userMessage.isBlank()) {
             return "";
         }
+        if (openAiProperties.getApiKey() == null || openAiProperties.getApiKey().isBlank()) {
+            throw new IOException("OPENAI_API_KEY is blank");
+        }
         long start = System.currentTimeMillis();
+        String requestBodyJson = buildStreamRequestJson(model, systemPrompt, userMessage, maxOutputTokens);
+        // Override stream=false for non-streaming request
+        requestBodyJson = requestBodyJson.replace("\"stream\":true", "\"stream\":false");
+
+        String chatUrl = openAiProperties.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
+        HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(chatUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + openAiProperties.getApiKey())
+                .timeout(Duration.ofSeconds(120))
+                .POST(HttpRequest.BodyPublishers.ofString(requestBodyJson, StandardCharsets.UTF_8));
+        if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {
+            reqBuilder.header("HTTP-Referer", openAiProperties.getReferer());
+        }
+        if (openAiProperties.getTitle() != null && !openAiProperties.getTitle().isBlank()) {
+            reqBuilder.header("X-Title", openAiProperties.getTitle());
+        }
         try {
-            ResponseCreateParams params = ResponseCreateParams.builder()
-                    .model(model)
-                    .instructions(instructions)
-                    .input(input)
-                    .maxOutputTokens(maxOutputTokens)
-                    .store(false)
-                    .build();
-            Response response = openAIClient().responses().create(params);
-            String outputText = extractOutputText(response);
-            log.info("[LlmIntegration] OpenAI response done, model={}, costMs={}, outputLen={}",
-                    model, System.currentTimeMillis() - start, outputText.length());
-            return outputText;
-        } catch (Exception e) {
-            if (isExpectedProviderRejection(e)) {
-                log.warn("[LlmIntegration] OpenAI response rejected, model={}, inputLen={}, reason={}",
-                        model, input.length(), sanitizeErrorMessage(e.getMessage()));
-            } else {
-                log.error("[LlmIntegration] OpenAI response failed, model={}, inputLen={}",
-                        model, input.length(), e);
+            HttpResponse<String> response = STREAM_HTTP_CLIENT.send(
+                    reqBuilder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() != 200) {
+                log.error("[LlmIntegration] chat/completions failed, status={}, body={}",
+                        response.statusCode(), response.body());
+                throw new IOException("LLM request failed: HTTP " + response.statusCode());
             }
+            JsonNode root = OBJECT_MAPPER.readTree(response.body());
+            String text = root.path("choices").get(0).path("message").path("content").asText("").trim();
+            if (text.isBlank()) {
+                throw new IOException("LLM response content is empty");
+            }
+            log.info("[LlmIntegration] chat/completions done, model={}, costMs={}, outputLen={}",
+                    model, System.currentTimeMillis() - start, text.length());
+            return text;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("LLM request interrupted", e);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[LlmIntegration] chat/completions error, model={}", model, e);
             throw new IOException("LLM response unavailable: " + sanitizeErrorMessage(e.getMessage()), e);
         }
-    }
-
-    private boolean isExpectedProviderRejection(Exception e) {
-        String className = e.getClass().getSimpleName();
-        String message = e.getMessage();
-        return "PermissionDeniedException".equals(className)
-                || "UnauthorizedException".equals(className)
-                || (message != null && message.contains("provider Terms Of Service"))
-                || (message != null && message.contains("User not found"));
     }
 
     private String sanitizeErrorMessage(String message) {
@@ -278,57 +555,5 @@ public class LlmIntegration {
             return "unknown";
         }
         return message.replaceAll("[\\r\\n\\t]+", " ").trim();
-    }
-
-    private OpenAIClient openAIClient() {
-        OpenAIClient currentClient = openAIClient;
-        if (currentClient != null) {
-            return currentClient;
-        }
-        synchronized (this) {
-            if (openAIClient == null) {
-                if (openAiProperties.getApiKey() == null || openAiProperties.getApiKey().isBlank()) {
-                    throw new IllegalStateException("OPENAI_API_KEY is blank");
-                }
-                OpenAIOkHttpClient.Builder builder = OpenAIOkHttpClient.builder()
-                        .apiKey(openAiProperties.getApiKey())
-                        .maxRetries(2);
-                if (openAiProperties.getBaseUrl() != null && !openAiProperties.getBaseUrl().isBlank()) {
-                    builder.baseUrl(openAiProperties.getBaseUrl());
-                }
-                if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {
-                    builder.putHeader("HTTP-Referer", openAiProperties.getReferer());
-                }
-                if (openAiProperties.getTitle() != null && !openAiProperties.getTitle().isBlank()) {
-                    builder.putHeader("X-Title", openAiProperties.getTitle());
-                }
-                openAIClient = builder.build();
-                log.info("[LlmIntegration] official OpenAI Java client initialized, baseUrl={}",
-                        openAiProperties.getBaseUrl());
-            }
-            return openAIClient;
-        }
-    }
-
-    private String extractOutputText(Response response) throws IOException {
-        StringBuilder result = new StringBuilder();
-        for (ResponseOutputItem outputItem : response.output()) {
-            if (!outputItem.isMessage()) {
-                continue;
-            }
-            ResponseOutputMessage message = outputItem.asMessage();
-            for (ResponseOutputMessage.Content content : message.content()) {
-                if (!content.isOutputText()) {
-                    continue;
-                }
-                ResponseOutputText outputText = content.asOutputText();
-                result.append(outputText.text());
-            }
-        }
-        String text = result.toString().trim();
-        if (text.isBlank()) {
-            throw new IOException("OpenAI response text is empty");
-        }
-        return text;
     }
 }

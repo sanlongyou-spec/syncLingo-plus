@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  generateSpeakerSummary,
   getAsrHotwords,
   getMeetingParticipants,
-  getMeetingSummary,
+  getMeetings,
   getUserLanguagePreference,
+  saveUserLanguagePreference,
   getUserVoice,
   saveInterpretationResult,
-  sendTeamsSummaryToUsers,
   startInterpretation,
   stopInterpretation,
 } from '../api'
@@ -14,7 +15,8 @@ import { AUDIO_DEFAULTS, VOICEMEETER } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { AsrWebSocket } from '../lib/websocket'
-import type { WsMessage } from '../types'
+import { LANGUAGE_OPTIONS } from '../types'
+import type { Meeting, WsMessage } from '../types'
 import './InterpretationView.css'
 
 interface TranscriptTranslation {
@@ -74,9 +76,17 @@ const normalizeVoiceCode = (code?: string | null) => {
   const trimmed = code?.trim()
   if (!trimmed) return ''
   const lower = trimmed.toLowerCase()
-  if (lower === 'unknown' || lower === 'undefined' || lower === 'null') return ''
+  if (lower === 'undefined' || lower === 'null') return ''
   return trimmed
 }
+
+const isUnknownSpeakerId = (speakerId?: string | null) =>
+  speakerId?.trim().toLowerCase() === 'unknown'
+
+const MIN_SPEAKER_CHANGE_CHARS = 30
+
+const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
+  speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
 
 export default function InterpretationView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
@@ -94,8 +104,10 @@ export default function InterpretationView() {
   const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
   const [selectedHotwordIds, setSelectedHotwordIds] = useState<number[]>([])
   const [enabledLanguages, setEnabledLanguages] = useState<string[]>([LANGUAGE.ZH_CN, LANGUAGE.ID_ID])
-  const [lastSessionId, setLastSessionId] = useState<string | null>(null)
-  const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+
+  // ── Meeting & speaker summary ─────────────────────────────
+  const [meetings, setMeetings] = useState<Meeting[]>([])
+  const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
 
   const wsRef = useRef<AsrWebSocket | null>(null)
   const audioRef = useRef<AudioCapture | null>(null)
@@ -104,6 +116,16 @@ export default function InterpretationView() {
   const currentSpeakerIdRef = useRef('')
   const bodyRef = useRef<HTMLDivElement>(null)
   const ttsChunkIndexByTaskRef = useRef<Map<string, number>>(new Map())
+
+  // Speaker change detection refs (ID-based for known speakers)
+  const speakerBufferRef = useRef<Record<string, string>>({})
+  const prevFinalSpeakerRef = useRef('')
+  const speakerNameMapRef = useRef<Record<string, string>>({})
+  // Candidate new speaker accumulates here until MIN_SPEAKER_CHANGE_CHARS; prevents misidentification
+  const pendingSpeakerRef = useRef<{ speakerId: string; buffer: string } | null>(null)
+  // Name-based tracking for Unknown speakers resolved via Pyannote (in translated messages)
+  const nameBufferRef = useRef<Record<string, string>>({})
+  const prevResolvedNameRef = useRef('')
 
   const streamContextRef = useRef<AudioContext | null>(null)
   const streamDestZhRef = useRef<MediaStreamAudioDestinationNode | null>(null)
@@ -125,8 +147,12 @@ export default function InterpretationView() {
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
-
+  useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
   useEffect(() => {
+    getMeetings(userId)
+      .then(res => setMeetings(res.data || []))
+      .catch((err: unknown) => console.warn('[InterpretationView] getMeetings failed:', err))
+
     getUserVoice(userId)
       .then(res => {
         if (res.data?.voiceId) setVoiceId(res.data.voiceId)
@@ -151,6 +177,24 @@ export default function InterpretationView() {
       audioRef.current?.stop()
       audioRef.current = null
     }
+  }, [userId])
+
+  // Refresh meetings whenever an overlay is closed and user returns here
+  useEffect(() => {
+    const refreshMeetings = () => {
+      getMeetings(userId)
+        .then(res => {
+          const list = res.data || []
+          setMeetings(list)
+          // If previously selected meeting was deleted, clear the selection
+          setSelectedMeetingId(prev =>
+            prev !== null && !list.some(m => m.id === prev) ? null : prev
+          )
+        })
+        .catch((err: unknown) => console.warn('[InterpretationView] getMeetings refresh failed:', err))
+    }
+    window.addEventListener('hashchange', refreshMeetings)
+    return () => window.removeEventListener('hashchange', refreshMeetings)
   }, [userId])
 
   useEffect(() => {
@@ -273,12 +317,24 @@ export default function InterpretationView() {
     playStreamPcm(pcmData, 24000, targetLang)
   }, [playStreamPcm])
 
+  const resolveSpeakerName = useCallback((speakerId?: string, speakerName?: string | null) => {
+    const displayName = speakerName?.trim()
+    if (displayName) return displayName
+    return mappedSpeakerName(speakerId, speakerNameMapRef.current)
+  }, [])
+
+  const rememberSpeakerName = useCallback((speakerId?: string, speakerName?: string | null) => {
+    const displayName = speakerName?.trim()
+    if (!speakerId || !displayName || isUnknownSpeakerId(speakerId)) return
+    setSpeakerNameMap(prev => prev[speakerId] === displayName ? prev : { ...prev, [speakerId]: displayName })
+  }, [])
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     const messageSpeakerId =
       normalizeVoiceCode(msg.speakerId) ||
       normalizeVoiceCode(msg.voiceId) ||
       normalizeVoiceCode(currentSpeakerIdRef.current)
-    const messageSpeakerName = msg.speakerName?.trim() || ''
+    const messageSpeakerName = resolveSpeakerName(messageSpeakerId, msg.speakerName)
 
     switch (msg.type) {
       case 'recognizing':
@@ -287,9 +343,7 @@ export default function InterpretationView() {
           setCurrentSpeakerId(messageSpeakerId)
           currentSpeakerIdRef.current = messageSpeakerId
         }
-        if (messageSpeakerName && messageSpeakerId) {
-          setSpeakerNameMap(prev => prev[messageSpeakerId] === messageSpeakerName ? prev : { ...prev, [messageSpeakerId]: messageSpeakerName })
-        }
+        rememberSpeakerName(messageSpeakerId, messageSpeakerName)
         if (msg.language) {
           detectedLangRef.current = msg.language
           setDetectedLang(msg.language)
@@ -297,8 +351,58 @@ export default function InterpretationView() {
         break
       case 'recognized':
         if (msg.text) {
-          if (messageSpeakerName && messageSpeakerId) {
-            setSpeakerNameMap(prev => prev[messageSpeakerId] === messageSpeakerName ? prev : { ...prev, [messageSpeakerId]: messageSpeakerName })
+          rememberSpeakerName(messageSpeakerId, messageSpeakerName)
+          // Speaker change detection for auto-summary
+          if (messageSpeakerId) {
+            const text = (msg.text || '').trim()
+            if (isUnknownSpeakerId(messageSpeakerId)) {
+              // Attribute Unknown text to the last known speaker's buffer
+              const lastKnown = prevFinalSpeakerRef.current
+              if (lastKnown && !isUnknownSpeakerId(lastKnown)) {
+                speakerBufferRef.current[lastKnown] =
+                  ((speakerBufferRef.current[lastKnown] || '') + ' ' + text).trim()
+              }
+            } else if (messageSpeakerId === prevFinalSpeakerRef.current) {
+              // Same speaker confirmed — flush any pending misrecognition back to them
+              const pending = pendingSpeakerRef.current
+              if (pending) {
+                speakerBufferRef.current[messageSpeakerId] =
+                  ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + pending.buffer).trim()
+                pendingSpeakerRef.current = null
+              }
+              speakerBufferRef.current[messageSpeakerId] =
+                ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + text).trim()
+            } else {
+              // Different speaker — buffer until MIN_SPEAKER_CHANGE_CHARS to reject misidentifications
+              const pending = pendingSpeakerRef.current
+              if (pending?.speakerId === messageSpeakerId) {
+                pending.buffer = (pending.buffer + ' ' + text).trim()
+                if (pending.buffer.length >= MIN_SPEAKER_CHANGE_CHARS) {
+                  // Enough text — commit the speaker change
+                  const prevSpeaker = prevFinalSpeakerRef.current
+                  if (prevSpeaker && !isUnknownSpeakerId(prevSpeaker)) {
+                    const prevText = speakerBufferRef.current[prevSpeaker] || ''
+                    const prevName = speakerNameMapRef.current[prevSpeaker] || prevSpeaker
+                    if (prevText.length >= 30 && sessionIdRef.current) {
+                      void triggerSpeakerSummary(prevSpeaker, prevName, prevText, sessionIdRef.current)
+                    }
+                    delete speakerBufferRef.current[prevSpeaker]
+                  }
+                  speakerBufferRef.current[messageSpeakerId] =
+                    ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + pending.buffer).trim()
+                  prevFinalSpeakerRef.current = messageSpeakerId
+                  pendingSpeakerRef.current = null
+                }
+              } else {
+                // New candidate — flush previous pending back to prevFinalSpeaker (was misrecognition)
+                if (pending) {
+                  const curr = prevFinalSpeakerRef.current
+                  speakerBufferRef.current[curr] =
+                    ((speakerBufferRef.current[curr] || '') + ' ' + pending.buffer).trim()
+                }
+                pendingSpeakerRef.current = { speakerId: messageSpeakerId, buffer: text }
+              }
+            }
           }
           setTranscripts(prev => [
             ...prev,
@@ -329,10 +433,17 @@ export default function InterpretationView() {
             translatedText,
             sourceLang: msg.sourceLang || detectedLangRef.current || msg.language || undefined,
             targetLang: targetLanguage,
+            speakerId: msg.speakerId || undefined,
+            speakerName: messageSpeakerName || undefined,
           }).catch(err => console.warn('[InterpretationView] saveInterpretationResult failed:', err))
         }
         if (!translatedText) break
         setTranscripts(prev => {
+          const mergeSpeakerInfo = (item: TranscriptItem): TranscriptItem => ({
+            ...item,
+            speakerId: item.speakerId || messageSpeakerId,
+            speakerName: messageSpeakerName || item.speakerName,
+          })
           const upsertTranslation = (item: TranscriptItem): TranscriptItem => {
             const matchedTranslationIndex = item.translations.findIndex(itemTranslation =>
               itemTranslation.targetLanguage === targetLanguage,
@@ -352,10 +463,10 @@ export default function InterpretationView() {
             : -1
           if (matchedIndex >= 0) {
             const index = prev.length - 1 - matchedIndex
-            return prev.map((item, itemIndex) => itemIndex === index ? upsertTranslation(item) : item)
+            return prev.map((item, itemIndex) => itemIndex === index ? upsertTranslation(mergeSpeakerInfo(item)) : item)
           }
           if (prev.length > 0 && prev[prev.length - 1].translations.length === 0) {
-            return [...prev.slice(0, -1), upsertTranslation(prev[prev.length - 1])]
+            return [...prev.slice(0, -1), upsertTranslation(mergeSpeakerInfo(prev[prev.length - 1]))]
           }
           if (!originalText) return prev
           return [
@@ -370,18 +481,50 @@ export default function InterpretationView() {
             },
           ]
         })
+        // Name-based speaker change detection for Pyannote-resolved speakers.
+        // "Unknown" is Azure's placeholder before Pyannote identifies the speaker —
+        // only trigger when we have a genuinely resolved name.
+        const isResolved = (n: string) => !!n && n !== 'Unknown' && !n.startsWith('Unknown ')
+        if (!messageSpeakerId && isResolved(messageSpeakerName) && originalText) {
+          nameBufferRef.current[messageSpeakerName] =
+            ((nameBufferRef.current[messageSpeakerName] || '') + ' ' + originalText).trim()
+          const prevName = prevResolvedNameRef.current
+          if (isResolved(prevName) && prevName !== messageSpeakerName) {
+            const prevText = nameBufferRef.current[prevName] || ''
+            if (prevText.length >= 30 && sessionIdRef.current) {
+              void triggerSpeakerSummary('', prevName, prevText, sessionIdRef.current)
+            }
+            delete nameBufferRef.current[prevName]
+          }
+          prevResolvedNameRef.current = messageSpeakerName
+        }
         break
       }
       case 'speaker_identity':
         if (msg.speakerId) {
+          const identitySpeakerId = normalizeVoiceCode(msg.speakerId)
           const displayName = msg.speakerName?.trim() || ''
-          setCurrentSpeakerId(msg.speakerId)
-          currentSpeakerIdRef.current = msg.speakerId
+          if (!identitySpeakerId) break
+          setCurrentSpeakerId(identitySpeakerId)
+          currentSpeakerIdRef.current = identitySpeakerId
           if (displayName) {
-            setSpeakerNameMap(prev => prev[msg.speakerId!] === displayName ? prev : { ...prev, [msg.speakerId!]: displayName })
-            setTranscripts(prev => prev.map(item =>
-              item.speakerId === msg.speakerId ? { ...item, speakerName: displayName } : item,
-            ))
+            if (isUnknownSpeakerId(identitySpeakerId)) {
+              setTranscripts(prev => {
+                const matchedIndex = [...prev].reverse().findIndex(item =>
+                  isUnknownSpeakerId(item.speakerId) && !item.speakerName,
+                )
+                if (matchedIndex < 0) return prev
+                const index = prev.length - 1 - matchedIndex
+                return prev.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, speakerName: displayName } : item,
+                )
+              })
+            } else {
+              setSpeakerNameMap(prev => prev[identitySpeakerId] === displayName ? prev : { ...prev, [identitySpeakerId]: displayName })
+              setTranscripts(prev => prev.map(item =>
+                item.speakerId === identitySpeakerId ? { ...item, speakerName: displayName } : item,
+              ))
+            }
           }
         }
         break
@@ -411,6 +554,7 @@ export default function InterpretationView() {
         setSpeakerNameMap({})
         setDetectedLang(msg.language || '')
         currentSpeakerIdRef.current = ''
+        speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''
         break
       case 'stopped':
@@ -420,7 +564,17 @@ export default function InterpretationView() {
         setError(msg.message || '发生错误')
         break
     }
-  }, [playPcm])
+  }, [playPcm, rememberSpeakerName, resolveSpeakerName])
+
+  const triggerSpeakerSummary = useCallback(async (
+    speakerId: string, speakerName: string, text: string, sid: string,
+  ) => {
+    try {
+      await generateSpeakerSummary({ userId, sessionId: sid, speakerId, speakerName, text })
+    } catch (e) {
+      console.warn('[InterpretationView] speaker summary failed:', e)
+    }
+  }, [userId])
 
   const resolveActiveMeetingTitle = async () => {
     try {
@@ -432,26 +586,34 @@ export default function InterpretationView() {
   }
 
   const startSession = async () => {
+    if (!selectedMeetingId) {
+      setError('请先在"会前管理"页面上传会议安排，并在此选择关联会议')
+      return
+    }
+    if (enabledLanguages.length < 2) {
+      setError('请至少勾选两种翻译语种')
+      return
+    }
     setError('')
     setIsLoading(true)
     try {
       ttsChunkIndexByTaskRef.current.clear()
-      const meetingTitle = await resolveActiveMeetingTitle()
+      const selectedMeeting = meetings.find(m => m.id === selectedMeetingId)
+      const sessionTitle = selectedMeeting?.title || await resolveActiveMeetingTitle()
 
       const res = await startInterpretation({
         userId,
         sourceLang: LANGUAGE.AUTO,
         targetLang: LANGUAGE.AUTO,
-        title: meetingTitle,
+        title: sessionTitle,
         voiceId: voiceId || undefined,
         hotwordIds: selectedHotwordIds,
         enabledLanguages,
+        meetingId: selectedMeetingId,
       })
       const sid = res.data
       setSessionId(sid)
       sessionIdRef.current = sid
-      setLastSessionId(sid)
-      setTeamsPushStatus('idle')
       localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
 
       const ws = new AsrWebSocket()
@@ -481,10 +643,52 @@ export default function InterpretationView() {
 
   const stopSession = async () => {
     if (!sessionId) return
-    wsRef.current?.stop(sessionId)
+    const sid = sessionId
+    // Resolve pending speaker before flushing
+    const pendingOnStop = pendingSpeakerRef.current
+    if (pendingOnStop) {
+      if (pendingOnStop.buffer.length >= MIN_SPEAKER_CHANGE_CHARS) {
+        // Spoke enough at end of session — commit the change
+        const prevSpeaker = prevFinalSpeakerRef.current
+        if (prevSpeaker && !isUnknownSpeakerId(prevSpeaker)) {
+          const prevText = speakerBufferRef.current[prevSpeaker] || ''
+          const prevName = speakerNameMapRef.current[prevSpeaker] || prevSpeaker
+          if (prevText.length >= 30) void triggerSpeakerSummary(prevSpeaker, prevName, prevText, sid)
+          delete speakerBufferRef.current[prevSpeaker]
+        }
+        speakerBufferRef.current[pendingOnStop.speakerId] =
+          ((speakerBufferRef.current[pendingOnStop.speakerId] || '') + ' ' + pendingOnStop.buffer).trim()
+        prevFinalSpeakerRef.current = pendingOnStop.speakerId
+      } else {
+        // Too short — flush back to previous speaker (misrecognition at end of session)
+        const curr = prevFinalSpeakerRef.current
+        speakerBufferRef.current[curr] =
+          ((speakerBufferRef.current[curr] || '') + ' ' + pendingOnStop.buffer).trim()
+      }
+      pendingSpeakerRef.current = null
+    }
+    // Flush last speaker's buffer before stopping
+    const lastSpeaker = prevFinalSpeakerRef.current
+    const lastText = speakerBufferRef.current[lastSpeaker] || ''
+    if (lastSpeaker && !isUnknownSpeakerId(lastSpeaker) && lastText.length >= 30) {
+      const lastName = speakerNameMapRef.current[lastSpeaker] || lastSpeaker
+      void triggerSpeakerSummary(lastSpeaker, lastName, lastText, sid)
+    }
+    speakerBufferRef.current = {}
+    prevFinalSpeakerRef.current = ''
+    pendingSpeakerRef.current = null
+    // Flush last Pyannote-resolved speaker's buffer (skip if still "Unknown")
+    const lastResolvedName = prevResolvedNameRef.current
+    const lastNameText = nameBufferRef.current[lastResolvedName] || ''
+    if (lastResolvedName && lastResolvedName !== 'Unknown' && !lastResolvedName.startsWith('Unknown ') && lastNameText.length >= 30) {
+      void triggerSpeakerSummary('', lastResolvedName, lastNameText, sessionId)
+    }
+    nameBufferRef.current = {}
+    prevResolvedNameRef.current = ''
+    wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null
-    await stopInterpretation(sessionId).catch((err: unknown) => {
+    await stopInterpretation(sid).catch((err: unknown) => {
       console.warn('[InterpretationView] stopInterpretation failed:', err)
     })
     wsRef.current?.close()
@@ -546,72 +750,32 @@ export default function InterpretationView() {
     await navigator.clipboard.writeText(shareUrl)
   }
 
-  const pushSummaryToTeams = async () => {
-    const sid = lastSessionId
-    if (!sid) return
-    setTeamsPushStatus('loading')
-    try {
-      // Fetch participants from the active meeting the bot joined
-      const participantsData = await getMeetingParticipants()
-      if (!participantsData.callId || participantsData.participants.length === 0) {
-        throw new Error('请先在 Teams Bot 页面粘贴会议链接，让机器人加入会议')
-      }
-      const recipients = participantsData.participants.map(p => p.aadId).filter(Boolean)
-
-      const summaryData = await getMeetingSummary(sid)
-      const summaryText = summaryData.data?.summary
-      if (!summaryText?.trim()) throw new Error('摘要内容为空，请稍后重试')
-
-      const teamsRes = await sendTeamsSummaryToUsers(summaryText, recipients)
-      if (!teamsRes.sent) throw new Error(teamsRes.failures[0]?.error || '没有 Teams 用户收到摘要')
-      setTeamsPushStatus('done')
-      setTimeout(() => setTeamsPushStatus('idle'), 3000)
-    } catch (e) {
-      setTeamsPushStatus('error')
-      setError(e instanceof Error ? e.message : '推送到 Teams 失败')
-      setTimeout(() => setTeamsPushStatus('idle'), 3000)
-    }
-  }
 
   return (
     <div className="si-root">
       <aside className="si-hover-sidebar" aria-label="工具侧边栏">
         <div className="si-hover-sidebar-grip" aria-hidden />
         <div className="si-hover-sidebar-panel">
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TEAMS_BOT }}>
+            <span className="si-side-action-icon">T</span>
+            <span>Teams Bot</span>
+          </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.VOICE_CLONE }}>
             <IconLightbulb />
             <span>音色克隆</span>
-          </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
-            <span className="si-side-action-icon">H</span>
-            <span>历史记录</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TERMINOLOGY }}>
             <span className="si-side-action-icon">T</span>
             <span>术语表</span>
           </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TEAMS_BOT }}>
-            <span className="si-side-action-icon">T</span>
-            <span>Teams Bot</span>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
+            <span className="si-side-action-icon">H</span>
+            <span>历史记录</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.COST_ANALYSIS }}>
             <span className="si-side-action-icon">$</span>
             <span>成本分析</span>
           </button>
-          {lastSessionId && (
-            <button
-              className="si-side-action"
-              onClick={pushSummaryToTeams}
-              disabled={teamsPushStatus === 'loading'}
-            >
-              <span className="si-side-action-icon">
-                {teamsPushStatus === 'done' ? '✓' : teamsPushStatus === 'error' ? '✗' : '↑'}
-              </span>
-              <span>
-                {teamsPushStatus === 'loading' ? '推送中…' : teamsPushStatus === 'done' ? '已发送' : '推送摘要到Teams'}
-              </span>
-            </button>
-          )}
           {sessionId && (
             <button className="si-side-action" onClick={copyShareLink}>
               <span className="si-side-action-icon">S</span>
@@ -650,19 +814,15 @@ export default function InterpretationView() {
                     </div>
                   )}
 
-                  {transcripts.map((item, index) => {
-                    const prev = index > 0 ? transcripts[index - 1] : null
-                    const prevSpeaker = prev ? (prev.speakerName || prev.speakerId) : null
-                    const currSpeaker = item.speakerName || item.speakerId
-                    const showSpeakerHeader = currSpeaker !== prevSpeaker
+                  {transcripts.map(item => {
+                    const currSpeaker = item.speakerName || mappedSpeakerName(item.speakerId, speakerNameMap) || item.speakerId || ''
                     return (
                       <div key={item.id} className="si-tri-block">
-                        {showSpeakerHeader && (
-                          <div className="si-tri-speaker-header">
-                            {renderVoiceBadge(currSpeaker)}
-                          </div>
-                        )}
-                        <div className="si-tri-block-line si-tri-block-line--no-badge">
+                        <div className="si-tri-block-line">
+                          {currSpeaker
+                            ? renderVoiceBadge(currSpeaker)
+                            : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>
+                          }
                           <div className="si-tri-block-line-body">
                             <span className="si-tri-line-plain">{item.source}</span>
                           </div>
@@ -692,13 +852,13 @@ export default function InterpretationView() {
                         <span>实时识别中</span>
                       </div>
                       <div className="si-tri-block-line">
-                        {renderVoiceBadge(speakerNameMap[currentSpeakerId] || currentSpeakerId, 'si-tri-line-lang-badge si-tri-line-lang-badge--partial')}
+                        {renderVoiceBadge(mappedSpeakerName(currentSpeakerId, speakerNameMap) || currentSpeakerId, 'si-tri-line-lang-badge si-tri-line-lang-badge--partial')}
                         <div className="si-tri-block-line-body">
                           <span className="si-tri-partial-live-text">{currentSource}</span>
                         </div>
                       </div>
                       <div className="si-tri-block-line">
-                        {renderVoiceBadge(speakerNameMap[currentSpeakerId] || currentSpeakerId, 'si-tri-line-lang-badge si-tri-line-lang-badge--partial')}
+                        {renderVoiceBadge(mappedSpeakerName(currentSpeakerId, speakerNameMap) || currentSpeakerId, 'si-tri-line-lang-badge si-tri-line-lang-badge--partial')}
                         <div className="si-tri-block-line-body">
                           <span className="si-tri-seg-pending">
                             {currentTranslated ? `实时: ${currentTranslated.slice(-40)}` : '翻译中...'}
@@ -721,6 +881,40 @@ export default function InterpretationView() {
             </div>
 
             <div className="si-tri-footer">
+              {!isRunning && (
+                <div className="si-meeting-selector">
+                  <label className="si-meeting-selector-label">关联会议</label>
+                  <select
+                    className="si-meeting-selector-select"
+                    value={selectedMeetingId ?? ''}
+                    onChange={e => setSelectedMeetingId(e.target.value ? Number(e.target.value) : null)}
+                  >
+                    <option value="" disabled>— 请选择关联会议 —</option>
+                    {meetings.map(m => (
+                      <option key={m.id} value={m.id}>{m.title}{m.scheduledTime ? ` (${m.scheduledTime})` : ''}</option>
+                    ))}
+                  </select>
+                  <div className="si-language-checkboxes">
+                    {LANGUAGE_OPTIONS.map(opt => (
+                      <label key={opt.value} className="si-language-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={enabledLanguages.includes(opt.value)}
+                          onChange={e => {
+                            const next = e.target.checked
+                              ? [...enabledLanguages, opt.value]
+                              : enabledLanguages.filter(l => l !== opt.value)
+                            setEnabledLanguages(next)
+                            void saveUserLanguagePreference(userId, { defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: next })
+                              .catch(err => console.warn('[InterpretationView] saveUserLanguagePreference failed:', err))
+                          }}
+                        />
+                        <span>{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="si-run-control">
                 <div className="si-run-status">
                   <span className={`si-run-dot ${isRunning ? 'is-running' : ''}`} />

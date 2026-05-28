@@ -39,11 +39,14 @@ public interface InterpretationSessionMapper {
     @Update("ALTER TABLE interpretation_session ADD COLUMN meeting_summary TEXT DEFAULT NULL")
     void addMeetingSummaryColumnIfNotExists();
 
+    @Update("ALTER TABLE interpretation_session ADD COLUMN meeting_id BIGINT DEFAULT NULL")
+    void addMeetingIdColumnIfNotExists();
+
     @Update("UPDATE interpretation_session SET meeting_summary = #{summary} WHERE session_id = #{sessionId}")
     int updateMeetingSummary(@Param("sessionId") String sessionId, @Param("summary") String summary);
 
-    @Insert("INSERT INTO interpretation_session (session_id, user_id, source_lang, target_lang, voice_id, hotword_ids, enabled_languages, title, status, deleted, start_time, asr_audio_ms, translate_chars, tts_chars, llm_input_tokens, llm_output_tokens, create_time) " +
-            "VALUES (#{sessionId}, #{userId}, #{sourceLang}, #{targetLang}, #{voiceId}, #{hotwordIds}, #{enabledLanguages}, #{title}, #{status}, 0, #{startTime}, 0, 0, 0, 0, 0, NOW())")
+    @Insert("INSERT INTO interpretation_session (session_id, user_id, source_lang, target_lang, voice_id, hotword_ids, enabled_languages, title, status, deleted, start_time, asr_audio_ms, translate_chars, tts_chars, llm_input_tokens, llm_output_tokens, meeting_id, create_time) " +
+            "VALUES (#{sessionId}, #{userId}, #{sourceLang}, #{targetLang}, #{voiceId}, #{hotwordIds}, #{enabledLanguages}, #{title}, #{status}, 0, #{startTime}, 0, 0, 0, 0, 0, #{meetingId}, NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationSession session);
 
@@ -94,4 +97,10 @@ public interface InterpretationSessionMapper {
 
     @Update("UPDATE interpretation_session SET deleted = 1 WHERE session_id = #{sessionId} AND user_id = #{userId}")
     int softDelete(@Param("sessionId") String sessionId, @Param("userId") Long userId);
+
+    @Select("SELECT s.*, (SELECT COUNT(*) FROM interpretation_result r WHERE r.session_id = s.session_id) AS result_count " +
+            "FROM interpretation_session s " +
+            "WHERE s.meeting_id = #{meetingId} AND COALESCE(s.deleted, 0) = 0 " +
+            "ORDER BY s.create_time DESC")
+    java.util.List<InterpretationSession> findByMeetingId(@Param("meetingId") Long meetingId);
 }

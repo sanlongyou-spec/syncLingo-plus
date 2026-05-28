@@ -25,4 +25,6 @@ public class StartInterpretationRequest {
     private List<Long> hotwordIds;
 
     private List<String> enabledLanguages;
+
+    private Long meetingId;
 }

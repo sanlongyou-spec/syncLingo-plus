@@ -77,6 +77,27 @@ public class HotwordExtractionService {
     }
 
     /**
+     * Extracts hotwords from arbitrary text (e.g. uploaded meeting materials) and saves new ones.
+     * Intended for async background execution after file upload.
+     */
+    public List<AsrHotword> extractAndSaveFromText(String text, Long userId) {
+        if (text == null || text.isBlank() || userId == null) return List.of();
+        log.info("[HotwordExtractionService] extractAndSaveFromText start, userId={}, textLen={}", userId, text.length());
+        String truncated = text.length() > MAX_TEXT_CHARS ? text.substring(0, MAX_TEXT_CHARS) : text;
+        List<HotwordSuggestion> suggestions = extractSuggestions(truncated);
+        List<AsrHotword> saved = suggestions.stream()
+                .filter(s -> s.getPhrase() != null && !s.getPhrase().isBlank())
+                .filter(s -> hotwordMapper.countByUserIdPhraseAndLanguage(
+                        userId, s.getPhrase(), s.getLanguage() != null ? s.getLanguage() : "") == 0)
+                .map(s -> buildHotword(s, "AUTO_EXTRACTED"))
+                .map(hw -> hotwordService.create(userId, hw))
+                .toList();
+        log.info("[HotwordExtractionService] extractAndSaveFromText end, userId={}, extracted={}, saved={}",
+                userId, suggestions.size(), saved.size());
+        return saved;
+    }
+
+    /**
      * Saves a user-confirmed selection of suggestions.
      * Skips phrases that already exist as hotwords.
      */

@@ -2,10 +2,14 @@ package com.si.backend.service;
 
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.dto.PreMeetingChatRequest.ChatTurn;
 import com.si.backend.dto.PreMeetingParticipantRequest;
+import com.si.backend.entity.InterpretationResult;
 import com.si.backend.entity.PreMeetingUsageRecord;
 import com.si.backend.integration.LlmIntegration;
+import com.si.backend.mapper.InterpretationResultMapper;
 import com.si.backend.mapper.PreMeetingUsageMapper;
+import com.si.backend.vo.PreMeetingChatVo;
 import com.si.backend.vo.PreMeetingAttendanceRowVo;
 import com.si.backend.vo.PreMeetingAttendanceVo;
 import com.si.backend.vo.PreMeetingDailyUsageVo;
@@ -26,6 +30,8 @@ import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.apache.poi.xwpf.usermodel.UnderlinePatterns;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+
+import com.si.backend.dto.CrossMeetingSnippet;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -56,6 +62,8 @@ public class PreMeetingService {
     private static final Pattern EMAIL_PATTERN = Pattern.compile(
             "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", Pattern.CASE_INSENSITIVE);
     private static final Pattern HAN_PATTERN = Pattern.compile("\\p{IsHan}");
+    private static final Pattern DATE_PATTERN = Pattern.compile(
+            "\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日");
     private static final Pattern GROUP_COUNT_PATTERN = Pattern.compile("^(.*?)[（(]\\d+[）)]\\s*[:：]\\s*(.*)$");
     private static final int MAX_ATTENDANCE_NAME_LENGTH = 60;
     private static final int ATTENDANCE_EXPORT_FONT_SIZE = 11;
@@ -75,6 +83,7 @@ public class PreMeetingService {
 
     private final LlmIntegration llmIntegration;
     private final PreMeetingUsageMapper usageMapper;
+    private final InterpretationResultMapper interpretationResultMapper;
 
     private record PreMeetingDoc(String fileName, String ext, String text, byte[] originalBytes) {}
     private record ExpectedParticipant(String name, String department, String email, String sourceText) {}
@@ -112,11 +121,33 @@ public class PreMeetingService {
             byte[] bytes = file.getBytes();
             String text = extractText(new ByteArrayInputStream(bytes), ext);
             String fileId = storeDoc(originalName, ext, text, bytes);
-            result = List.of(PreMeetingFileVo.builder().fileId(fileId).fileName(originalName).build());
+            PreMeetingDoc doc = store.get(fileId);
+            result = List.of(PreMeetingFileVo.builder().fileId(fileId).fileName(originalName)
+                    .meetingTitle(doc != null ? deriveMeetingTitle(doc) : null).build());
         }
 
         log.info("[PreMeetingService] upload done, fileCount={}", result.size());
         return result;
+    }
+
+    public String getDocText(String fileId) {
+        PreMeetingDoc doc = store.get(fileId);
+        return doc != null ? doc.text() : "";
+    }
+
+    public String extractFileText(byte[] bytes, String ext, String fileName) throws IOException {
+        String normalizedExt = ext.toLowerCase();
+        if ("zip".equals(normalizedExt)) {
+            List<PreMeetingFileVo> parts = processZip(new java.io.ByteArrayInputStream(bytes));
+            if (parts.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder();
+            for (PreMeetingFileVo part : parts) {
+                PreMeetingDoc doc = store.get(part.getFileId());
+                if (doc != null) sb.append(doc.text()).append("\n\n");
+            }
+            return sb.toString().trim();
+        }
+        return extractText(new java.io.ByteArrayInputStream(bytes), normalizedExt);
     }
 
     public PreMeetingSummaryVo summarize(String fileId, String requirements, long userId) throws IOException {
@@ -283,7 +314,9 @@ public class PreMeetingService {
                 try {
                     String text = extractText(new ByteArrayInputStream(bytes), ext);
                     String fileId = storeDoc(baseName, ext, text, bytes);
-                    result.add(PreMeetingFileVo.builder().fileId(fileId).fileName(baseName).build());
+                    PreMeetingDoc stored = store.get(fileId);
+                    result.add(PreMeetingFileVo.builder().fileId(fileId).fileName(baseName)
+                            .meetingTitle(stored != null ? deriveMeetingTitle(stored) : null).build());
                     log.info("[PreMeetingService] zip entry extracted, name={}, textLen={}", baseName, text.length());
                 } catch (Exception e) {
                     log.warn("[PreMeetingService] zip entry skipped, name={}, reason={}", baseName, e.getMessage());
@@ -729,18 +762,28 @@ public class PreMeetingService {
     }
 
     private String deriveMeetingTitle(PreMeetingDoc doc) {
+        String title = null;
+        String date = null;
         for (String rawLine : doc.text().split("\\R")) {
             String line = normalizeLine(rawLine);
-            if (line.length() >= 4
+            if (title == null
+                    && line.length() >= 4
                     && line.length() <= 80
                     && containsHan(line)
                     && !line.contains("会议通知")
                     && !line.contains("会议时间")
                     && !line.contains("会议地点")) {
-                return line.replaceAll("^[【\\[]|[】\\]]$", "");
+                title = line.replaceAll("^[【\\[]|[】\\]]$", "");
             }
+            if (date == null) {
+                Matcher m = DATE_PATTERN.matcher(line);
+                if (m.find()) date = m.group();
+            }
+            if (title != null && date != null) break;
         }
-        return stripExtension(doc.fileName());
+        if (title == null) title = stripExtension(doc.fileName());
+        if (date != null && !title.contains(date)) return title + "（" + date + "）";
+        return title;
     }
 
     private boolean containsHan(String value) {
@@ -882,6 +925,175 @@ public class PreMeetingService {
         } finally {
             Thread.currentThread().setContextClassLoader(orig);
         }
+    }
+
+    public PreMeetingChatVo chat(
+            String fileId,
+            String sessionId,
+            String question,
+            List<ChatTurn> history) throws IOException {
+        StringBuilder context = new StringBuilder();
+        List<String> sources = new ArrayList<>();
+
+        if (fileId != null && !fileId.isBlank()) {
+            PreMeetingDoc doc = store.get(fileId);
+            if (doc != null) {
+                context.append("[会议文件：").append(doc.fileName()).append("]\n").append(doc.text());
+                sources.add(doc.fileName());
+            }
+        }
+
+        if (sessionId != null && !sessionId.isBlank()) {
+            List<InterpretationResult> results = interpretationResultMapper.findBySessionId(sessionId);
+            if (!results.isEmpty()) {
+                if (context.length() > 0) context.append("\n\n");
+                context.append("[同传记录]\n");
+                for (InterpretationResult r : results) {
+                    context.append(r.getSourceText()).append(" → ").append(r.getTranslatedText()).append("\n");
+                }
+                sources.add("同传记录(" + sessionId + ")");
+            }
+        }
+
+        log.info("[PreMeetingService] chat, fileId={}, sessionId={}, contextLen={}, historySize={}",
+                fileId, sessionId, context.length(), history != null ? history.size() : 0);
+        String answer = llmIntegration.chat(context.toString(), question, history);
+        String contextSummary = sources.isEmpty() ? "无参考资料" : "基于：" + String.join("、", sources);
+        return PreMeetingChatVo.builder().answer(answer).contextSummary(contextSummary).build();
+    }
+
+    public PreMeetingChatVo chatCrossMeeting(
+            long userId,
+            String question,
+            List<ChatTurn> history,
+            int days) throws IOException {
+
+        String since = days > 0 ? LocalDate.now().minusDays(days).toString() : null;
+        List<String> keywords = extractKeywords(question);
+        log.info("[PreMeetingService] chatCrossMeeting, userId={}, keywords={}, days={}", userId, keywords, days);
+
+        Map<String, List<CrossMeetingSnippet>> bySession = new LinkedHashMap<>();
+        Set<String> seen = new HashSet<>();
+
+        for (String keyword : keywords) {
+            List<CrossMeetingSnippet> hits = interpretationResultMapper
+                    .searchSnippetsByKeyword(userId, keyword, since == null ? "" : since, 60);
+            for (CrossMeetingSnippet hit : hits) {
+                String dedup = hit.getSessionId() + " " + hit.getSourceText();
+                if (!seen.add(dedup)) continue;
+                bySession.computeIfAbsent(hit.getSessionId(), k -> new ArrayList<>()).add(hit);
+            }
+        }
+
+        if (bySession.isEmpty()) {
+            String range = days > 0 ? "过去 " + days + " 天的" : "所有";
+            return PreMeetingChatVo.builder()
+                    .answer("在" + range + "会议记录中，未找到与该问题相关的内容。")
+                    .contextSummary("无匹配记录")
+                    .referencedSessions(List.of())
+                    .build();
+        }
+
+        StringBuilder context = new StringBuilder();
+        List<String> sessionLabels = new ArrayList<>();
+        int sessionCount = 0;
+
+        for (Map.Entry<String, List<CrossMeetingSnippet>> entry : bySession.entrySet()) {
+            if (sessionCount++ >= 5) break;
+            List<CrossMeetingSnippet> snippets = entry.getValue();
+            CrossMeetingSnippet first = snippets.get(0);
+
+            String title = (first.getSessionTitle() != null && !first.getSessionTitle().isBlank())
+                    ? first.getSessionTitle() : entry.getKey().substring(0, 8);
+            String date = first.getSessionStartTime() != null
+                    ? first.getSessionStartTime().toString().substring(0, 10) : "日期未知";
+            String label = title + " (" + date + ")";
+            sessionLabels.add(label);
+
+            context.append("[会议：").append(title).append(" | ").append(date).append("]\n");
+            int count = 0;
+            for (CrossMeetingSnippet snippet : snippets) {
+                if (count++ >= 20) break;
+                context.append(snippet.getSourceText())
+                        .append(" → ").append(snippet.getTranslatedText()).append("\n");
+            }
+            context.append("\n");
+        }
+
+        String answer = llmIntegration.chatCrossMeeting(context.toString(), question, history);
+        int refCount = Math.min(3, sessionLabels.size());
+        String contextSummary = "检索了 " + bySession.size() + " 场会议，引用：" +
+                String.join("、", sessionLabels.subList(0, refCount));
+
+        return PreMeetingChatVo.builder()
+                .answer(answer)
+                .contextSummary(contextSummary)
+                .referencedSessions(sessionLabels)
+                .build();
+    }
+
+    private static final Set<String> CHAT_STOPWORDS = Set.of(
+            "的", "是", "有", "在", "了", "和", "与", "或", "什么", "哪些", "哪个",
+            "如何", "怎么", "关于", "请", "告诉", "我", "你", "他", "她", "它",
+            "这", "那", "吗", "呢", "吧", "啊", "过", "着", "被", "把", "让",
+            "给", "说", "讲", "提", "到", "从", "对", "为", "以", "上", "下",
+            "中", "会议", "记录", "同传", "历史");
+
+    private List<String> extractKeywords(String question) {
+        if (question == null || question.isBlank()) return List.of();
+        List<String> keywords = new ArrayList<>();
+        for (String part : question.split("[\\s，。？！,.?!、；;]+")) {
+            String w = part.trim();
+            if (w.length() >= 2 && !CHAT_STOPWORDS.contains(w)) {
+                keywords.add(w);
+                if (keywords.size() >= 3) break;
+            }
+        }
+        if (keywords.isEmpty()) {
+            keywords.add(question.substring(0, Math.min(4, question.length())).trim());
+        }
+        return keywords;
+    }
+
+    public String buildUnifiedContext(long userId, String question) {
+        List<String> keywords = extractKeywords(question);
+        Map<String, List<CrossMeetingSnippet>> bySession = new LinkedHashMap<>();
+        Set<String> seen = new HashSet<>();
+
+        for (String keyword : keywords) {
+            List<CrossMeetingSnippet> hits = interpretationResultMapper
+                    .searchSnippetsByKeyword(userId, keyword, "", 60);
+            for (CrossMeetingSnippet hit : hits) {
+                String dedup = hit.getSessionId() + " " + hit.getSourceText();
+                if (!seen.add(dedup)) continue;
+                bySession.computeIfAbsent(hit.getSessionId(), k -> new ArrayList<>()).add(hit);
+            }
+        }
+
+        if (bySession.isEmpty()) return "";
+
+        StringBuilder context = new StringBuilder();
+        int sessionCount = 0;
+        for (Map.Entry<String, List<CrossMeetingSnippet>> entry : bySession.entrySet()) {
+            if (sessionCount++ >= 5) break;
+            List<CrossMeetingSnippet> snippets = entry.getValue();
+            CrossMeetingSnippet first = snippets.get(0);
+            String title = (first.getSessionTitle() != null && !first.getSessionTitle().isBlank())
+                    ? first.getSessionTitle() : entry.getKey().substring(0, 8);
+            String date = first.getSessionStartTime() != null
+                    ? first.getSessionStartTime().toString().substring(0, 10) : "日期未知";
+            context.append("[会议：").append(title).append(" | ").append(date).append("]\n");
+            int count = 0;
+            for (CrossMeetingSnippet snippet : snippets) {
+                if (count++ >= 20) break;
+                context.append(snippet.getSourceText())
+                        .append(" → ").append(snippet.getTranslatedText()).append("\n");
+            }
+            context.append("\n");
+        }
+        log.info("[PreMeetingService] buildUnifiedContext, userId={}, keywords={}, sessions={}",
+                userId, keywords, bySession.size());
+        return context.toString();
     }
 
     public String getFileName(String fileId) {

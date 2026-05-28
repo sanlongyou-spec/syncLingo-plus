@@ -64,7 +64,8 @@ public class InterpretationFacade {
                 request.getTitle(),
                 request.getVoiceId(),
                 request.getHotwordIds(),
-                enabledLanguages
+                enabledLanguages,
+                request.getMeetingId()
         );
         log.info("[InterpretationFacade] startInterpretation done, sessionId={}", sessionId);
         return sessionId;
@@ -91,6 +92,12 @@ public class InterpretationFacade {
     public List<InterpretationSessionVo> searchUserSessions(Long userId, String keyword) {
         log.info("[InterpretationFacade] searchUserSessions, userId={}, keyword={}", userId, keyword);
         return sessionService.searchUserSessions(userId, keyword).stream()
+                .map(this::toVo)
+                .toList();
+    }
+
+    public List<InterpretationSessionVo> getSessionsByMeeting(Long meetingId) {
+        return sessionService.findByMeetingId(meetingId).stream()
                 .map(this::toVo)
                 .toList();
     }

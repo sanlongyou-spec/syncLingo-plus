@@ -26,8 +26,11 @@ public class AzureSpeechProperties {
         private String segmentationStrategy;
         /** Speech_SegmentationMaximumTimeMs：单段最大时长（ms），配合 Time/Semantic 策略作为时间兜底（0 = 不设置） */
         private long segmentationMaximumTimeMs = 0L;
+        private boolean sentenceSegmentationEnabled = true;
+        private int maxSegmentZhChars = 50;
+        private int maxSegmentWords = 50;
         /** 单段最大字符数；超过时在应用层强制切段（0 = 不限制） */
-        private int maxSegmentChars = 0;
+        private int maxSegmentChars = 80;
     }
 
     @Data

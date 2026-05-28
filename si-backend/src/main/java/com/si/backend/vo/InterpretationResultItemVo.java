@@ -14,5 +14,7 @@ public class InterpretationResultItemVo {
     private String translatedText;
     private String sourceLang;
     private String targetLang;
+    private String speakerId;
+    private String speakerName;
     private String createTime;
 }

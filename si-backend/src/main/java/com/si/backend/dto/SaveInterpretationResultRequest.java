@@ -17,4 +17,6 @@ public class SaveInterpretationResultRequest {
 
     private String sourceLang;
     private String targetLang;
+    private String speakerId;
+    private String speakerName;
 }

@@ -36,6 +36,7 @@ export interface StartInterpretationParams {
   voiceId?: string
   hotwordIds?: number[]
   enabledLanguages?: string[]
+  meetingId?: number | null
 }
 
 export interface InterpretationStatus {
@@ -66,6 +67,7 @@ export interface MeetingSummaryVo {
 export interface PreMeetingFile {
   fileId: string
   fileName: string
+  meetingTitle?: string | null
 }
 
 export interface PreMeetingSummaryResult {
@@ -139,6 +141,8 @@ export interface InterpretationResultItem {
   translatedText: string
   sourceLang?: string
   targetLang?: string
+  speakerId?: string
+  speakerName?: string
   createTime?: string
 }
 
@@ -148,6 +152,8 @@ export interface SaveInterpretationResultParams {
   translatedText: string
   sourceLang?: string
   targetLang?: string
+  speakerId?: string
+  speakerName?: string
 }
 
 export interface CloneVoiceParams {
@@ -235,6 +241,55 @@ export interface PreMeetingDailyUsage {
   date: string
   llmInputTokens: number
   llmOutputTokens: number
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface PreMeetingChatResponse {
+  answer: string
+  contextSummary: string
+  referencedSessions?: string[]
+}
+
+export interface Meeting {
+  id: number
+  userId: number
+  title: string
+  scheduledTime?: string | null
+  note?: string | null
+  attendanceJson?: string | null
+  createTime?: string
+  files?: MeetingFile[]
+}
+
+export interface MeetingFile {
+  id: number
+  meetingId: number
+  fileName: string
+  fileType?: string | null
+  summary?: string | null
+  createTime?: string
+}
+
+export interface SpeakerSummaryResult {
+  speakerId?: string
+  speakerName: string
+  title?: string | null
+  summary: string
+}
+
+export interface SpeakerSummaryRecord {
+  id?: number
+  sessionId?: string
+  speakerId?: string | null
+  speakerName: string
+  title?: string | null
+  textSnippet?: string | null
+  summary: string
+  createTime?: string | null
 }
 
 export interface UserLanguagePreference {

@@ -479,6 +479,13 @@ body {
   opacity: 0.92;
 }
 
+.si-tri-line-lang-badge--unknown {
+  color: #94a3b8;
+  background: #f1f5f9;
+  font-weight: 400;
+  font-style: italic;
+}
+
 .si-tri-line-lang-badge--zh {
   color: #9d174d;
   background: #fce7f3;
@@ -826,4 +833,142 @@ body {
     align-items: stretch;
     flex-direction: column;
   }
+}
+
+/* ========== Meeting selector & speaker summary ========== */
+.si-meeting-selector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #f8f8fa;
+  border-top: 1px solid #e0e0e8;
+  flex-wrap: wrap;
+}
+.si-meeting-selector-label {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+.si-meeting-selector-select {
+  flex: 1;
+  min-width: 160px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1a1a;
+}
+.si-meeting-selector-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.si-meeting-selector-recipients {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1a1a;
+}
+
+.si-language-checkboxes {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.si-language-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.si-language-checkbox-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #5b5bd6;
+}
+
+/* ── Send settings panels ── */
+.si-send-settings {
+  width: 100%;
+  border-top: 1px solid #f1f1f4;
+  padding-top: 8px;
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.si-send-settings-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.si-send-settings-req {
+  width: 100%;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  resize: vertical;
+  background: #fafafa;
+  color: #374151;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.si-send-settings-req:focus {
+  outline: none;
+  border-color: #5b5bd6;
+  background: #fff;
+}
+
+.si-send-settings-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.si-send-settings-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.si-send-settings-item input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  accent-color: #5b5bd6;
+}
+
+.si-send-settings-item--chat span {
+  color: #0078d4;
+  font-weight: 500;
 }

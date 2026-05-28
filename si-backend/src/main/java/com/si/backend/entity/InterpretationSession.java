@@ -28,5 +28,6 @@ public class InterpretationSession {
     private Long llmInputTokens;
     private Long llmOutputTokens;
     private String meetingSummary;
+    private Long meetingId;
     private LocalDateTime createTime;
 }

@@ -1,9 +1,11 @@
 package com.si.backend.mapper;
 
+import com.si.backend.dto.CrossMeetingSnippet;
 import com.si.backend.entity.InterpretationResult;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
@@ -30,11 +32,36 @@ public interface InterpretationResultMapper {
             """)
     void createTableIfNotExists();
 
-    @Insert("INSERT INTO interpretation_result (session_id, source_text, translated_text, source_lang, target_lang, create_time) " +
-            "VALUES (#{sessionId}, #{sourceText}, #{translatedText}, #{sourceLang}, #{targetLang}, NOW())")
+    @Update("ALTER TABLE interpretation_result ADD COLUMN speaker_id VARCHAR(128) DEFAULT NULL")
+    void addSpeakerIdColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_result ADD COLUMN speaker_name VARCHAR(128) DEFAULT NULL")
+    void addSpeakerNameColumnIfNotExists();
+
+    @Insert("INSERT INTO interpretation_result (session_id, source_text, translated_text, source_lang, target_lang, speaker_id, speaker_name, create_time) " +
+            "VALUES (#{sessionId}, #{sourceText}, #{translatedText}, #{sourceLang}, #{targetLang}, #{speakerId}, #{speakerName}, NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationResult result);
 
     @Select("SELECT * FROM interpretation_result WHERE session_id = #{sessionId} ORDER BY id ASC")
     List<InterpretationResult> findBySessionId(String sessionId);
+
+    @Select("""
+            SELECT r.session_id, r.source_text, r.translated_text,
+                   s.title AS session_title, s.start_time AS session_start_time
+            FROM interpretation_result r
+            JOIN interpretation_session s ON r.session_id = s.session_id
+            WHERE s.user_id = #{userId}
+              AND COALESCE(s.deleted, 0) = 0
+              AND (r.source_text    LIKE CONCAT('%', #{keyword}, '%')
+                OR r.translated_text LIKE CONCAT('%', #{keyword}, '%'))
+              AND (#{since} IS NULL OR #{since} = '' OR s.start_time >= #{since})
+            ORDER BY s.start_time DESC, r.id ASC
+            LIMIT #{limit}
+            """)
+    List<CrossMeetingSnippet> searchSnippetsByKeyword(
+            @Param("userId") long userId,
+            @Param("keyword") String keyword,
+            @Param("since") String since,
+            @Param("limit") int limit);
 }

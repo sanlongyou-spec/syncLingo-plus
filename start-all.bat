@@ -55,12 +55,13 @@ taskkill /F /T /FI "WINDOWTITLE eq syncLingo Teams Bot" >nul 2>nul
 taskkill /F /T /FI "WINDOWTITLE eq syncLingo Frontend" >nul 2>nul
 taskkill /F /T /FI "WINDOWTITLE eq syncLingo Speaker Service" >nul 2>nul
 taskkill /F /T /FI "WINDOWTITLE eq syncLingo ngrok" >nul 2>nul
-:: Fallback: kill any remaining process on those ports.
+:: Fallback: kill any remaining process on those ports (including 8080 for the backend).
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ports = @(5173,3978,7000); " ^
+  "$ports = @(5173,3978,7000,8080); " ^
   "$processIds = Get-NetTCPConnection -LocalPort $ports -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; " ^
   "foreach ($processId in $processIds) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }; " ^
-  "Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+  "Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; " ^
+  "netstat -ano | Select-String ':8080' | Select-String 'LISTENING' | ForEach-Object { ($_ -split '\s+')[-1] } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }"
 docker rm -f si-backend >nul 2>nul
 
 echo.

@@ -40,6 +40,7 @@ public class InterpretationSessionService {
         addColumnIfMissing("hotword_ids", sessionMapper::addHotwordIdsColumnIfNotExists);
         addColumnIfMissing("enabled_languages", sessionMapper::addEnabledLanguagesColumnIfNotExists);
         addColumnIfMissing("meeting_summary", sessionMapper::addMeetingSummaryColumnIfNotExists);
+        addColumnIfMissing("meeting_id", sessionMapper::addMeetingIdColumnIfNotExists);
         log.info("[InterpretationSessionService] initColumns end");
     }
 
@@ -75,7 +76,8 @@ public class InterpretationSessionService {
             String title,
             String voiceId,
             List<Long> hotwordIds,
-            List<String> enabledLanguages
+            List<String> enabledLanguages,
+            Long meetingId
     ) {
         log.info("[InterpretationSessionService] startSession start, sessionId={}, userId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, userId, sourceLang, targetLang, voiceId);
@@ -89,6 +91,7 @@ public class InterpretationSessionService {
         session.setHotwordIds(joinHotwordIds(hotwordIds));
         session.setEnabledLanguages(joinLanguages(enabledLanguages));
         session.setTitle(normalizeTitle(title));
+        session.setMeetingId(meetingId);
         session.setStatus(Constants.SESSION_STATUS_RUNNING);
         session.setDeleted(false);
         session.setStartTime(LocalDateTime.now());
@@ -203,6 +206,10 @@ public class InterpretationSessionService {
         List<InterpretationSession> sessions = sessionMapper.findByUserId(userId);
         log.info("[InterpretationSessionService] getUserSessions end, userId={}, count={}", userId, sessions.size());
         return sessions;
+    }
+
+    public List<InterpretationSession> findByMeetingId(Long meetingId) {
+        return sessionMapper.findByMeetingId(meetingId);
     }
 
     public List<InterpretationSession> searchUserSessions(Long userId, String keyword) {

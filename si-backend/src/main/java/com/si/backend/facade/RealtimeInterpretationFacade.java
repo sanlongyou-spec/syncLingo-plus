@@ -4,7 +4,6 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
-import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SessionSpeakerVoiceService;
@@ -48,7 +47,6 @@ public class RealtimeInterpretationFacade {
     private final VoiceCloneService voiceCloneService;
     private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
     private final SpeakerIdentityService speakerIdentityService;
-    private final HotwordExtractionService hotwordExtractionService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -84,7 +82,7 @@ public class RealtimeInterpretationFacade {
     /** Speaker identity update callbacks for the UI. */
     private final ConcurrentHashMap<String, SpeakerIdentityCallback> sessionSpeakerIdentityCallbackMap = new ConcurrentHashMap<>();
 
-    /** 每个会话最后一个 TTS 播放任务的 Future；合成可重叠，音频下发保持串行 */
+    /** 每个会话每种目标语言最后一个 TTS 播放任务的 Future；key = sessionId::targetLang，同语言串行，跨语言并行 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
 
     private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, null, -1L, -1, -1L);
@@ -129,8 +127,8 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] startInterpretation, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
 
-        // 重置 TTS 链：防止 WS 重连时旧的未完成 Future 阻塞新任务
-        sessionTtsChain.put(sessionId, CompletableFuture.completedFuture(null));
+        // 重置 TTS 链：清除该会话所有语言的旧链，防止 WS 重连时旧 Future 阻塞新任务
+        sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionLastSourceLang.remove(sessionId);
         sessionTargetLangMap.put(sessionId, normalizeTargetLang(targetLang));
         sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
@@ -212,7 +210,7 @@ public class RealtimeInterpretationFacade {
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionErrorCallbackMap.remove(sessionId);
-        sessionTtsChain.remove(sessionId);
+        sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionLastSourceLang.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
@@ -221,17 +219,6 @@ public class RealtimeInterpretationFacade {
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);
         sessionSpeakerIdentityCallbackMap.remove(sessionId);
-        // Async hotword extraction — fire-and-forget, does not block stop
-        if (userId != null) {
-            final Long finalUserId = userId;
-            CompletableFuture.runAsync(() -> {
-                try {
-                    hotwordExtractionService.extractAndSaveFromSession(sessionId, finalUserId);
-                } catch (Exception e) {
-                    log.warn("[RealtimeInterpretationFacade] hotword auto-extraction failed, sessionId={}", sessionId, e);
-                }
-            });
-        }
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 
@@ -250,7 +237,7 @@ public class RealtimeInterpretationFacade {
         SpeakerIdentityService.SpeakerResolution speakerResolution = speakerIdentityService.resolveOrIdentify(
                 sessionId,
                 speakerId,
-                sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId)
+                resolveSpeakerIdentityPcm(sessionId, speakerId)
         );
         notifySpeakerIdentity(sessionId, speakerResolution);
 
@@ -270,13 +257,21 @@ public class RealtimeInterpretationFacade {
                     .map(InterpretationSession::getVoiceId)
                     .orElse(null);
         }
+        final String finalVoiceId = resolvedVoiceId;
 
-        for (String targetLang : targetLangs) {
-            if (!isPipelineActive(sessionId, "before_target_translate")) {
-                break;
-            }
-            translateAndStreamTts(text, sourceLang, targetLang, resolvedVoiceId, sessionId, speakerId, speakerResolution);
-        }
+        // Each target language is translated and TTS'd in parallel:
+        // - text arrives at the frontend for all languages at roughly the same time
+        // - each language has its own TTS chain, so audio plays independently per channel
+        targetLangs.forEach(targetLang -> {
+            if (!isPipelineActive(sessionId, "before_target_translate")) return;
+            CompletableFuture.runAsync(
+                    () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId, sessionId, speakerId, speakerResolution),
+                    TRANSLATION_EXECUTOR
+            ).exceptionally(ex -> {
+                log.error("[RealtimeInterpretationFacade] parallel translate error, sessionId={}, targetLang={}", sessionId, targetLang, ex);
+                return null;
+            });
+        });
         log.info("[RealtimeInterpretationFacade] processFinalRecognition done, sessionId={}", sessionId);
     }
 
@@ -381,7 +376,10 @@ public class RealtimeInterpretationFacade {
         }
 
         if (!isPipelineActive(sessionId, "before_tts_queue")) return;
-        String identityVoiceId = speakerIdentityService.resolveVoiceId(sessionId, speakerId);
+        String identityVoiceId = speakerResolution != null ? speakerResolution.getCartesiaVoiceId() : null;
+        if (identityVoiceId == null || identityVoiceId.isBlank()) {
+            identityVoiceId = speakerIdentityService.resolveVoiceId(sessionId, speakerId);
+        }
         String speakerVoiceId = identityVoiceId != null ? identityVoiceId : sessionSpeakerVoiceService.findReadyVoiceId(sessionId, speakerId);
         String authorizedVoiceId = speakerVoiceId != null ? speakerVoiceId : resolveVoiceId(voiceId, targetLang);
         if (speakerVoiceId != null) {
@@ -411,7 +409,9 @@ public class RealtimeInterpretationFacade {
             log.warn("[RealtimeInterpretationFacade] TTS queue backlog high, keep queue to avoid skip, sessionId={}, queueSize={}, warnLimit={}",
                     sessionId, queueSize, TTS_QUEUE_LIMIT);
         }
-        sessionTtsChain.compute(sessionId, (k, prev) -> {
+        // Per-language chain: zh/id/en play independently on separate audio channels
+        String ttsChainKey = sessionId + "::" + finalTargetLang;
+        sessionTtsChain.compute(ttsChainKey, (k, prev) -> {
             prevHolder[0] = (prev != null) ? prev : CompletableFuture.completedFuture(null);
             return playFuture;
         });
@@ -566,6 +566,17 @@ public class RealtimeInterpretationFacade {
         );
     }
 
+    private byte[] resolveSpeakerIdentityPcm(String sessionId, String speakerId) {
+        if (isUnknownSpeakerId(speakerId)) {
+            return sessionSpeakerVoiceService.getRecentSessionPcm(sessionId, Constants.SPEAKER_VOICE_RECENT_AUDIO_SECONDS);
+        }
+        return sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId);
+    }
+
+    private boolean isUnknownSpeakerId(String speakerId) {
+        return speakerId != null && Constants.SPEAKER_ID_UNKNOWN.equalsIgnoreCase(speakerId.trim());
+    }
+
     private boolean isPipelineActive(String sessionId, String stage) {
         boolean active = sessionService.isSessionActive(sessionId);
         if (!active) {
@@ -647,7 +658,7 @@ public class RealtimeInterpretationFacade {
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionErrorCallbackMap.remove(sessionId);
-        sessionTtsChain.remove(sessionId);
+        sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionLastSourceLang.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);

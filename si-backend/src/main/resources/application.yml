@@ -59,11 +59,14 @@ azure:
       sample-rate: 16000
       format: audio/pcm
       channels: 1
-      end-silence-timeout-ms: ${AZURE_ASR_END_SILENCE_TIMEOUT_MS:1500}
-      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:2000}
+      end-silence-timeout-ms: ${AZURE_ASR_END_SILENCE_TIMEOUT_MS:1200}
+      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:1000}
       segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
       segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
-      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:150}
+      sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
+      max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:50}
+      max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:50}
+      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:80}
     tts:
       voice: zh-CN-XiaoxiaoMultilingualNeural
       sample-rate: 24000

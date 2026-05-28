@@ -22,7 +22,21 @@ public class InterpretationResultService {
     public void initTable() {
         log.info("[InterpretationResultService] initTable start");
         resultMapper.createTableIfNotExists();
+        addColumnIfMissing("speaker_id", resultMapper::addSpeakerIdColumnIfNotExists);
+        addColumnIfMissing("speaker_name", resultMapper::addSpeakerNameColumnIfNotExists);
         log.info("[InterpretationResultService] initTable end");
+    }
+
+    private void addColumnIfMissing(String column, Runnable ddl) {
+        try {
+            ddl.run();
+        } catch (org.springframework.dao.DataAccessException e) {
+            if (e.getMessage() != null && e.getMessage().contains("Duplicate column")) {
+                log.debug("[InterpretationResultService] column {} already exists", column);
+            } else {
+                throw e;
+            }
+        }
     }
 
     public InterpretationResultItemVo save(SaveInterpretationResultRequest request) {
@@ -34,6 +48,8 @@ public class InterpretationResultService {
         result.setTranslatedText(request.getTranslatedText());
         result.setSourceLang(request.getSourceLang());
         result.setTargetLang(request.getTargetLang());
+        result.setSpeakerId(request.getSpeakerId());
+        result.setSpeakerName(request.getSpeakerName());
         resultMapper.insert(result);
         log.info("[InterpretationResultService] save end, sessionId={}, resultId={}",
                 request.getSessionId(), result.getId());
@@ -58,6 +74,8 @@ public class InterpretationResultService {
                 .translatedText(result.getTranslatedText())
                 .sourceLang(result.getSourceLang())
                 .targetLang(result.getTargetLang())
+                .speakerId(result.getSpeakerId())
+                .speakerName(result.getSpeakerName())
                 .createTime(result.getCreateTime() != null ? result.getCreateTime().toString() : null)
                 .build();
     }

@@ -68,11 +68,14 @@ public class AzureAsrIntegration {
             config.setProperty("Speech_SegmentationMaximumTimeMs",
                     String.valueOf(asrProperties.getAsr().getSegmentationMaximumTimeMs()));
         }
-        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, maxSegmentChars={}",
+        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}",
                 asrProperties.getAsr().getEndSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationStrategy(),
                 asrProperties.getAsr().getSegmentationMaximumTimeMs(),
+                asrProperties.getAsr().isSentenceSegmentationEnabled(),
+                asrProperties.getAsr().getMaxSegmentZhChars(),
+                asrProperties.getAsr().getMaxSegmentWords(),
                 asrProperties.getAsr().getMaxSegmentChars());
 
         AudioStreamFormat audioFormat = AudioStreamFormat.getWaveFormatPCM(
@@ -83,7 +86,7 @@ public class AzureAsrIntegration {
 
         PushAudioInputStream pushStream = PushAudioInputStream.create(audioFormat);
 
-        int maxSegmentChars = asrProperties.getAsr().getMaxSegmentChars();
+        AzureSpeechProperties.AsrProperties asrConfig = asrProperties.getAsr();
         AsrSession session;
         if (Constants.LANG_AUTO.equalsIgnoreCase(sourceLang) || sourceLang == null || sourceLang.isBlank()) {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber (Continuous LID + diarization), sessionId={}", sessionId);
@@ -94,12 +97,12 @@ public class AzureAsrIntegration {
             );
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
-            session = new AsrSession(config, autoConfig, pushStream, maxSegmentChars, hotwords);
+            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords);
         } else {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber, specified lang={}, sessionId={}", sourceLang, sessionId);
             config.setSpeechRecognitionLanguage(sourceLang);
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
-            session = new AsrSession(config, audioConfig, pushStream, maxSegmentChars, hotwords);
+            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords);
         }
 
         sessions.put(sessionId, session);
@@ -169,32 +172,42 @@ public class AzureAsrIntegration {
         private final AtomicReference<String> detectedLang = new AtomicReference<>("");
         private final CountDownLatch closedLatch = new CountDownLatch(1);
         private RecognizerCallback callback;
+        private static final int NO_SEGMENT = -1;
+        private static final String ASCII_SENTENCE_END_PUNCTUATION = ".!?;";
+        private static final String ASCII_CLOSING_PUNCTUATION = "\"')]}`";
+        private final boolean sentenceSegmentationEnabled;
+        private final int maxSegmentZhChars;
+        private final int maxSegmentWords;
         /** 应用层强制切段阈值（字符数），0 = 不限制 */
         private final int maxSegmentChars;
-        /** 是否已触发强制切段并等待 Azure 真正的 transcribed 事件 */
-        private final AtomicBoolean forcedFinalPending = new AtomicBoolean(false);
         /** 已强制下发的文本长度，用于从 transcribed 结果中截取余下部分 */
         private final AtomicInteger forcedFinalLength = new AtomicInteger(0);
 
         private final List<String> hotwords;
 
-        public AsrSession(SpeechConfig config, AudioConfig audioConfig, PushAudioInputStream pushStream, int maxSegmentChars, List<String> hotwords) {
+        public AsrSession(SpeechConfig config, AudioConfig audioConfig, PushAudioInputStream pushStream, AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = false;
             this.diarizationEnabled = true;
             this.recognizer = null;
-            this.maxSegmentChars = maxSegmentChars;
+            this.sentenceSegmentationEnabled = asrConfig.isSentenceSegmentationEnabled();
+            this.maxSegmentZhChars = asrConfig.getMaxSegmentZhChars();
+            this.maxSegmentWords = asrConfig.getMaxSegmentWords();
+            this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.hotwords = hotwords;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
 
-        public AsrSession(SpeechConfig config, AutoDetectSourceLanguageConfig autoConfig, PushAudioInputStream pushStream, int maxSegmentChars, List<String> hotwords) {
+        public AsrSession(SpeechConfig config, AutoDetectSourceLanguageConfig autoConfig, PushAudioInputStream pushStream, AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = true;
             this.diarizationEnabled = true;
-            this.maxSegmentChars = maxSegmentChars;
+            this.sentenceSegmentationEnabled = asrConfig.isSentenceSegmentationEnabled();
+            this.maxSegmentZhChars = asrConfig.getMaxSegmentZhChars();
+            this.maxSegmentWords = asrConfig.getMaxSegmentWords();
+            this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.hotwords = hotwords;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
@@ -246,18 +259,14 @@ public class AzureAsrIntegration {
                 ConversationTranscriptionResult result = e.getResult();
                 String text = result.getText();
                 if (text == null || text.isBlank()) return;
-                // 强制切段：中途超过字数阈值时立即作为 final 下发
-                if (maxSegmentChars > 0
-                        && text.length() >= maxSegmentChars
-                        && forcedFinalPending.compareAndSet(false, true)) {
-                    forcedFinalLength.set(text.length());
-                    log.info("[AsrSession] force-segment at {} chars", text.length());
-                    callback.onRecognizing(text, resolveDetectedLanguage(result), resolveSpeakerId(result), true);
-                    return;
+                String lang = resolveDetectedLanguage(result);
+                String speakerId = resolveSpeakerId(result);
+                if (emitForcedSegments(text, lang, speakerId)) return;
+                int alreadySent = Math.min(forcedFinalLength.get(), text.length());
+                String interimText = text.substring(alreadySent).trim();
+                if (!interimText.isBlank()) {
+                    callback.onRecognizing(interimText, lang, speakerId, false);
                 }
-                // 已触发强制切段，抑制后续中间结果直到 transcribed 事件
-                if (forcedFinalPending.get()) return;
-                callback.onRecognizing(text, resolveDetectedLanguage(result), resolveSpeakerId(result), false);
             });
 
             conversationTranscriber.transcribed.addEventListener((s, e) -> {
@@ -267,11 +276,11 @@ public class AzureAsrIntegration {
                 String text = result.getText();
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
-                if (forcedFinalPending.compareAndSet(true, false)) {
+                int alreadySent = forcedFinalLength.getAndSet(0);
+                if (alreadySent > 0) {
                     // 已强制下发了前 N 个字符，只需下发剩余部分
-                    int alreadySent = forcedFinalLength.getAndSet(0);
                     if (text != null && text.length() > alreadySent) {
-                        String remainder = text.substring(alreadySent).trim();
+                        String remainder = text.substring(Math.min(alreadySent, text.length())).trim();
                         if (!remainder.isBlank()) {
                             log.info("[AsrSession] force-segment remainder, len={}", remainder.length());
                             callback.onRecognizing(remainder, lang, speakerId, true);
@@ -291,6 +300,196 @@ public class AzureAsrIntegration {
 
             conversationTranscriber.sessionStopped.addEventListener((s, e) -> closedLatch.countDown());
             conversationTranscriber.startTranscribingAsync();
+        }
+
+        private boolean emitForcedSegments(String text, String lang, String speakerId) {
+            boolean emitted = false;
+            int start = Math.min(forcedFinalLength.get(), text.length());
+            while (start < text.length()) {
+                int end = NO_SEGMENT;
+                String reason = null;
+                if (sentenceSegmentationEnabled) {
+                    end = findSentenceSegmentEnd(text, start);
+                    reason = "sentence";
+                }
+                if (end == NO_SEGMENT) {
+                    end = findLengthLimitSegmentEnd(text, start, lang);
+                    reason = "length";
+                }
+                if (end == NO_SEGMENT || end <= start) {
+                    break;
+                }
+
+                forcedFinalLength.set(end);
+                String segment = text.substring(start, end).trim();
+                start = end;
+                if (segment.isBlank()) {
+                    continue;
+                }
+                emitted = true;
+                log.info("[AsrSession] force-segment by {}, len={}, lang={}", reason, segment.length(), lang);
+                callback.onRecognizing(segment, lang, speakerId, true);
+            }
+            return emitted;
+        }
+
+        private int findSentenceSegmentEnd(String text, int startIndex) {
+            for (int i = startIndex; i < text.length(); ) {
+                int codePoint = text.codePointAt(i);
+                int nextIndex = i + Character.charCount(codePoint);
+                if (isSentenceEnd(codePoint) && !isDecimalPoint(text, i)
+                        && isLikelySentenceBoundary(text, nextIndex, codePoint)) {
+                    return consumeClosingPunctuationAndWhitespace(text, nextIndex);
+                }
+                i = nextIndex;
+            }
+            return NO_SEGMENT;
+        }
+
+        private boolean isSentenceEnd(int codePoint) {
+            return ASCII_SENTENCE_END_PUNCTUATION.indexOf(codePoint) >= 0
+                    || codePoint == 0x3002
+                    || codePoint == 0xFF01
+                    || codePoint == 0xFF1F
+                    || codePoint == 0xFF1B
+                    || codePoint == 0x2026;
+        }
+
+        private boolean isDecimalPoint(String text, int index) {
+            return text.charAt(index) == '.'
+                    && index > 0
+                    && index + 1 < text.length()
+                    && Character.isDigit(text.charAt(index - 1))
+                    && Character.isDigit(text.charAt(index + 1));
+        }
+
+        private boolean isLikelySentenceBoundary(String text, int nextIndex, int codePoint) {
+            if (codePoint > 127 || nextIndex >= text.length()) {
+                return true;
+            }
+            int nextCodePoint = text.codePointAt(nextIndex);
+            return Character.isWhitespace(nextCodePoint) || isClosingPunctuation(nextCodePoint);
+        }
+
+        private int consumeClosingPunctuationAndWhitespace(String text, int startIndex) {
+            int index = startIndex;
+            while (index < text.length()) {
+                int codePoint = text.codePointAt(index);
+                if (!Character.isWhitespace(codePoint) && !isClosingPunctuation(codePoint)) {
+                    break;
+                }
+                index += Character.charCount(codePoint);
+            }
+            return index;
+        }
+
+        private boolean isClosingPunctuation(int codePoint) {
+            return ASCII_CLOSING_PUNCTUATION.indexOf(codePoint) >= 0
+                    || codePoint == 0x201D
+                    || codePoint == 0x2019
+                    || codePoint == 0xFF09
+                    || codePoint == 0x3011
+                    || codePoint == 0x300B
+                    || codePoint == 0x300D
+                    || codePoint == 0x300F;
+        }
+
+        private int findLengthLimitSegmentEnd(String text, int startIndex, String lang) {
+            if (maxSegmentZhChars > 0 && isChineseSegment(text, startIndex, lang)) {
+                return findVisibleCharLimitEnd(text, startIndex, maxSegmentZhChars);
+            }
+            if (maxSegmentWords > 0 && isWordSegment(text, startIndex, lang)) {
+                return findWordLimitEnd(text, startIndex, maxSegmentWords);
+            }
+            if (maxSegmentChars > 0) {
+                return findVisibleCharLimitEnd(text, startIndex, maxSegmentChars);
+            }
+            return NO_SEGMENT;
+        }
+
+        private boolean isChineseSegment(String text, int startIndex, String lang) {
+            boolean hasCjk = containsCjk(text, startIndex);
+            return hasCjk || (startsWithIgnoreCase(lang, "zh") && !containsLatinLetter(text, startIndex));
+        }
+
+        private boolean isWordSegment(String text, int startIndex, String lang) {
+            return startsWithIgnoreCase(lang, "en")
+                    || startsWithIgnoreCase(lang, "id")
+                    || startsWithIgnoreCase(lang, "in")
+                    || containsLatinLetter(text, startIndex);
+        }
+
+        private boolean startsWithIgnoreCase(String text, String prefix) {
+            return text != null && text.regionMatches(true, 0, prefix, 0, prefix.length());
+        }
+
+        private boolean containsCjk(String text, int startIndex) {
+            for (int i = startIndex; i < text.length(); ) {
+                int codePoint = text.codePointAt(i);
+                Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+                if (script == Character.UnicodeScript.HAN
+                        || script == Character.UnicodeScript.HIRAGANA
+                        || script == Character.UnicodeScript.KATAKANA
+                        || script == Character.UnicodeScript.HANGUL) {
+                    return true;
+                }
+                i += Character.charCount(codePoint);
+            }
+            return false;
+        }
+
+        private boolean containsLatinLetter(String text, int startIndex) {
+            for (int i = startIndex; i < text.length(); ) {
+                int codePoint = text.codePointAt(i);
+                if (Character.isLetter(codePoint)
+                        && Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN) {
+                    return true;
+                }
+                i += Character.charCount(codePoint);
+            }
+            return false;
+        }
+
+        private int findVisibleCharLimitEnd(String text, int startIndex, int maxChars) {
+            int count = 0;
+            for (int i = startIndex; i < text.length(); ) {
+                int codePoint = text.codePointAt(i);
+                int nextIndex = i + Character.charCount(codePoint);
+                if (!Character.isWhitespace(codePoint) && ++count >= maxChars) {
+                    return nextIndex;
+                }
+                i = nextIndex;
+            }
+            return NO_SEGMENT;
+        }
+
+        private int findWordLimitEnd(String text, int startIndex, int maxWords) {
+            int words = 0;
+            boolean inWord = false;
+            for (int i = startIndex; i < text.length(); ) {
+                int codePoint = text.codePointAt(i);
+                int nextIndex = i + Character.charCount(codePoint);
+                if (isWordCodePoint(codePoint)) {
+                    if (!inWord) {
+                        words++;
+                        inWord = true;
+                    }
+                } else {
+                    if (words >= maxWords) {
+                        return nextIndex;
+                    }
+                    inWord = false;
+                }
+                i = nextIndex;
+            }
+            return words >= maxWords ? text.length() : NO_SEGMENT;
+        }
+
+        private boolean isWordCodePoint(int codePoint) {
+            return Character.isLetterOrDigit(codePoint)
+                    || codePoint == '\''
+                    || codePoint == '-'
+                    || codePoint == 0x2019;
         }
 
         private void applyHotwords() {
@@ -323,6 +522,10 @@ public class AzureAsrIntegration {
                 if (lang != null && !lang.isBlank()) {
                     detectedLang.set(lang);
                     return lang;
+                }
+                String previousLang = detectedLang.get();
+                if (previousLang != null && !previousLang.isBlank()) {
+                    return previousLang;
                 }
             }
             return config.getSpeechRecognitionLanguage() != null

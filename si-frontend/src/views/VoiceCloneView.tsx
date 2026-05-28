@@ -100,7 +100,6 @@ export default function VoiceCloneView() {
       <header className="si-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">音色克隆</h1>
-          <span className="si-brand-sub">维护真实人名、声纹编码和 Cartesia 音色</span>
         </div>
         <div className="si-topbar-right">
           <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.HOME }}>

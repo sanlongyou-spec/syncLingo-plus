@@ -12,4 +12,5 @@ import lombok.NoArgsConstructor;
 public class PreMeetingFileVo {
     private String fileId;
     private String fileName;
+    private String meetingTitle;
 }

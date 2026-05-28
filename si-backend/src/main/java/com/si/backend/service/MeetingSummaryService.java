@@ -38,6 +38,10 @@ public class MeetingSummaryService {
         if (session != null
                 && session.getMeetingSummary() != null
                 && !session.getMeetingSummary().isBlank()) {
+            if (isUnusableSummary(session.getMeetingSummary())) {
+                log.warn("[MeetingSummaryService] cached summary is unusable, regenerating, sessionId={}", sessionId);
+                return generateAndSave(sessionId);
+            }
             log.info("[MeetingSummaryService] getSummary hit cache, sessionId={}", sessionId);
             return MeetingSummaryVo.builder()
                     .sessionId(sessionId)
@@ -73,6 +77,23 @@ public class MeetingSummaryService {
 
     // ── private ──────────────────────────────────────────────────────────
 
+    private static final long REFUSAL_RETRY_BASE_DELAY_MS = 2_000L;
+    private static final long REFUSAL_RETRY_MAX_DELAY_MS = 10_000L;
+
+    private static boolean isRefusal(String response) {
+        if (response == null || response.isBlank()) return false;
+        String lower = response.toLowerCase();
+        return lower.contains("i'm sorry") || lower.contains("i am sorry")
+                || lower.contains("cannot assist") || lower.contains("can't assist")
+                || lower.contains("unable to assist") || lower.contains("i apologize")
+                || lower.contains("i can't help") || lower.contains("i cannot help")
+                || lower.contains("sorry, but i") || lower.contains("sorry, i cannot");
+    }
+
+    private static boolean isUnusableSummary(String response) {
+        return response == null || response.isBlank() || isRefusal(response);
+    }
+
     private MeetingSummaryVo generateAndSave(String sessionId) {
         return generateAndSave(sessionId, null);
     }
@@ -92,7 +113,7 @@ public class MeetingSummaryService {
                 .collect(Collectors.joining("\n"));
 
         try {
-            String summary = llmIntegration.summarizeMeeting(meetingText, customRequirements);
+            String summary = summarizeMeetingUntilAccepted(meetingText, customRequirements, sessionId);
             sessionService.addLlmTokens(sessionId, estimateTokens(meetingText), estimateTokens(summary));
             sessionService.saveMeetingSummary(sessionId, summary);
             log.info("[MeetingSummaryService] generateAndSave done, sessionId={}, resultCount={}, summaryLen={}",
@@ -106,6 +127,33 @@ public class MeetingSummaryService {
         } catch (IOException e) {
             log.error("[MeetingSummaryService] generateAndSave LLM failed, sessionId={}", sessionId, e);
             throw BizException.of(ErrorCode.TRANSLATE_ERROR, "会议纪要生成失败: " + e.getMessage());
+        }
+    }
+
+    private String summarizeMeetingUntilAccepted(
+            String meetingText,
+            String customRequirements,
+            String sessionId
+    ) throws IOException {
+        int attempt = 1;
+        String summary = llmIntegration.summarizeMeeting(meetingText, customRequirements);
+        while (isUnusableSummary(summary)) {
+            log.warn("[MeetingSummaryService] unusable LLM summary detected, retrying, sessionId={}, attempt={}",
+                    sessionId, attempt);
+            sleepBeforeRetry(attempt);
+            attempt++;
+            summary = llmIntegration.summarizeMeetingRetry(meetingText);
+        }
+        return summary;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        long delayMs = Math.min(REFUSAL_RETRY_MAX_DELAY_MS, REFUSAL_RETRY_BASE_DELAY_MS * Math.max(1, attempt));
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Summary retry interrupted", e);
         }
     }
 
