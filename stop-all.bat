@@ -7,34 +7,33 @@ echo  Stopping syncLingo test stack
 echo ================================
 echo.
 
-echo [1/5] Stopping frontend and Teams bot...
-:: Kill entire process tree by window title so dotnet.exe parent is also killed.
-taskkill /F /T /FI "WINDOWTITLE eq syncLingo Teams Bot" >nul 2>nul
-taskkill /F /T /FI "WINDOWTITLE eq syncLingo Frontend" >nul 2>nul
-:: Fallback: kill any remaining process listening on those ports.
+:: Close all named CMD windows (this kills the window + its entire child process tree)
+echo [1/5] Stopping all syncLingo services...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ports = @(5173,3978); " ^
-  "$connections = Get-NetTCPConnection -LocalPort $ports -State Listen -ErrorAction SilentlyContinue; " ^
-  "$processIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique; " ^
-  "foreach ($processId in $processIds) { " ^
-  "  $process = Get-Process -Id $processId -ErrorAction SilentlyContinue; " ^
-  "  if ($process) { Write-Host ('Stopping PID {0} ({1})' -f $process.Id, $process.ProcessName); Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } " ^
+  "$titles = @('syncLingo Teams Bot','syncLingo Frontend','syncLingo Speaker Service','syncLingo ngrok'); " ^
+  "foreach ($t in $titles) { " ^
+  "  $procs = Get-Process | Where-Object { $_.MainWindowTitle -eq $t } -ErrorAction SilentlyContinue; " ^
+  "  foreach ($p in $procs) { " ^
+  "    Write-Host ('Closing window: ' + $t + ' [PID ' + $p.Id + ']'); " ^
+  "    taskkill /F /T /PID $p.Id 2>$null | Out-Null " ^
+  "  } " ^
   "}"
+:: Fallback: kill by window title string match in taskkill (handles title changes)
+taskkill /F /T /FI "WINDOWTITLE eq syncLingo Teams Bot"    >nul 2>nul
+taskkill /F /T /FI "WINDOWTITLE eq syncLingo Frontend"     >nul 2>nul
+taskkill /F /T /FI "WINDOWTITLE eq syncLingo Speaker Service" >nul 2>nul
+taskkill /F /T /FI "WINDOWTITLE eq syncLingo ngrok"        >nul 2>nul
+:: Fallback: kill any remaining process on known ports
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ports = @(5173,3978,7000); " ^
+  "$pids = Get-NetTCPConnection -LocalPort $ports -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; " ^
+  "foreach ($id in $pids) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }; " ^
+  "Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
 
 echo.
-echo [2/5] Stopping speaker recognition service (port 7000)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$connections = Get-NetTCPConnection -LocalPort 7000 -State Listen -ErrorAction SilentlyContinue; " ^
-  "$processIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique; " ^
-  "foreach ($processId in $processIds) { " ^
-  "  $process = Get-Process -Id $processId -ErrorAction SilentlyContinue; " ^
-  "  if ($process) { Write-Host ('Stopping PID {0} ({1})' -f $process.Id, $process.ProcessName); Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } " ^
-  "}"
-
+echo [2/5] Speaker service stopped (covered above).
 echo.
-echo [3/5] Stopping ngrok...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Get-Process ngrok -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('Stopping PID {0} (ngrok)' -f $_.Id); Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }"
+echo [3/5] ngrok stopped (covered above).
 
 echo.
 echo [4/5] Stopping backend container...
@@ -50,4 +49,4 @@ echo [5/5] Done.
 echo ================================
 echo  Test stack stopped
 echo ================================
-pause
+timeout /t 3 /nobreak >nul

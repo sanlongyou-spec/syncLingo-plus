@@ -14,7 +14,7 @@ azure:
       language: ${AZURE_ASR_LANGUAGES:zh-CN,id-ID,en-US}
       sample-rate: 16000
       end-silence-timeout-ms: ${AZURE_ASR_END_SILENCE_TIMEOUT_MS:1200}
-      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:1000}
+      segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:300}
       segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
       segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}

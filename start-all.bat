@@ -21,9 +21,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-docker info >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Docker is not running. Please start Docker Desktop.
+:: 等待 Docker Engine 真正就绪（最多 60 秒）
+:: docker info 检查的是进程是否存在，但 Linux 引擎可能还在启动中
+set "DOCKER_READY=0"
+for /L %%i in (1,1,12) do (
+    if "!DOCKER_READY!"=="0" (
+        docker info >nul 2>nul
+        if not errorlevel 1 (
+            set "DOCKER_READY=1"
+        ) else (
+            echo Waiting for Docker Engine to be ready... (attempt %%i/12^)
+            timeout /t 5 /nobreak >nul
+        )
+    )
+)
+if "!DOCKER_READY!"=="0" (
+    echo [ERROR] Docker Engine is not ready after 60 seconds.
+    echo         Please start Docker Desktop and wait for it to fully initialize.
     pause
     exit /b 1
 )
@@ -78,9 +92,15 @@ echo.
 echo [2/6] Building backend Docker image...
 docker build -t si-backend:latest .
 if errorlevel 1 (
-    echo [ERROR] Docker build failed.
-    pause
-    exit /b 1
+    echo Retrying Docker build in 5 seconds...
+    timeout /t 5 /nobreak >nul
+    docker build -t si-backend:latest .
+    if errorlevel 1 (
+        echo [ERROR] Docker build failed.
+        echo         Check Docker Desktop is running and has the Linux engine active.
+        pause
+        exit /b 1
+    )
 )
 
 echo.
