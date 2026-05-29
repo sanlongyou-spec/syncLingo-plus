@@ -50,6 +50,18 @@ const getApiErrorMessage = async (error: unknown, fallback: string): Promise<str
   return errorLike.response?.data?.message || errorLike.response?.data?.error || errorLike.message || fallback
 }
 
+const RESULT_OK_CODE = 200
+
+const ensureResultData = <T>(result: Result<T>, fallback: string): Result<T> => {
+  if (result.code !== RESULT_OK_CODE) {
+    throw new Error(result.message?.trim() || fallback)
+  }
+  if (result.data == null) {
+    throw new Error(fallback)
+  }
+  return result
+}
+
 export const startInterpretation = (params: StartInterpretationParams): Promise<Result<string>> =>
   client.post<Result<string>>('/api/interpretation/start', params).then(r => r.data)
 
@@ -212,7 +224,7 @@ export const summarizePreMeetingFile = (
 ): Promise<Result<PreMeetingSummaryResult>> =>
   client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, userId }, {
     timeout: 300_000,
-  }).then(r => r.data)
+  }).then(r => ensureResultData(r.data, '生成总结失败'))
 
 export const generatePreMeetingAttendance = (
   fileId: string,

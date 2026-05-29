@@ -791,6 +791,74 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 九、2026-05-29 新增功能（本次迭代）
+
+### 9.1 Teams Bot 自然语言问答升级（RAG + 来源引用）
+
+将 Bot 默认的自由提问从"关键词搜索"升级为完整的检索增强问答：优先识别结构化意图（查文件、按日期查会议），其余走向量 RAG 并随答案附带可追溯的引用来源。
+
+**意图路由变化**（`TeamsBotQueryService`）：
+- 默认指令从 `search` 改为新的 `ask`（自然语言问答）
+- 新增结构化意图识别：
+  - `isFileListIntent` — "某会议有哪些文件/资料"→ 直接列出该会议持久化文件清单
+  - `isMeetingListByDateIntent` — "X月X日有哪些会议"→ 按日期列出会议及文件数
+- 非结构化问题：向量 RAG 检索上下文；命中为空时回退到 `buildMeetingKnowledgeContext`（按标题/日期为问题打分排序会议，取会议总结 + 文件总结/内容作为上下文）
+- 问题日期解析 `extractQuestionDate` 支持 `2026年05月26日` / `2026-05-26` / `5月26日` 三种格式；`rankMeetingsByQuestion` 按日期(+12) 和标题 token 命中(+2/+4) 打分
+
+**来源引用**（新增 `vo/TeamsBotQuerySourceVo`）：
+- 响应体 `TeamsBotQueryResponse` 新增 `responseType`（`text`/`rag`/`file_list`/`meeting_list`）与 `sources` 列表
+- 同步/流式两条路径均在答案末尾追加"引用来源：…"区块（`formatSourcesBlock` / `formatSourcesSuffix`），含来源名称、所属会议、日期、片段摘要
+
+### 9.2 向量检索跨源扩展
+
+`VectorSearchService.SearchResult` 新增 `sourceType`、`sourceId`、`refId`、`meetingId` 字段，使检索结果可区分同传片段、会议总结、发言摘要、文件总结、文件内容等多种来源，并据此分组/标题/构造引用（`PreMeetingService.buildUnifiedContextResult` 返回 `UnifiedContextResult(context, sources)`）。
+
+### 9.3 嵌入查询支持会议直挂数据 + 排序键
+
+`InterpretationEmbeddingMapper.xml` 的 `findByUserId`：
+- 由 `JOIN interpretation_session` 改为 **LEFT JOIN session + LEFT JOIN meeting**，按 `s.user_id OR m.user_id` 过滤，使未绑定会话、仅挂在 `meeting` 上的嵌入（文件/会议总结）也能被检索
+- 删除条件改为兼容两侧（session 或 meeting 任一未删）
+- 加 `COLLATE utf8mb4_unicode_ci` 解决 join/like 字符集不一致报错
+- 时间过滤改用 `COALESCE(s.start_time, m.scheduled_time, m.create_time)`
+
+### 9.4 删除会议同步清理向量
+
+`MeetingService.deleteMeeting` 软删后调用 `contentEmbeddingService.deleteByMeetingId(meetingId)`，避免已删会议内容仍被 RAG 检索召回。
+
+### 9.5 其他
+
+- **LLM 错误透传**（`LlmIntegration`）：`chat/completions` 非 200 时解析 provider 返回体中的 `error.message` 并拼入异常信息，便于定位（密钥失效、额度等）。
+- **前端结果守卫**（`si-frontend/src/api/index.ts`）：新增 `ensureResultData`，`summarizePreMeetingFile` 在 `code != 200` 或 `data` 为空时抛出可读错误，不再静默返回空数据。
+- **start-all.bat 关停修复**：先 `docker rm -f si-backend` 通过 Docker 停后端，端口兜底清理移除 8080，避免误杀 Docker Desktop 的端口代理（`com.docker.backend`）。
+
+#### 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `vo/TeamsBotQuerySourceVo.java` | 新增 — Bot 答案引用来源 VO |
+| `vo/TeamsBotQueryResponse.java` | 新增 `responseType`、`sources` |
+| `service/TeamsBotQueryService.java` | `ask` 路由、结构化意图、会议打分、来源区块（+437 行） |
+| `service/PreMeetingService.java` | `buildUnifiedContextResult` 返回上下文 + 来源；跨源分组/标题 |
+| `service/VectorSearchService.java` | `SearchResult` 增加 sourceType/sourceId/refId/meetingId |
+| `service/MeetingService.java` | 删除会议时同步删除嵌入 |
+| `mapper/InterpretationEmbeddingMapper.xml` | session+meeting LEFT JOIN、collation、时间排序键 |
+| `integration/LlmIntegration.java` | LLM 失败信息透传 provider error message |
+| `si-frontend/src/api/index.ts` | `ensureResultData` 结果守卫 |
+| `start-all.bat` | Docker 优先停后端，端口兜底移除 8080 |
+
+#### 需人工测试
+
+| # | 测试项 | 操作步骤 | 预期结果 |
+|---|--------|---------|---------|
+| N-29 | Bot 自然语言问答 | 向 Bot 提一个跨会议的开放问题 | 返回 RAG 答案，末尾出现"引用来源："清单 |
+| N-30 | 按会议查文件 | 提问"XX 会议有哪些文件" | 列出该会议持久化文件，标注是否已有 AI 总结 |
+| N-31 | 按日期查会议 | 提问"2026年05月26日有哪些会议" | 列出当天会议及各自文件数 |
+| N-32 | 文件/总结召回 | 对仅挂在 meeting 上的文件内容提问 | 能检索到（LEFT JOIN meeting 生效） |
+| N-33 | 删除会议后检索 | 删除一场会议后再问其内容 | 不再召回该会议内容 |
+| N-34 | LLM 错误提示 | 临时使用无效 OPENAI_API_KEY 提问 | 错误信息含 provider 返回的 message |
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

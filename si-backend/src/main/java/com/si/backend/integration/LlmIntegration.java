@@ -531,7 +531,7 @@ public class LlmIntegration {
             if (response.statusCode() != 200) {
                 log.error("[LlmIntegration] chat/completions failed, status={}, body={}",
                         response.statusCode(), response.body());
-                throw new IOException("LLM request failed: HTTP " + response.statusCode());
+                throw new IOException(buildLlmFailureMessage(response.statusCode(), response.body()));
             }
             JsonNode root = OBJECT_MAPPER.readTree(response.body());
             String text = root.path("choices").get(0).path("message").path("content").asText("").trim();
@@ -549,6 +549,27 @@ public class LlmIntegration {
         } catch (Exception e) {
             log.error("[LlmIntegration] chat/completions error, model={}", model, e);
             throw new IOException("LLM response unavailable: " + sanitizeErrorMessage(e.getMessage()), e);
+        }
+    }
+
+    private String buildLlmFailureMessage(int statusCode, String responseBody) {
+        String providerMessage = extractProviderErrorMessage(responseBody);
+        if (providerMessage.isBlank()) {
+            return "LLM request failed: HTTP " + statusCode;
+        }
+        return "LLM request failed: HTTP " + statusCode + " - " + providerMessage;
+    }
+
+    private String extractProviderErrorMessage(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(responseBody);
+            String message = root.path("error").path("message").asText("");
+            return sanitizeErrorMessage(message);
+        } catch (Exception ignored) {
+            return "";
         }
     }
 

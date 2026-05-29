@@ -5,14 +5,18 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.TeamsBotProperties;
 import com.si.backend.dto.TeamsBotQueryRequest;
 import com.si.backend.entity.InterpretationSession;
+import com.si.backend.entity.Meeting;
 import com.si.backend.entity.SiUser;
 import com.si.backend.integration.LlmIntegration;
+import com.si.backend.mapper.MeetingMapper;
+import com.si.backend.mapper.PersistentPreMeetingFileMapper;
 import com.si.backend.mapper.UserMapper;
 import com.si.backend.config.CostRatesProperties;
 import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.mapper.InterpretationSessionMapper;
 import com.si.backend.mapper.MeetingActionItemMapper;
 import com.si.backend.vo.TeamsBotQueryResponse;
+import com.si.backend.vo.TeamsBotQuerySourceVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,6 +27,7 @@ import java.io.UncheckedIOException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -44,10 +49,20 @@ public class TeamsBotQueryService {
     private static final String COMMAND_LIST = "list";
     private static final String COMMAND_SEARCH = "search";
     private static final String COMMAND_SUMMARY = "summary";
+    private static final String COMMAND_ASK = "ask";
+    private static final String RESPONSE_TEXT = "text";
+    private static final String RESPONSE_RAG = "rag";
+    private static final String RESPONSE_FILE_LIST = "file_list";
+    private static final String RESPONSE_MEETING_LIST = "meeting_list";
     private static final String DEFAULT_TITLE = "未命名会议";
     private static final Pattern UUID_PATTERN = Pattern.compile(
             "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+    private static final Pattern QUESTION_DATE_PATTERN = Pattern.compile(
+            "(\\d{4})年(\\d{1,2})月(\\d{1,2})日|(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})|(\\d{1,2})月(\\d{1,2})日");
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final int MAX_STRUCTURED_MEETINGS = 5;
+    private static final int MAX_STRUCTURED_SOURCES = 10;
 
     private final InterpretationSessionService sessionService;
     private final UserMapper userMapper;
@@ -57,6 +72,8 @@ public class TeamsBotQueryService {
     private final MeetingActionItemMapper actionItemMapper;
     private final InterpretationSessionMapper sessionMapper;
     private final CostRatesProperties costRatesProperties;
+    private final MeetingMapper meetingMapper;
+    private final PersistentPreMeetingFileMapper persistentFileMapper;
 
     public TeamsBotQueryResponse query(TeamsBotQueryRequest request, String apiSecret) {
         String message = normalize(request.getMessage());
@@ -66,24 +83,25 @@ public class TeamsBotQueryService {
         ensureAuthorized(apiSecret);
 
         if (COMMAND_HELP.equals(command.name())) {
-            return buildResponse(helpText(), false, null, command.name());
+            return buildResponse(helpText(), RESPONSE_TEXT, List.of(), false, null, command.name());
         }
 
         SiUser user = resolveUser(request);
         if (user == null) {
             log.info("[TeamsBotQueryService] query user not matched, aadId={}, mail={}, upn={}",
                     request.getAadId(), request.getMail(), request.getUserPrincipalName());
-            return buildResponse(noBindingText(request), false, null, command.name());
+            return buildResponse(noBindingText(request), RESPONSE_TEXT, List.of(), false, null, command.name());
         }
 
-        String replyText = switch (command.name()) {
-            case COMMAND_LIST -> listSessions(user.getId());
-            case COMMAND_SUMMARY -> summarize(user.getId(), command.argument());
-            case COMMAND_SEARCH -> search(user.getId(), command.argument(), false);
-            default -> helpText();
+        BotAnswer answer = switch (command.name()) {
+            case COMMAND_LIST -> BotAnswer.text(listSessions(user.getId()), RESPONSE_MEETING_LIST);
+            case COMMAND_SUMMARY -> BotAnswer.text(summarize(user.getId(), command.argument()), RESPONSE_TEXT);
+            case COMMAND_SEARCH -> BotAnswer.text(search(user.getId(), command.argument(), false), RESPONSE_MEETING_LIST);
+            case COMMAND_ASK -> answerNaturalQuestion(user.getId(), message);
+            default -> BotAnswer.text(helpText(), RESPONSE_TEXT);
         };
         log.info("[TeamsBotQueryService] query end, userId={}, command={}", user.getId(), command.name());
-        return buildResponse(replyText, true, user.getId(), command.name());
+        return buildResponse(answer.replyText(), answer.responseType(), answer.sources(), true, user.getId(), command.name());
     }
 
     public void queryStream(TeamsBotQueryRequest request, String apiSecret, SseEmitter emitter) {
@@ -99,6 +117,13 @@ public class TeamsBotQueryService {
             return;
         }
 
+        Optional<BotAnswer> structuredAnswer = answerStructuredQuestion(user.getId(), message);
+        if (structuredAnswer.isPresent()) {
+            BotAnswer answer = structuredAnswer.get();
+            sendSseAndComplete(emitter, answer.replyText() + formatSourcesSuffix(answer.sources()));
+            return;
+        }
+
         try {
             // B2: 从自然语言中提取过滤维度（发言人、会议标题关键词、时间范围）
             PreMeetingService.QuestionFilter filter = extractQuestionFilter(message);
@@ -106,7 +131,9 @@ public class TeamsBotQueryService {
                     filter.speakerName(), filter.since());
 
             // B3: 带过滤参数的向量检索上下文构建
-            String ragContext = preMeetingService.buildUnifiedContext(user.getId(), message, filter);
+            PreMeetingService.UnifiedContextResult ragResult =
+                    preMeetingService.buildUnifiedContextResult(user.getId(), message, filter);
+            String ragContext = ragResult.context();
 
             // 行动项上下文（按关键词触发）
             String actionContext = buildActionItemsContext(user.getId(), message);
@@ -130,6 +157,10 @@ public class TeamsBotQueryService {
                     throw new UncheckedIOException(e);
                 }
             });
+            String sourcesText = formatSourcesBlock(ragResult.sources());
+            if (!sourcesText.isBlank()) {
+                emitter.send(SseEmitter.event().data("\n\n" + sourcesText));
+            }
             emitter.send(SseEmitter.event().data("[DONE]"));
             emitter.complete();
             log.info("[TeamsBotQueryService] queryStream done, userId={}", user.getId());
@@ -304,7 +335,7 @@ public class TeamsBotQueryService {
         if (isSessionId(message)) {
             return new BotCommand(COMMAND_SUMMARY, message);
         }
-        return new BotCommand(COMMAND_SEARCH, message);
+        return new BotCommand(COMMAND_ASK, message);
     }
 
     private boolean isHelpCommand(String lower) {
@@ -395,6 +426,340 @@ public class TeamsBotQueryService {
         return search(userId, normalizedArgument, true);
     }
 
+    private BotAnswer answerNaturalQuestion(Long userId, String question) {
+        log.info("[TeamsBotQueryService] answerNaturalQuestion start, userId={}, questionLen={}", userId, question.length());
+        Optional<BotAnswer> structuredAnswer = answerStructuredQuestion(userId, question);
+        if (structuredAnswer.isPresent()) {
+            log.info("[TeamsBotQueryService] answerNaturalQuestion structured, userId={}, responseType={}",
+                    userId, structuredAnswer.get().responseType());
+            return structuredAnswer.get();
+        }
+
+        PreMeetingService.QuestionFilter filter = extractQuestionFilter(question);
+        PreMeetingService.UnifiedContextResult ragResult =
+                preMeetingService.buildUnifiedContextResult(userId, question, filter);
+        KnowledgeContext fallbackContext = KnowledgeContext.empty();
+        if (ragResult.context().isBlank()) {
+            fallbackContext = buildMeetingKnowledgeContext(userId, question);
+        }
+        String actionContext = buildActionItemsContext(userId, question);
+        String costContext = buildCostContext(userId, question);
+        String knowledgeContext = ragResult.context().isBlank() ? fallbackContext.context() : ragResult.context();
+        List<TeamsBotQuerySourceVo> sources = ragResult.sources().isEmpty() ? fallbackContext.sources() : ragResult.sources();
+        String context = knowledgeContext
+                + (actionContext.isBlank() ? "" : "\n" + actionContext)
+                + (costContext.isBlank() ? "" : "\n" + costContext);
+
+        if (context.isBlank()) {
+            log.info("[TeamsBotQueryService] answerNaturalQuestion no context, userId={}", userId);
+            return BotAnswer.text("在所有历史会议记录中，未找到与该问题相关的内容。请尝试换一个关键词，或先确认会议/文件已经上传并完成索引。", RESPONSE_RAG);
+        }
+
+        try {
+            String answer = llmIntegration.chatCrossMeeting(context, question, List.of());
+            log.info("[TeamsBotQueryService] answerNaturalQuestion done, userId={}, sources={}",
+                    userId, sources.size());
+            return new BotAnswer(answer, RESPONSE_RAG, sources);
+        } catch (IOException e) {
+            log.error("[TeamsBotQueryService] answerNaturalQuestion llm failed, userId={}", userId, e);
+            return BotAnswer.text("已找到相关会议内容，但生成回答时遇到 LLM 错误：" + e.getMessage(), RESPONSE_RAG);
+        }
+    }
+
+    private Optional<BotAnswer> answerStructuredQuestion(Long userId, String question) {
+        if (isFileListIntent(question)) {
+            return Optional.of(answerMeetingFiles(userId, question));
+        }
+        if (isMeetingListByDateIntent(question)) {
+            LocalDate date = extractQuestionDate(question);
+            if (date != null) {
+                return Optional.of(answerMeetingsByDate(userId, question, date));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean isFileListIntent(String question) {
+        String lower = question.toLowerCase(Locale.ROOT);
+        boolean mentionsFile = Set.of("文件", "文档", "资料", "报告", "附件", "file", "document")
+                .stream().anyMatch(lower::contains);
+        boolean asksList = Set.of("哪些", "有什么", "有哪些", "有哪", "列表", "列出", "查看", "多少", "几份", "几"
+                ).stream().anyMatch(lower::contains);
+        return mentionsFile && asksList;
+    }
+
+    private boolean isMeetingListByDateIntent(String question) {
+        if (extractQuestionDate(question) == null) return false;
+        String lower = question.toLowerCase(Locale.ROOT);
+        return lower.contains("会议") && Set.of("哪些", "哪几", "列表", "列出", "查看", "有哪", "最近")
+                .stream().anyMatch(lower::contains);
+    }
+
+    private BotAnswer answerMeetingFiles(Long userId, String question) {
+        log.info("[TeamsBotQueryService] answerMeetingFiles start, userId={}", userId);
+        List<Meeting> meetings = rankMeetingsByQuestion(userId, question).stream()
+                .limit(MAX_STRUCTURED_MEETINGS)
+                .toList();
+        if (meetings.isEmpty()) {
+            return BotAnswer.text("没有找到与这个问题匹配的会议。可以说得更具体一点，例如“2026年05月26日 班长的战争 有哪些文件”。", RESPONSE_FILE_LIST);
+        }
+
+        StringBuilder reply = new StringBuilder();
+        List<TeamsBotQuerySourceVo> sources = new ArrayList<>();
+        int meetingIndex = 1;
+        for (Meeting meeting : meetings) {
+            var files = persistentFileMapper.findByMeetingId(meeting.getId());
+            if (meetingIndex == 1) {
+                reply.append("匹配到的会议文件：\n\n");
+            }
+            reply.append(meetingIndex++)
+                    .append(". ")
+                    .append(meeting.getTitle())
+                    .append("（")
+                    .append(dateOf(meeting))
+                    .append("）");
+            if (files.isEmpty()) {
+                reply.append("\n   暂无上传文件。\n\n");
+                continue;
+            }
+            reply.append("\n");
+            for (int i = 0; i < files.size(); i++) {
+                var file = files.get(i);
+                reply.append("   ")
+                        .append(i + 1)
+                        .append(") ")
+                        .append(file.getFileName());
+                if (file.getSummary() != null && !file.getSummary().isBlank()) {
+                    reply.append("（已有 AI 总结）");
+                }
+                reply.append("\n");
+                if (sources.size() < MAX_STRUCTURED_SOURCES) {
+                    sources.add(TeamsBotQuerySourceVo.builder()
+                            .sourceType(ContentEmbeddingService.TYPE_FILE_CONTENT)
+                            .title("会议文件")
+                            .meetingTitle(meeting.getTitle())
+                            .meetingId(meeting.getId())
+                            .fileId(file.getId())
+                            .sourceName(file.getFileName())
+                            .sourceDate(dateOf(meeting))
+                            .snippet(file.getSummary() != null && !file.getSummary().isBlank()
+                                    ? truncate(file.getSummary().replaceAll("\\s+", " "), 180)
+                                    : "文件已上传，可在网页端查看或生成 AI 总结。")
+                            .build());
+                }
+            }
+            reply.append("\n");
+        }
+        log.info("[TeamsBotQueryService] answerMeetingFiles done, userId={}, meetings={}, sources={}",
+                userId, meetings.size(), sources.size());
+        return new BotAnswer(reply.toString().trim(), RESPONSE_FILE_LIST, sources);
+    }
+
+    private BotAnswer answerMeetingsByDate(Long userId, String question, LocalDate date) {
+        List<Meeting> meetings = rankMeetingsByQuestion(userId, question).stream()
+                .filter(meeting -> matchesDate(meeting, date))
+                .limit(MAX_STRUCTURED_MEETINGS)
+                .toList();
+        if (meetings.isEmpty()) {
+            return BotAnswer.text("没有找到 " + DATE_FORMATTER.format(date) + " 的会议。", RESPONSE_MEETING_LIST);
+        }
+
+        StringBuilder reply = new StringBuilder();
+        reply.append(DATE_FORMATTER.format(date)).append(" 的会议：\n\n");
+        for (int i = 0; i < meetings.size(); i++) {
+            Meeting meeting = meetings.get(i);
+            int fileCount = persistentFileMapper.findByMeetingId(meeting.getId()).size();
+            reply.append(i + 1)
+                    .append(". ")
+                    .append(meeting.getTitle())
+                    .append("，文件 ")
+                    .append(fileCount)
+                    .append(" 个\n");
+        }
+        return BotAnswer.text(reply.toString().trim(), RESPONSE_MEETING_LIST);
+    }
+
+    private KnowledgeContext buildMeetingKnowledgeContext(Long userId, String question) {
+        List<Meeting> meetings = rankMeetingsByQuestion(userId, question).stream()
+                .limit(3)
+                .toList();
+        if (meetings.isEmpty()) {
+            return KnowledgeContext.empty();
+        }
+
+        StringBuilder context = new StringBuilder();
+        List<TeamsBotQuerySourceVo> sources = new ArrayList<>();
+        for (Meeting meeting : meetings) {
+            context.append("[会议：")
+                    .append(meeting.getTitle())
+                    .append(" · ")
+                    .append(dateOf(meeting))
+                    .append("]\n");
+            for (InterpretationSession session : sessionMapper.findByMeetingId(meeting.getId())) {
+                String summary = normalize(session.getMeetingSummary());
+                if (!summary.isBlank()) {
+                    context.append("[会议总结]\n")
+                            .append(truncateForContext(summary, 1200))
+                            .append("\n");
+                    addStructuredSource(sources, "会议总结", ContentEmbeddingService.TYPE_MEETING_SUMMARY,
+                            meeting, null, meeting.getTitle(), summary);
+                }
+            }
+            var files = persistentFileMapper.findByMeetingId(meeting.getId());
+            for (var fileItem : files) {
+                var file = persistentFileMapper.findById(fileItem.getId());
+                if (file == null) continue;
+                String summary = normalize(file.getSummary());
+                String content = normalize(file.getFileContent());
+                String sourceText = !summary.isBlank() ? summary : content;
+                if (sourceText.isBlank()) continue;
+                context.append("[文件：")
+                        .append(file.getFileName())
+                        .append("]\n")
+                        .append(truncateForContext(sourceText, 1800))
+                        .append("\n");
+                addStructuredSource(sources,
+                        !summary.isBlank() ? "文件总结" : "文件内容",
+                        !summary.isBlank() ? ContentEmbeddingService.TYPE_FILE_SUMMARY : ContentEmbeddingService.TYPE_FILE_CONTENT,
+                        meeting,
+                        file.getId(),
+                        file.getFileName(),
+                        sourceText);
+            }
+            context.append("\n");
+        }
+
+        log.info("[TeamsBotQueryService] buildMeetingKnowledgeContext done, meetings={}, sources={}",
+                meetings.size(), sources.size());
+        return new KnowledgeContext(context.toString(), sources);
+    }
+
+    private void addStructuredSource(
+            List<TeamsBotQuerySourceVo> sources,
+            String title,
+            String sourceType,
+            Meeting meeting,
+            Long fileId,
+            String sourceName,
+            String sourceText) {
+        if (sources.size() >= MAX_STRUCTURED_SOURCES) return;
+        sources.add(TeamsBotQuerySourceVo.builder()
+                .sourceType(sourceType)
+                .title(title)
+                .meetingTitle(meeting.getTitle())
+                .meetingId(meeting.getId())
+                .fileId(fileId)
+                .sourceName(sourceName)
+                .sourceDate(dateOf(meeting))
+                .snippet(truncate(sourceText.replaceAll("\\s+", " "), 220))
+                .build());
+    }
+
+    private List<Meeting> rankMeetingsByQuestion(Long userId, String question) {
+        LocalDate date = extractQuestionDate(question);
+        List<String> tokens = extractQuestionTokens(question);
+        return meetingMapper.findByUserId(userId).stream()
+                .map(meeting -> new MeetingScore(meeting, meetingScore(meeting, date, tokens)))
+                .filter(item -> item.score() > 0)
+                .sorted(Comparator
+                        .comparingInt(MeetingScore::score).reversed()
+                        .thenComparing(item -> item.meeting().getCreateTime(), Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(MeetingScore::meeting)
+                .toList();
+    }
+
+    private int meetingScore(Meeting meeting, LocalDate date, List<String> tokens) {
+        String title = normalize(meeting.getTitle()).toLowerCase(Locale.ROOT);
+        int score = 0;
+        if (date != null && matchesDate(meeting, date)) {
+            score += 12;
+        }
+        for (String token : tokens) {
+            if (title.contains(token.toLowerCase(Locale.ROOT))) {
+                score += token.length() >= 4 ? 4 : 2;
+            }
+        }
+        if (tokens.isEmpty() && date == null) {
+            score += 1;
+        }
+        return score;
+    }
+
+    private boolean matchesDate(Meeting meeting, LocalDate date) {
+        if (date == null || meeting == null) return false;
+        if (meeting.getScheduledTime() != null && date.equals(meeting.getScheduledTime().toLocalDate())) {
+            return true;
+        }
+        String title = normalize(meeting.getTitle());
+        String compact = String.format("%04d年%02d月%02d日", date.getYear(), date.getMonthValue(), date.getDayOfMonth());
+        String loose = date.getYear() + "年" + date.getMonthValue() + "月" + date.getDayOfMonth() + "日";
+        return title.contains(compact)
+                || title.contains(loose)
+                || title.contains(DATE_FORMATTER.format(date));
+    }
+
+    private LocalDate extractQuestionDate(String question) {
+        Matcher matcher = QUESTION_DATE_PATTERN.matcher(question);
+        if (!matcher.find()) return null;
+        try {
+            if (matcher.group(1) != null) {
+                return LocalDate.of(
+                        Integer.parseInt(matcher.group(1)),
+                        Integer.parseInt(matcher.group(2)),
+                        Integer.parseInt(matcher.group(3)));
+            }
+            if (matcher.group(4) != null) {
+                return LocalDate.of(
+                        Integer.parseInt(matcher.group(4)),
+                        Integer.parseInt(matcher.group(5)),
+                        Integer.parseInt(matcher.group(6)));
+            }
+            return LocalDate.of(
+                    LocalDate.now().getYear(),
+                    Integer.parseInt(matcher.group(7)),
+                    Integer.parseInt(matcher.group(8)));
+        } catch (Exception e) {
+            log.debug("[TeamsBotQueryService] cannot parse question date from {}", question);
+            return null;
+        }
+    }
+
+    private List<String> extractQuestionTokens(String question) {
+        String cleaned = QUESTION_DATE_PATTERN.matcher(question).replaceAll(" ");
+        for (String stop : List.of(
+                "有哪些文件", "有什么文件", "有哪几个文件", "会议有哪些文件", "会议有什么文件",
+                "有哪些会议", "有什么会议", "文件", "文档", "资料", "报告", "附件", "会议",
+                "哪些", "哪几", "什么", "查看", "列出", "列表", "里面", "里", "中", "的",
+                "请", "一下", "帮我", "关于", "和", "与")) {
+            cleaned = cleaned.replace(stop, " ");
+        }
+        String[] rawTokens = cleaned.split("[\\s,，、:：()（）【】\\[\\]《》]+");
+        List<String> tokens = new ArrayList<>();
+        for (String raw : rawTokens) {
+            String token = normalize(raw);
+            if (token.length() >= 2 && tokens.stream().noneMatch(token::equalsIgnoreCase)) {
+                tokens.add(token);
+            }
+        }
+        return tokens;
+    }
+
+    private String dateOf(Meeting meeting) {
+        if (meeting.getScheduledTime() != null) {
+            return DATE_FORMATTER.format(meeting.getScheduledTime().toLocalDate());
+        }
+        if (meeting.getCreateTime() != null) {
+            return DATE_FORMATTER.format(meeting.getCreateTime().toLocalDate());
+        }
+        return "日期未知";
+    }
+
+    private String truncateForContext(String text, int maxChars) {
+        String normalized = normalize(text);
+        if (normalized.length() <= maxChars) return normalized;
+        return normalized.substring(0, maxChars) + "\n（后续内容已截断）";
+    }
+
     private String formatSessionList(String title, List<InterpretationSession> sessions) {
         StringBuilder builder = new StringBuilder();
         builder.append(title).append("：\n\n");
@@ -457,9 +822,44 @@ public class TeamsBotQueryService {
                 + "请让管理员把 syncLingo 用户表中的 email 或 username 设置为你的 Teams 邮箱/UPN。";
     }
 
-    private TeamsBotQueryResponse buildResponse(String replyText, Boolean userMatched, Long userId, String command) {
+    private String formatSourcesSuffix(List<TeamsBotQuerySourceVo> sources) {
+        String block = formatSourcesBlock(sources);
+        return block.isBlank() ? "" : "\n\n" + block;
+    }
+
+    private String formatSourcesBlock(List<TeamsBotQuerySourceVo> sources) {
+        if (sources == null || sources.isEmpty()) return "";
+        StringBuilder builder = new StringBuilder("引用来源：");
+        int index = 1;
+        for (TeamsBotQuerySourceVo source : sources.stream().limit(5).toList()) {
+            builder.append("\n")
+                    .append(index++)
+                    .append(". ")
+                    .append(firstNonBlank(source.getSourceName(), source.getTitle(), source.getMeetingTitle()));
+            if (source.getMeetingTitle() != null && !source.getMeetingTitle().isBlank()) {
+                builder.append(" / ").append(source.getMeetingTitle());
+            }
+            if (source.getSourceDate() != null && !source.getSourceDate().isBlank()) {
+                builder.append("（").append(source.getSourceDate()).append("）");
+            }
+            if (source.getSnippet() != null && !source.getSnippet().isBlank()) {
+                builder.append("\n   ").append(truncate(source.getSnippet(), 160).replace("\n", " "));
+            }
+        }
+        return builder.toString();
+    }
+
+    private TeamsBotQueryResponse buildResponse(
+            String replyText,
+            String responseType,
+            List<TeamsBotQuerySourceVo> sources,
+            Boolean userMatched,
+            Long userId,
+            String command) {
         return TeamsBotQueryResponse.builder()
                 .replyText(replyText)
+                .responseType(responseType)
+                .sources(sources)
                 .userMatched(userMatched)
                 .userId(userId)
                 .command(command)
@@ -611,6 +1011,21 @@ public class TeamsBotQueryService {
         if (val == null) return 0L;
         if (val instanceof Number n) return n.longValue();
         try { return Long.parseLong(val.toString()); } catch (Exception e) { return 0L; }
+    }
+
+    private record BotAnswer(String replyText, String responseType, List<TeamsBotQuerySourceVo> sources) {
+        static BotAnswer text(String replyText, String responseType) {
+            return new BotAnswer(replyText, responseType, List.of());
+        }
+    }
+
+    private record MeetingScore(Meeting meeting, int score) {
+    }
+
+    private record KnowledgeContext(String context, List<TeamsBotQuerySourceVo> sources) {
+        static KnowledgeContext empty() {
+            return new KnowledgeContext("", List.of());
+        }
     }
 
     private record BotCommand(String name, String argument) {

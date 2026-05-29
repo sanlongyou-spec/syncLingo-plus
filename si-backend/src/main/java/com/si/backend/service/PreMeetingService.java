@@ -15,6 +15,7 @@ import com.si.backend.vo.PreMeetingAttendanceVo;
 import com.si.backend.vo.PreMeetingDailyUsageVo;
 import com.si.backend.vo.PreMeetingFileVo;
 import com.si.backend.vo.PreMeetingSummaryVo;
+import com.si.backend.vo.TeamsBotQuerySourceVo;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -65,6 +66,10 @@ public class PreMeetingService {
     private static final Pattern GROUP_COUNT_PATTERN = Pattern.compile("^(.*?)[（(]\\d+[）)]\\s*[:：]\\s*(.*)$");
     private static final int MAX_ATTENDANCE_NAME_LENGTH = 60;
     private static final int ATTENDANCE_EXPORT_FONT_SIZE = 11;
+    private static final int MAX_RAG_SESSIONS = 5;
+    private static final int MAX_RAG_SNIPPETS_PER_SESSION = 20;
+    private static final int MAX_RAG_SOURCES = 8;
+    private static final int SOURCE_SNIPPET_MAX_CHARS = 220;
     private static final String ATTENDANCE_STATUS_PRESENT = "present";
     private static final String ATTENDANCE_STATUS_ABSENT = "absent";
     private static final String ATTENDANCE_STATUS_UNEXPECTED = "unexpected";
@@ -91,6 +96,7 @@ public class PreMeetingService {
     private record ExpectedParticipant(String name, String department, String email, String sourceText) {}
     private record ActualParticipant(String displayName, String email, String normalizedName, String chineseName) {}
     private record AttendanceBlock(int startIndex, int endIndex) {}
+    public record UnifiedContextResult(String context, List<TeamsBotQuerySourceVo> sources) {}
     private record RunShell(
             boolean bold,
             boolean italic,
@@ -988,7 +994,7 @@ public class PreMeetingService {
 
         Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
         for (VectorSearchService.SearchResult hit : hits) {
-            bySession.computeIfAbsent(hit.sessionId(), k -> new ArrayList<>()).add(hit);
+            bySession.computeIfAbsent(sourceGroupKey(hit), k -> new ArrayList<>()).add(hit);
         }
 
         StringBuilder context = new StringBuilder();
@@ -1000,8 +1006,7 @@ public class PreMeetingService {
             List<VectorSearchService.SearchResult> snippets = entry.getValue();
             VectorSearchService.SearchResult first = snippets.get(0);
 
-            String title = (first.sessionTitle() != null && !first.sessionTitle().isBlank())
-                    ? first.sessionTitle() : entry.getKey().substring(0, 8);
+            String title = sourceGroupTitle(first, entry.getKey());
             String date = first.sessionDate() != null ? first.sessionDate() : "日期未知";
             String label = title + " (" + date + ")";
             sessionLabels.add(label);
@@ -1046,27 +1051,35 @@ public class PreMeetingService {
     }
 
     public String buildUnifiedContext(long userId, String question, QuestionFilter filter) {
+        return buildUnifiedContextResult(userId, question, filter).context();
+    }
+
+    public UnifiedContextResult buildUnifiedContextResult(long userId, String question, QuestionFilter filter) {
         log.info("[PreMeetingService] buildUnifiedContext vector, userId={}", userId);
         try {
             float[] queryVec = llmIntegration.embed(question);
             List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
                     userId, queryVec,
                     filter.meetingId(), filter.speakerName(), filter.since(), 40);
-            if (hits.isEmpty()) return "";
+            if (hits.isEmpty()) {
+                log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions=0, sources=0", userId);
+                return new UnifiedContextResult("", List.of());
+            }
 
             Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
             for (VectorSearchService.SearchResult hit : hits) {
-                bySession.computeIfAbsent(hit.sessionId(), k -> new ArrayList<>()).add(hit);
+                bySession.computeIfAbsent(sourceGroupKey(hit), k -> new ArrayList<>()).add(hit);
             }
 
             StringBuilder context = new StringBuilder();
+            List<TeamsBotQuerySourceVo> sources = new ArrayList<>();
+            Set<String> sourceKeys = new HashSet<>();
             int sessionCount = 0;
             for (Map.Entry<String, List<VectorSearchService.SearchResult>> entry : bySession.entrySet()) {
-                if (sessionCount++ >= 5) break;
+                if (sessionCount++ >= MAX_RAG_SESSIONS) break;
                 List<VectorSearchService.SearchResult> snippets = entry.getValue();
                 VectorSearchService.SearchResult first = snippets.get(0);
-                String title = (first.sessionTitle() != null && !first.sessionTitle().isBlank())
-                        ? first.sessionTitle() : entry.getKey().substring(0, 8);
+                String title = sourceGroupTitle(first, entry.getKey());
                 String date = first.sessionDate() != null ? first.sessionDate() : "日期未知";
 
                 // C4: 带来源标记的区块头
@@ -1075,12 +1088,13 @@ public class PreMeetingService {
                 // 同传片段
                 int count = 0;
                 for (VectorSearchService.SearchResult snippet : snippets) {
-                    if (count++ >= 20) break;
+                    if (count++ >= MAX_RAG_SNIPPETS_PER_SESSION) break;
                     if (snippet.speakerName() != null && !snippet.speakerName().isBlank()) {
                         context.append(snippet.speakerName()).append(": ");
                     }
                     context.append(snippet.sourceText())
                             .append(" → ").append(snippet.translatedText()).append("\n");
+                    addSourceFromHit(sources, sourceKeys, snippet, title, date);
                 }
 
                 // C1: 会议总结
@@ -1096,11 +1110,102 @@ public class PreMeetingService {
             }
             log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions={}",
                     userId, bySession.size());
-            return context.toString();
+            return new UnifiedContextResult(context.toString(), sources);
         } catch (Exception e) {
             log.warn("[PreMeetingService] buildUnifiedContext embed failed: {}", e.getMessage());
-            return "";
+            return new UnifiedContextResult("", List.of());
         }
+    }
+
+    private String sourceGroupKey(VectorSearchService.SearchResult hit) {
+        if (hit.sessionId() != null && !hit.sessionId().isBlank()) {
+            return hit.sessionId();
+        }
+        if (hit.meetingId() != null) {
+            return "meeting:" + hit.meetingId();
+        }
+        return "source:" + hit.sourceType() + ":" + hit.refId();
+    }
+
+    private String sourceGroupTitle(VectorSearchService.SearchResult hit, String groupKey) {
+        if (hit.sessionTitle() != null && !hit.sessionTitle().isBlank()) {
+            return hit.sessionTitle();
+        }
+        if (hit.meetingId() != null) {
+            return "会议 " + hit.meetingId();
+        }
+        return groupKey.length() > 8 ? groupKey.substring(0, 8) : groupKey;
+    }
+
+    private void addSourceFromHit(
+            List<TeamsBotQuerySourceVo> sources,
+            Set<String> sourceKeys,
+            VectorSearchService.SearchResult hit,
+            String meetingTitle,
+            String sourceDate) {
+        if (sources.size() >= MAX_RAG_SOURCES) return;
+        String key = hit.sourceType() + ":" + hit.sourceId() + ":" + hit.refId();
+        if (!sourceKeys.add(key)) return;
+
+        Long fileId = isFileSource(hit.sourceType()) ? hit.refId() : null;
+        sources.add(TeamsBotQuerySourceVo.builder()
+                .sourceType(hit.sourceType())
+                .title(sourceTitle(hit, meetingTitle))
+                .meetingTitle(meetingTitle)
+                .sessionId(hit.sessionId())
+                .meetingId(hit.meetingId())
+                .fileId(fileId)
+                .sourceName(sourceName(hit, meetingTitle))
+                .sourceDate(sourceDate)
+                .snippet(snippetOf(hit))
+                .score(hit.score())
+                .build());
+    }
+
+    private String sourceTitle(VectorSearchService.SearchResult hit, String meetingTitle) {
+        String type = hit.sourceType();
+        if (ContentEmbeddingService.TYPE_FILE_CONTENT.equals(type)) return "文件内容";
+        if (ContentEmbeddingService.TYPE_FILE_SUMMARY.equals(type)) return "文件总结";
+        if (ContentEmbeddingService.TYPE_MEETING_SUMMARY.equals(type)) return "会议总结";
+        if (ContentEmbeddingService.TYPE_SPEAKER_SUMMARY.equals(type)) return "发言摘要";
+        if (ContentEmbeddingService.TYPE_ACTION_ITEM.equals(type)) return "行动项";
+        return meetingTitle;
+    }
+
+    private String sourceName(VectorSearchService.SearchResult hit, String meetingTitle) {
+        if (isFileSource(hit.sourceType()) && hit.refId() != null) {
+            try {
+                var file = persistentFileMapper.findById(hit.refId());
+                if (file != null && file.getFileName() != null && !file.getFileName().isBlank()) {
+                    return file.getFileName();
+                }
+            } catch (Exception e) {
+                log.debug("[PreMeetingService] sourceName file lookup failed, refId={}: {}", hit.refId(), e.getMessage());
+            }
+        }
+        if (hit.speakerName() != null && !hit.speakerName().isBlank()) {
+            return hit.speakerName();
+        }
+        return meetingTitle;
+    }
+
+    private boolean isFileSource(String sourceType) {
+        return ContentEmbeddingService.TYPE_FILE_CONTENT.equals(sourceType)
+                || ContentEmbeddingService.TYPE_FILE_SUMMARY.equals(sourceType);
+    }
+
+    private String snippetOf(VectorSearchService.SearchResult hit) {
+        StringBuilder text = new StringBuilder();
+        if (hit.sourceText() != null && !hit.sourceText().isBlank()) {
+            text.append(hit.sourceText().trim());
+        }
+        if (hit.translatedText() != null && !hit.translatedText().isBlank()) {
+            if (!text.isEmpty()) text.append(" → ");
+            text.append(hit.translatedText().trim());
+        }
+        String value = text.toString().replaceAll("\\s+", " ").trim();
+        if (value.length() <= SOURCE_SNIPPET_MAX_CHARS) return value;
+        return value.substring(0, SOURCE_SNIPPET_MAX_CHARS) + "…";
     }
 
     private void appendMeetingSummary(StringBuilder context, String sessionId) {

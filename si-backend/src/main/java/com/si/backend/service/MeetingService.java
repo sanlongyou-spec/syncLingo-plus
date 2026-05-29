@@ -143,7 +143,10 @@ public class MeetingService {
     }
 
     public void deleteMeeting(Long meetingId) {
+        log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
         meetingMapper.softDelete(meetingId);
+        contentEmbeddingService.deleteByMeetingId(meetingId);
+        log.info("[MeetingService] deleteMeeting done, meetingId={}", meetingId);
     }
 
     private Meeting requireMeeting(Long meetingId) {

@@ -10,17 +10,20 @@
     <select id="findByUserId" resultType="com.si.backend.entity.InterpretationEmbedding">
         SELECT e.*
         FROM interpretation_embedding e
-                 JOIN interpretation_session s ON e.session_id = s.session_id
-        WHERE s.user_id = #{userId}
-          AND COALESCE(s.deleted, 0) = 0
+                 LEFT JOIN interpretation_session s
+                      ON e.session_id COLLATE utf8mb4_unicode_ci = s.session_id COLLATE utf8mb4_unicode_ci
+                 LEFT JOIN meeting m ON e.meeting_id = m.id
+        WHERE (s.user_id = #{userId} OR m.user_id = #{userId})
+          AND (s.session_id IS NULL OR COALESCE(s.deleted, 0) = 0)
+          AND (m.id IS NULL OR COALESCE(m.deleted, 0) = 0)
           <if test="filterMeetingId != null">
               AND e.meeting_id = #{filterMeetingId}
           </if>
           <if test="filterSpeakerName != null and filterSpeakerName != ''">
-              AND e.speaker_name LIKE CONCAT('%', #{filterSpeakerName}, '%')
+              AND e.speaker_name COLLATE utf8mb4_unicode_ci LIKE CONCAT('%', #{filterSpeakerName}, '%')
           </if>
           <if test="filterSince != null and filterSince != ''">
-              AND s.start_time &gt;= #{filterSince}
+              AND COALESCE(s.start_time, m.scheduled_time, m.create_time) &gt;= #{filterSince}
           </if>
         ORDER BY e.id DESC
         LIMIT 2000

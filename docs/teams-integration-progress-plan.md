@@ -1409,6 +1409,27 @@ start-all.bat  :: 重新编译 Bot 并启动所有服务
 
 ---
 
+### 2026-05-29 Bot 自然语言问答升级（RAG + 来源引用 + 结构化意图）
+
+- 新完成：
+  - Bot 默认提问路由由 `search` 改为新的 `ask`，先识别结构化意图（查会议文件 / 按日期查会议）直接给确定性结果，其余走向量 RAG。
+  - RAG 命中为空时回退 `buildMeetingKnowledgeContext`：按问题对会议标题/日期打分排序，取会议总结 + 文件总结/内容作为上下文。
+  - 答案附带可追溯来源：新增 `vo/TeamsBotQuerySourceVo`，响应增加 `responseType`（text/rag/file_list/meeting_list）与 `sources`；同步/流式两路径末尾追加"引用来源："区块。
+  - `VectorSearchService.SearchResult` 增加 `sourceType/sourceId/refId/meetingId`，支持跨源（同传片段/会议总结/发言摘要/文件总结/文件内容）分组与引用。
+  - `InterpretationEmbeddingMapper.findByUserId` 改为 LEFT JOIN session + LEFT JOIN meeting（`s.user_id OR m.user_id`），让仅挂在 meeting 上的文件/总结嵌入也可检索；加 `COLLATE utf8mb4_unicode_ci` 修复字符集 join/like 报错；时间过滤用 `COALESCE(s.start_time, m.scheduled_time, m.create_time)`。
+  - `MeetingService.deleteMeeting` 软删后调用 `contentEmbeddingService.deleteByMeetingId`，删除会议同步清理向量。
+  - `LlmIntegration` chat/completions 非 200 时解析并透传 provider `error.message`。
+- 新发现：
+  - 嵌入此前仅 JOIN session，导致挂在 meeting 上的文件/会议总结内容无法被 RAG 召回。
+  - join/like 两侧字符集不一致会触发 MySQL collation 错误，需显式 COLLATE 对齐。
+- 新决策：
+  - Bot 答案统一附引用来源，便于用户追溯回答出处。
+  - 结构化问题（查文件/按日期）走确定性查询，不交给 LLM 生成，减少幻觉。
+- 下一步：
+  - 人工验证 N-29~N-34（见 `docs/sprint-delivery-2026-05.md` 第 9 节）。
+
+---
+
 ## 13. 后续更新模板
 
 ```markdown

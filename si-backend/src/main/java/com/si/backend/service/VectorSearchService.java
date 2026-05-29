@@ -22,7 +22,11 @@ public class VectorSearchService {
     private final OpenAiProperties openAiProperties;
 
     public record SearchResult(
+            String sourceType,
+            Long sourceId,
+            Long refId,
             String sessionId,
+            Long meetingId,
             String sessionTitle,
             String sessionDate,
             String speakerName,
@@ -83,7 +87,11 @@ public class VectorSearchService {
             float score = cosine(queryVec, vec);
             if (score < minScore) continue;
             results.add(new SearchResult(
+                    emb.getSourceType(),
+                    emb.getSourceId(),
+                    emb.getRefId(),
                     emb.getSessionId(),
+                    emb.getMeetingId(),
                     emb.getSessionTitle(),
                     emb.getSessionDate() != null ? emb.getSessionDate().toString() : null,
                     emb.getSpeakerName(),
