@@ -29,6 +29,7 @@ public class MeetingService {
     private final MeetingMapper meetingMapper;
     private final PersistentPreMeetingFileMapper fileMapper;
     private final PreMeetingService preMeetingService;
+    private final ContentEmbeddingService contentEmbeddingService;
 
     @PostConstruct
     public void initTables() {
@@ -96,6 +97,9 @@ public class MeetingService {
         entity.setFileData(rawBytes);
         fileMapper.insert(entity);
         log.info("[MeetingService] uploadFile done, meetingId={}, fileName={}, textLen={}", meetingId, originalName, text.length());
+        if (entity.getId() != null && text != null && !text.isBlank()) {
+            contentEmbeddingService.asyncEmbedFileContent(entity.getId(), meetingId, originalName, text);
+        }
         return toFileVo(entity);
     }
 
@@ -117,6 +121,12 @@ public class MeetingService {
 
     public void saveFileSummary(Long fileId, String summary) {
         fileMapper.updateSummary(fileId, summary);
+        if (summary != null && !summary.isBlank()) {
+            PersistentPreMeetingFile f = fileMapper.findById(fileId);
+            if (f != null) {
+                contentEmbeddingService.asyncEmbedFileSummary(fileId, f.getMeetingId(), f.getFileName(), summary);
+            }
+        }
     }
 
     public PersistentPreMeetingFile getFileForDownload(Long fileId) {

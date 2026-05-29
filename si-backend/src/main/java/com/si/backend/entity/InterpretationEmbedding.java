@@ -8,6 +8,10 @@ import java.time.LocalDateTime;
 @Data
 public class InterpretationEmbedding {
     private Long id;
+    /** 'result' | 'meeting_summary' | 'speaker_summary' | 'file_summary' | 'file_content' */
+    private String sourceType;
+    /** PK from the source table (null for legacy result rows that predate this column) */
+    private Long sourceId;
     private Long resultId;
     private String sessionId;
     private Long meetingId;

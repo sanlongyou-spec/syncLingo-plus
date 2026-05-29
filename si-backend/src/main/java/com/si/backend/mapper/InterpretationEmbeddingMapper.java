@@ -34,6 +34,22 @@ public interface InterpretationEmbeddingMapper {
             """)
     void createTableIfNotExists();
 
+    // ── Schema migrations (called from @PostConstruct) ───────────────────
+
+    @Update("ALTER TABLE interpretation_embedding MODIFY COLUMN result_id BIGINT DEFAULT NULL")
+    void makeResultIdNullable();
+
+    @Update("ALTER TABLE interpretation_embedding ADD COLUMN source_type VARCHAR(32) NOT NULL DEFAULT 'result'")
+    void addSourceTypeColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_embedding ADD COLUMN source_id BIGINT DEFAULT NULL")
+    void addSourceIdColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_embedding ADD UNIQUE KEY uk_emb_source (source_type, source_id)")
+    void addSourceUniqueIndexIfNotExists();
+
+    // ── Inserts ──────────────────────────────────────────────────────────
+
     @Insert("""
             INSERT INTO interpretation_embedding
                 (result_id, session_id, meeting_id, session_title, session_date,
@@ -45,8 +61,27 @@ public interface InterpretationEmbeddingMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationEmbedding emb);
 
+    /** Insert for non-result content types; silently ignored if (source_type, source_id) already exists. */
+    @Insert("""
+            INSERT IGNORE INTO interpretation_embedding
+                (source_type, source_id, session_id, meeting_id, session_title, session_date,
+                 speaker_name, chunk_text, translated_text, embedding, create_time)
+            VALUES
+                (#{sourceType}, #{sourceId}, #{sessionId}, #{meetingId}, #{sessionTitle}, #{sessionDate},
+                 #{speakerName}, #{chunkText}, #{translatedText}, #{embedding}, NOW())
+            """)
+    @Options(useGeneratedKeys = true, keyProperty = "id")
+    int insertContent(InterpretationEmbedding emb);
+
+    // ── Dedup queries ────────────────────────────────────────────────────
+
     @Select("SELECT COUNT(*) FROM interpretation_embedding WHERE result_id = #{resultId}")
     int countByResultId(@Param("resultId") long resultId);
+
+    @Select("SELECT COUNT(*) FROM interpretation_embedding WHERE source_type = #{sourceType} AND source_id = #{sourceId}")
+    int countBySourceTypeAndId(@Param("sourceType") String sourceType, @Param("sourceId") long sourceId);
+
+    // ── Queries ──────────────────────────────────────────────────────────
 
     /** Dynamic filter query — implemented in InterpretationEmbeddingMapper.xml */
     List<InterpretationEmbedding> findByUserId(

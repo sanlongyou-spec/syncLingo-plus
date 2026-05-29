@@ -22,6 +22,7 @@ public class SpeakerSummaryService {
 
     private final LlmIntegration llmIntegration;
     private final SpeakerSummaryRecordMapper mapper;
+    private final ContentEmbeddingService contentEmbeddingService;
 
     @PostConstruct
     public void initTable() {
@@ -68,14 +69,19 @@ public class SpeakerSummaryService {
             String summary = parts[1];
             log.info("[SpeakerSummaryService] summarize done, speaker={}, title={}, summaryLen={}", speakerName, title, summary.length());
             try {
-                mapper.insert(SpeakerSummaryRecord.builder()
+                SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
                         .sessionId(sessionId)
                         .speakerId(speakerId)
                         .speakerName(speakerName)
                         .title(title)
                         .textSnippet(text.length() > 2000 ? text.substring(0, 2000) : text)
                         .summary(summary)
-                        .build());
+                        .build();
+                mapper.insert(record);
+                if (record.getId() != null) {
+                    contentEmbeddingService.asyncEmbedSpeakerSummary(
+                            record.getId(), sessionId, speakerName, title, summary);
+                }
             } catch (Exception e) {
                 log.warn("[SpeakerSummaryService] failed to persist summary, sessionId={}", sessionId, e);
             }

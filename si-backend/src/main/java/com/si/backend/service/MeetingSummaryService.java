@@ -28,6 +28,7 @@ public class MeetingSummaryService {
     private final InterpretationResultService resultService;
     private final LlmIntegration llmIntegration;
     private final InterpretationSessionService sessionService;
+    private final ContentEmbeddingService contentEmbeddingService;
 
     /**
      * 获取纪要（优先返回 DB 缓存，无缓存则实时生成并持久化）。
@@ -116,6 +117,9 @@ public class MeetingSummaryService {
             String summary = summarizeMeetingUntilAccepted(meetingText, customRequirements, sessionId);
             sessionService.addLlmTokens(sessionId, estimateTokens(meetingText), estimateTokens(summary));
             sessionService.saveMeetingSummary(sessionId, summary);
+            if (session != null && session.getId() != null) {
+                contentEmbeddingService.asyncEmbedMeetingSummary(sessionId, session.getId(), summary);
+            }
             log.info("[MeetingSummaryService] generateAndSave done, sessionId={}, resultCount={}, summaryLen={}",
                     sessionId, results.size(), summary.length());
             return MeetingSummaryVo.builder()

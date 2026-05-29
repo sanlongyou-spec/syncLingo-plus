@@ -34,6 +34,10 @@ public class InterpretationResultService {
         addColumnIfMissing("speaker_id", resultMapper::addSpeakerIdColumnIfNotExists);
         addColumnIfMissing("speaker_name", resultMapper::addSpeakerNameColumnIfNotExists);
         embeddingMapper.createTableIfNotExists();
+        addColumnIfMissing("result_id nullable",  embeddingMapper::makeResultIdNullable);
+        addColumnIfMissing("source_type",         embeddingMapper::addSourceTypeColumnIfNotExists);
+        addColumnIfMissing("source_id",           embeddingMapper::addSourceIdColumnIfNotExists);
+        addColumnIfMissing("uk_emb_source index", embeddingMapper::addSourceUniqueIndexIfNotExists);
         log.info("[InterpretationResultService] initTable end");
     }
 
@@ -41,8 +45,9 @@ public class InterpretationResultService {
         try {
             ddl.run();
         } catch (org.springframework.dao.DataAccessException e) {
-            if (e.getMessage() != null && e.getMessage().contains("Duplicate column")) {
-                log.debug("[InterpretationResultService] column {} already exists", column);
+            String msg = e.getMessage();
+            if (msg != null && (msg.contains("Duplicate column") || msg.contains("Duplicate key name"))) {
+                log.debug("[InterpretationResultService] schema element '{}' already exists", column);
             } else {
                 throw e;
             }
