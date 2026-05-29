@@ -37,7 +37,9 @@ public class InterpretationResultService {
         addColumnIfMissing("result_id nullable",  embeddingMapper::makeResultIdNullable);
         addColumnIfMissing("source_type",         embeddingMapper::addSourceTypeColumnIfNotExists);
         addColumnIfMissing("source_id",           embeddingMapper::addSourceIdColumnIfNotExists);
+        addColumnIfMissing("ref_id",              embeddingMapper::addRefIdColumnIfNotExists);
         addColumnIfMissing("uk_emb_source index", embeddingMapper::addSourceUniqueIndexIfNotExists);
+        addColumnIfMissing("idx_emb_refid index", embeddingMapper::addRefIdIndexIfNotExists);
         log.info("[InterpretationResultService] initTable end");
     }
 

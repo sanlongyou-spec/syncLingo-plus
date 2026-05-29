@@ -4,6 +4,7 @@ import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.Result;
 import com.si.backend.config.AppAdminProperties;
+import com.si.backend.service.ContentEmbeddingService;
 import com.si.backend.service.InterpretationResultService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +25,7 @@ public class AdminController {
     private static final String ADMIN_SECRET_HEADER = "X-Admin-Secret";
 
     private final InterpretationResultService interpretationResultService;
+    private final ContentEmbeddingService contentEmbeddingService;
     private final AppAdminProperties adminProperties;
 
     /**
@@ -39,6 +41,29 @@ public class AdminController {
         int created = interpretationResultService.rebuildEmbeddings(batchLimit);
         log.info("[AdminController] rebuildEmbeddings done, created={}", created);
         return Result.ok(Map.of("created", created, "batchLimit", batchLimit));
+    }
+
+    /**
+     * Rebuild missing embeddings for all content types:
+     * meeting summaries, speaker summaries, file summaries, file content, action items.
+     * batchPerType controls how many candidates per type are processed per call.
+     */
+    @PostMapping("/embeddings/rebuild-all")
+    public Result<Map<String, Object>> rebuildAllEmbeddings(
+            @RequestHeader(value = ADMIN_SECRET_HEADER, required = false) String secret,
+            @RequestParam(defaultValue = "50") int batchPerType) {
+        ensureAuthorized(secret);
+        log.info("[AdminController] rebuildAllEmbeddings start, batchPerType={}", batchPerType);
+        int resultCreated = interpretationResultService.rebuildEmbeddings(batchPerType);
+        int contentCreated = contentEmbeddingService.rebuildBatch(batchPerType);
+        int total = resultCreated + contentCreated;
+        log.info("[AdminController] rebuildAllEmbeddings done, results={}, content={}, total={}",
+                resultCreated, contentCreated, total);
+        return Result.ok(Map.of(
+                "resultEmbeddings", resultCreated,
+                "contentEmbeddings", contentCreated,
+                "total", total,
+                "batchPerType", batchPerType));
     }
 
     private void ensureAuthorized(String secret) {

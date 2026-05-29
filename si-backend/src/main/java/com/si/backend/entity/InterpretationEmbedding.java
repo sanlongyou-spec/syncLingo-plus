@@ -8,10 +8,12 @@ import java.time.LocalDateTime;
 @Data
 public class InterpretationEmbedding {
     private Long id;
-    /** 'result' | 'meeting_summary' | 'speaker_summary' | 'file_summary' | 'file_content' */
+    /** 'result' | 'meeting_summary' | 'speaker_summary' | 'file_summary' | 'file_content' | 'action_item' */
     private String sourceType;
-    /** PK from the source table (null for legacy result rows that predate this column) */
+    /** Unique chunk identifier (for file_content: fileId*1000+chunkIdx) */
     private Long sourceId;
+    /** Deletion key — original entity PK (for file_content all chunks share the same refId=fileId) */
+    private Long refId;
     private Long resultId;
     private String sessionId;
     private Long meetingId;

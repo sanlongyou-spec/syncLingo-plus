@@ -40,4 +40,83 @@
         LIMIT #{limit}
     </select>
 
+    <!-- Sessions that have a meeting_summary but no corresponding embedding yet -->
+    <select id="findSessionsWithSummaryWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT s.id          AS sourceId,
+               s.session_id  AS sessionId,
+               s.meeting_summary AS sourceText,
+               s.title           AS sessionTitle,
+               s.meeting_id      AS meetingId
+        FROM interpretation_session s
+                 LEFT JOIN interpretation_embedding e
+                           ON e.source_type = 'meeting_summary' AND e.ref_id = s.id
+        WHERE e.id IS NULL
+          AND s.meeting_summary IS NOT NULL
+          AND s.meeting_summary != ''
+          AND COALESCE(s.deleted, 0) = 0
+        LIMIT #{limit}
+    </select>
+
+    <!-- Speaker summaries without an embedding -->
+    <select id="findSpeakerSummariesWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT ss.id         AS sourceId,
+               ss.session_id AS sessionId,
+               ss.summary    AS sourceText,
+               ss.speaker_name AS speakerName,
+               ss.title      AS sessionTitle
+        FROM speaker_summary ss
+                 LEFT JOIN interpretation_embedding e
+                           ON e.source_type = 'speaker_summary' AND e.ref_id = ss.id
+        WHERE e.id IS NULL
+          AND ss.summary IS NOT NULL
+          AND ss.summary != ''
+        LIMIT #{limit}
+    </select>
+
+    <!-- Files with a summary but no file_summary embedding -->
+    <select id="findFileSummariesWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT f.id          AS sourceId,
+               f.meeting_id  AS meetingId,
+               f.file_name   AS sessionTitle,
+               f.summary     AS sourceText
+        FROM pre_meeting_file_persistent f
+                 LEFT JOIN interpretation_embedding e
+                           ON e.source_type = 'file_summary' AND e.ref_id = f.id
+        WHERE e.id IS NULL
+          AND f.summary IS NOT NULL
+          AND f.summary != ''
+        LIMIT #{limit}
+    </select>
+
+    <!-- Files with extracted content but no file_content embedding at all -->
+    <select id="findFileContentsWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT f.id          AS sourceId,
+               f.meeting_id  AS meetingId,
+               f.file_name   AS sessionTitle,
+               f.file_content AS sourceText
+        FROM pre_meeting_file_persistent f
+                 LEFT JOIN interpretation_embedding e
+                           ON e.source_type = 'file_content' AND e.ref_id = f.id
+        WHERE e.id IS NULL
+          AND f.file_content IS NOT NULL
+          AND f.file_content != ''
+        LIMIT #{limit}
+    </select>
+
+    <!-- Action items without an embedding -->
+    <select id="findActionItemsWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
+        SELECT ai.id         AS sourceId,
+               ai.session_id AS sessionId,
+               ai.meeting_id AS meetingId,
+               ai.content    AS sourceText,
+               ai.assignee   AS speakerName
+        FROM meeting_action_item ai
+                 LEFT JOIN interpretation_embedding e
+                           ON e.source_type = 'action_item' AND e.ref_id = ai.id
+        WHERE e.id IS NULL
+          AND ai.content IS NOT NULL
+          AND ai.content != ''
+        LIMIT #{limit}
+    </select>
+
 </mapper>

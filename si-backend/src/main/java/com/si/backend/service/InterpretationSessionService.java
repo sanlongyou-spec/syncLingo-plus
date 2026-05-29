@@ -30,6 +30,7 @@ public class InterpretationSessionService {
 
     private final InterpretationSessionMapper sessionMapper;
     private final CostRatesProperties costRatesProperties;
+    private final ContentEmbeddingService contentEmbeddingService;
     private final Map<String, InterpretationSession> activeSessions = new ConcurrentHashMap<>();
 
     @PostConstruct
@@ -311,6 +312,9 @@ public class InterpretationSessionService {
         log.info("[InterpretationSessionService] deleteSession start, sessionId={}, userId={}", sessionId, userId);
         int updated = sessionMapper.softDelete(sessionId, userId);
         activeSessions.remove(sessionId);
+        if (updated > 0) {
+            contentEmbeddingService.deleteBySessionId(sessionId);
+        }
         log.info("[InterpretationSessionService] deleteSession end, sessionId={}, updated={}", sessionId, updated);
         return updated > 0;
     }

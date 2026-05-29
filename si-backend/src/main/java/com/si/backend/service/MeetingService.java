@@ -111,6 +111,8 @@ public class MeetingService {
     public void deleteFile(Long meetingId, Long fileId) {
         requireMeeting(meetingId);
         fileMapper.deleteById(fileId);
+        contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_SUMMARY, fileId);
+        contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_CONTENT, fileId);
     }
 
     public PersistentPreMeetingFile getFileWithContent(Long fileId) {

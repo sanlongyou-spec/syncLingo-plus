@@ -20,6 +20,7 @@ public class MeetingActionItemService {
     private final MeetingActionItemMapper actionItemMapper;
     private final InterpretationResultMapper resultMapper;
     private final LlmIntegration llmIntegration;
+    private final ContentEmbeddingService contentEmbeddingService;
 
     @PostConstruct
     public void initTable() {
@@ -71,6 +72,7 @@ public class MeetingActionItemService {
                 item.setStatus("pending");
                 actionItemMapper.insert(item);
                 saved.add(item);
+                contentEmbeddingService.asyncEmbedActionItem(item);
             }
             log.info("[MeetingActionItemService] extractAndSave done, sessionId={}, items={}",
                     sessionId, saved.size());
@@ -91,6 +93,7 @@ public class MeetingActionItemService {
     }
 
     public void delete(Long id) {
+        contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_ACTION_ITEM, id);
         actionItemMapper.deleteById(id);
     }
 }

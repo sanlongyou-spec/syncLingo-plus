@@ -2,6 +2,7 @@ package com.si.backend.mapper;
 
 import com.si.backend.dto.EmbedCandidate;
 import com.si.backend.entity.InterpretationEmbedding;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Options;
@@ -45,10 +46,16 @@ public interface InterpretationEmbeddingMapper {
     @Update("ALTER TABLE interpretation_embedding ADD COLUMN source_id BIGINT DEFAULT NULL")
     void addSourceIdColumnIfNotExists();
 
+    @Update("ALTER TABLE interpretation_embedding ADD COLUMN ref_id BIGINT DEFAULT NULL")
+    void addRefIdColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_embedding ADD INDEX idx_emb_refid (source_type, ref_id)")
+    void addRefIdIndexIfNotExists();
+
     @Update("ALTER TABLE interpretation_embedding ADD UNIQUE KEY uk_emb_source (source_type, source_id)")
     void addSourceUniqueIndexIfNotExists();
 
-    // ── Inserts ──────────────────────────────────────────────────────────
+    // ── Inserts / Upserts ────────────────────────────────────────────────
 
     @Insert("""
             INSERT INTO interpretation_embedding
@@ -61,17 +68,30 @@ public interface InterpretationEmbeddingMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationEmbedding emb);
 
-    /** Insert for non-result content types; silently ignored if (source_type, source_id) already exists. */
+    /**
+     * Upsert for non-result content types.
+     * ON DUPLICATE KEY UPDATE so re-generated content (new summary text) replaces the stale vector.
+     */
     @Insert("""
-            INSERT IGNORE INTO interpretation_embedding
-                (source_type, source_id, session_id, meeting_id, session_title, session_date,
+            INSERT INTO interpretation_embedding
+                (source_type, source_id, ref_id, session_id, meeting_id, session_title, session_date,
                  speaker_name, chunk_text, translated_text, embedding, create_time)
             VALUES
-                (#{sourceType}, #{sourceId}, #{sessionId}, #{meetingId}, #{sessionTitle}, #{sessionDate},
+                (#{sourceType}, #{sourceId}, #{refId}, #{sessionId}, #{meetingId}, #{sessionTitle}, #{sessionDate},
                  #{speakerName}, #{chunkText}, #{translatedText}, #{embedding}, NOW())
+            ON DUPLICATE KEY UPDATE
+                ref_id          = VALUES(ref_id),
+                session_id      = VALUES(session_id),
+                meeting_id      = VALUES(meeting_id),
+                session_title   = VALUES(session_title),
+                session_date    = VALUES(session_date),
+                speaker_name    = VALUES(speaker_name),
+                chunk_text      = VALUES(chunk_text),
+                translated_text = VALUES(translated_text),
+                embedding       = VALUES(embedding)
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
-    int insertContent(InterpretationEmbedding emb);
+    int upsertContent(InterpretationEmbedding emb);
 
     // ── Dedup queries ────────────────────────────────────────────────────
 
@@ -81,7 +101,42 @@ public interface InterpretationEmbeddingMapper {
     @Select("SELECT COUNT(*) FROM interpretation_embedding WHERE source_type = #{sourceType} AND source_id = #{sourceId}")
     int countBySourceTypeAndId(@Param("sourceType") String sourceType, @Param("sourceId") long sourceId);
 
-    // ── Queries ──────────────────────────────────────────────────────────
+    // ── Deletes ──────────────────────────────────────────────────────────
+
+    /** Remove all embeddings for a session (used when session is soft-deleted). */
+    @Delete("DELETE FROM interpretation_embedding WHERE session_id = #{sessionId}")
+    int deleteBySessionId(@Param("sessionId") String sessionId);
+
+    /** Remove embeddings by source type + ref_id (e.g., all chunks of a file, one action item). */
+    @Delete("DELETE FROM interpretation_embedding WHERE source_type = #{sourceType} AND ref_id = #{refId}")
+    int deleteBySourceTypeAndRefId(@Param("sourceType") String sourceType, @Param("refId") long refId);
+
+    /** Remove all embeddings for a meeting (used when meeting is deleted). */
+    @Delete("DELETE FROM interpretation_embedding WHERE meeting_id = #{meetingId}")
+    int deleteByMeetingId(@Param("meetingId") long meetingId);
+
+    /** Remove a single result embedding (used when individual result row is deleted). */
+    @Delete("DELETE FROM interpretation_embedding WHERE result_id = #{resultId}")
+    int deleteByResultId(@Param("resultId") long resultId);
+
+    // ── Rebuild candidates ───────────────────────────────────────────────
+
+    /** Sessions that have a meeting summary but no embedding for it yet. */
+    List<EmbedCandidate> findSessionsWithSummaryWithoutEmbedding(@Param("limit") int limit);
+
+    /** Speaker summary rows without an embedding. */
+    List<EmbedCandidate> findSpeakerSummariesWithoutEmbedding(@Param("limit") int limit);
+
+    /** Pre-meeting files without a file_summary embedding. */
+    List<EmbedCandidate> findFileSummariesWithoutEmbedding(@Param("limit") int limit);
+
+    /** Pre-meeting files whose content has not been embedded at all. */
+    List<EmbedCandidate> findFileContentsWithoutEmbedding(@Param("limit") int limit);
+
+    /** Action items without an embedding. */
+    List<EmbedCandidate> findActionItemsWithoutEmbedding(@Param("limit") int limit);
+
+    // ── Existing ─────────────────────────────────────────────────────────
 
     /** Dynamic filter query — implemented in InterpretationEmbeddingMapper.xml */
     List<InterpretationEmbedding> findByUserId(
