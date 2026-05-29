@@ -308,11 +308,13 @@ public class TeamsBotQueryService {
     }
 
     private boolean isHelpCommand(String lower) {
-        return List.of("help", "hi", "hello", "帮助", "菜单", "说明", "？", "?").contains(lower);
+        return List.of("help", "hi", "hello", "帮助", "菜单", "说明", "？", "?",
+                "你可以做什么", "能做什么", "有什么功能", "怎么用", "使用说明", "使用帮助").contains(lower);
     }
 
     private boolean isListCommand(String lower) {
-        return List.of("最近", "最近会议", "历史", "历史会议", "会议记录", "list", "history").contains(lower);
+        return List.of("最近", "最近会议", "历史", "历史会议", "会议记录", "list", "history",
+                "查看最近", "查看历史", "查看最近会议", "查看历史会议").contains(lower);
     }
 
     private Optional<String> argumentAfterPrefix(String original, String lower, List<String> prefixes) {
