@@ -182,6 +182,8 @@ public class AzureAsrIntegration {
         private final int maxSegmentChars;
         /** 已强制下发的文本长度，用于从 transcribed 结果中截取余下部分 */
         private final AtomicInteger forcedFinalLength = new AtomicInteger(0);
+        /** 上一次 Azure 返回的有效 speakerId，用于补全 interim 阶段 Unknown 的强制分段 */
+        private final AtomicReference<String> lastValidSpeakerId = new AtomicReference<>("");
 
         private final List<String> hotwords;
 
@@ -282,13 +284,14 @@ public class AzureAsrIntegration {
                     if (text != null && text.length() > alreadySent) {
                         String remainder = text.substring(Math.min(alreadySent, text.length())).trim();
                         if (!remainder.isBlank()) {
-                            log.info("[AsrSession] force-segment remainder, len={}", remainder.length());
+                            log.info("[AsrSession] force-segment remainder, len={}, speakerId={}", remainder.length(), speakerId);
                             callback.onRecognizing(remainder, lang, speakerId, true);
                         }
                     }
                     return;
                 }
                 callback.onRecognizing(text, lang, speakerId, true);
+                log.debug("[AsrSession] transcribed full, len={}, speakerId={}", text != null ? text.length() : 0, speakerId);
             });
 
             conversationTranscriber.canceled.addEventListener((s, e) -> {
@@ -327,8 +330,9 @@ public class AzureAsrIntegration {
                     continue;
                 }
                 emitted = true;
-                log.info("[AsrSession] force-segment by {}, len={}, lang={}", reason, segment.length(), lang);
-                callback.onRecognizing(segment, lang, speakerId, true);
+                String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                log.info("[AsrSession] force-segment by {}, len={}, lang={}, speakerId={}", reason, segment.length(), lang, resolvedSpeakerId);
+                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
             return emitted;
         }
@@ -512,7 +516,18 @@ public class AzureAsrIntegration {
             if (speakerId == null || speakerId.isBlank()) {
                 return Constants.SPEAKER_ID_UNKNOWN;
             }
+            // 更新有效 speakerId 缓存，供强制分段补全 Unknown 使用
+            lastValidSpeakerId.set(speakerId);
             return speakerId;
+        }
+
+        /** 当强制分段来自 interim 事件（speakerId 可能为 Unknown）时，用上一次有效 ID 补全 */
+        private String resolveSegmentSpeakerId(String speakerId) {
+            if (!Constants.SPEAKER_ID_UNKNOWN.equalsIgnoreCase(speakerId)) {
+                return speakerId;
+            }
+            String last = lastValidSpeakerId.get();
+            return (last != null && !last.isBlank()) ? last : speakerId;
         }
 
         private String resolveDetectedLanguage(SpeechRecognitionResult result) {
