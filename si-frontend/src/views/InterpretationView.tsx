@@ -746,13 +746,10 @@ export default function InterpretationView() {
     )
   }
 
-  const shareUrl = sessionId
-    ? `${window.location.origin}${window.location.pathname}#/share/${sessionId}`
-    : ''
+  const permanentShareUrl = `${window.location.origin}${window.location.pathname}#/share/user/${userId}`
 
   const copyShareLink = async () => {
-    if (!shareUrl) return
-    await navigator.clipboard.writeText(shareUrl)
+    await navigator.clipboard.writeText(permanentShareUrl)
   }
 
 
@@ -781,12 +778,10 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">$</span>
             <span>成本分析</span>
           </button>
-          {sessionId && (
-            <button className="si-side-action" onClick={copyShareLink}>
-              <span className="si-side-action-icon">S</span>
-              <span>复制分享链接</span>
-            </button>
-          )}
+          <button className="si-side-action" onClick={copyShareLink}>
+            <span className="si-side-action-icon">S</span>
+            <span>复制分享链接</span>
+          </button>
         </div>
       </aside>
 

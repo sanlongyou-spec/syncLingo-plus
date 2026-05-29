@@ -274,6 +274,18 @@ public class InterpretationSessionService {
         return sessionMapper.findByMeetingId(meetingId);
     }
 
+    public Optional<InterpretationSession> getActiveSessionForUser(Long userId) {
+        InterpretationSession active = activeSessions.values().stream()
+                .filter(s -> userId.equals(s.getUserId())
+                        && Constants.SESSION_STATUS_RUNNING.equals(s.getStatus()))
+                .findFirst()
+                .orElse(null);
+        if (active != null) {
+            return Optional.of(active);
+        }
+        return Optional.ofNullable(sessionMapper.findActiveByUserId(userId));
+    }
+
     public List<InterpretationSession> searchUserSessions(Long userId, String keyword) {
         log.info("[InterpretationSessionService] searchUserSessions start, userId={}, keyword={}", userId, keyword);
         List<InterpretationSession> sessions = sessionMapper.searchByUserId(userId, keyword);

@@ -71,6 +71,9 @@ export const saveInterpretationResult = (params: SaveInterpretationResultParams)
 export const getPublicInterpretationResults = (sessionId: string): Promise<Result<InterpretationResultItem[]>> =>
   client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`).then(r => r.data)
 
+export const getActiveSessionForUser = (userId: number): Promise<Result<string | null>> =>
+  client.get<Result<string | null>>(`/api/interpretation/public/user/${userId}/active`).then(r => r.data)
+
 export const getUserInterpretationSessions = (userId: number, keyword = ''): Promise<Result<InterpretationStatus[]>> =>
   client.get<Result<InterpretationStatus[]>>(`/api/interpretation/users/${userId}/sessions`, { params: { keyword } }).then(r => r.data)
 

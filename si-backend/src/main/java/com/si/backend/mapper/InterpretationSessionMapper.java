@@ -71,6 +71,9 @@ public interface InterpretationSessionMapper {
     @Select("SELECT * FROM interpretation_session WHERE user_id = #{userId} AND COALESCE(deleted, 0) = 0 ORDER BY create_time DESC")
     java.util.List<InterpretationSession> findByUserId(Long userId);
 
+    @Select("SELECT * FROM interpretation_session WHERE user_id = #{userId} AND status = 'running' AND COALESCE(deleted, 0) = 0 ORDER BY start_time DESC LIMIT 1")
+    InterpretationSession findActiveByUserId(@Param("userId") Long userId);
+
     @Select("""
             SELECT s.*,
                    (SELECT COUNT(*) FROM interpretation_result r WHERE r.session_id = s.session_id) AS result_count

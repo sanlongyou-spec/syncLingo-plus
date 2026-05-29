@@ -84,6 +84,12 @@ public class InterpretationFacade {
                 .orElse(null);
     }
 
+    public String getActiveSessionIdForUser(Long userId) {
+        return sessionService.getActiveSessionForUser(userId)
+                .map(InterpretationSession::getSessionId)
+                .orElse(null);
+    }
+
     public InterpretationSessionVo getSessionHistory(String sessionId) {
         InterpretationSession session = sessionService.getSessionHistory(sessionId);
         if (session == null) return null;

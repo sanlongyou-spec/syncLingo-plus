@@ -101,6 +101,14 @@ public class InterpretationController {
         return Result.ok(result);
     }
 
+    @GetMapping("/public/user/{userId}/active")
+    public Result<String> getActiveSessionForUser(@PathVariable Long userId) {
+        log.info("[InterpretationController] getActiveSessionForUser, userId={}", userId);
+        String sessionId = facade.getActiveSessionIdForUser(userId);
+        log.info("[InterpretationController] getActiveSessionForUser end, userId={}, sessionId={}", userId, sessionId);
+        return Result.ok(sessionId);
+    }
+
     @GetMapping("/public/{sessionId}/results")
     public Result<java.util.List<InterpretationResultItemVo>> getPublicResults(@PathVariable String sessionId) {
         log.info("[InterpretationController] getPublicResults start, sessionId={}", sessionId);

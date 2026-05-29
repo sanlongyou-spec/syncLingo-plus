@@ -6,6 +6,7 @@ import InterpretationView from './views/InterpretationView'
 import VoiceCloneView from './views/VoiceCloneView'
 import LoginView from './views/LoginView'
 import ShareView from './views/ShareView'
+import UserShareView from './views/UserShareView'
 import HistoryView from './views/HistoryView'
 import TerminologyView from './views/TerminologyView'
 import TeamsBotView from './views/TeamsBotView'
@@ -62,6 +63,7 @@ const App = () => {
       <Routes>
         <Route path="/login" element={<LoginView />} />
         <Route path="/share/:sessionId" element={<ShareView />} />
+        <Route path="/share/user/:userId" element={<UserShareView />} />
         <Route path="*" element={<RequireAuth><AuthenticatedWorkspace /></RequireAuth>} />
       </Routes>
     </HashRouter>
