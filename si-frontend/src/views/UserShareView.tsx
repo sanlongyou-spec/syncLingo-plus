@@ -357,7 +357,8 @@ export default function UserShareView() {
                 )}
 
                 {items.map(item => {
-                  const currSpeaker = item.speakerName || mappedSpeakerName(item.speakerId, speakerNameMap) || item.speakerId || null
+                  const rawId = isUnknownSpeakerId(item.speakerId) ? null : (item.speakerId || null)
+                  const currSpeaker = item.speakerName || mappedSpeakerName(item.speakerId, speakerNameMap) || rawId
                   return (
                     <div key={item.id} className={`si-tri-block ${item.isStreaming ? 'si-tri-block--partial' : ''}`}>
                       <div className="si-tri-share-line">
@@ -387,14 +388,13 @@ export default function UserShareView() {
                       <span>实时识别中</span>
                     </div>
                     <div className="si-tri-share-line">
-                      {currentSpeakerName || mappedSpeakerName(currentSpeakerId, speakerNameMap) || currentSpeakerId
-                        ? (
-                          <span className="si-tri-line-lang-badge">
-                            {currentSpeakerName || mappedSpeakerName(currentSpeakerId, speakerNameMap) || currentSpeakerId}
-                          </span>
-                        )
-                        : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>
-                      }
+                      {(() => {
+                        const rawCurrId = isUnknownSpeakerId(currentSpeakerId) ? '' : currentSpeakerId
+                        const label = currentSpeakerName || mappedSpeakerName(currentSpeakerId, speakerNameMap) || rawCurrId
+                        return label
+                          ? <span className="si-tri-line-lang-badge">{label}</span>
+                          : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>
+                      })()}
                       {currentRecognizing}
                     </div>
                     {currentLanguage && (

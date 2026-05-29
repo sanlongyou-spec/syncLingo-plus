@@ -731,7 +731,7 @@ export default function InterpretationView() {
 
   const voiceCodeForDisplay = (speakerId?: string) => {
     const code = normalizeVoiceCode(speakerId)
-    if (!code) return ''
+    if (!code || isUnknownSpeakerId(code)) return ''
     return code.length <= 18 ? code : `${code.slice(0, 8)}...${code.slice(-6)}`
   }
 
