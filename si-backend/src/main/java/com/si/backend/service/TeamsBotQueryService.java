@@ -309,7 +309,8 @@ public class TeamsBotQueryService {
 
     private boolean isHelpCommand(String lower) {
         return List.of("help", "hi", "hello", "帮助", "菜单", "说明", "？", "?",
-                "你可以做什么", "能做什么", "有什么功能", "怎么用", "使用说明", "使用帮助").contains(lower);
+                "你可以做什么", "能做什么", "有什么功能", "怎么用", "使用说明", "使用帮助",
+                "查看纪要", "查看摘要", "查看总结").contains(lower);
     }
 
     private boolean isListCommand(String lower) {
@@ -323,7 +324,15 @@ public class TeamsBotQueryService {
             if (lower.equals(normalizedPrefix)) {
                 return Optional.of("");
             }
+            // English: "search keyword" — split by space
             if (lower.startsWith(normalizedPrefix + " ")) {
+                return Optional.of(original.substring(prefix.length()).trim());
+            }
+            // Chinese: "总结班长的战争..." — no space between prefix and argument.
+            // Only apply for multi-char prefixes to avoid false positives (e.g. single char "查").
+            if (normalizedPrefix.length() >= 2
+                    && lower.length() > normalizedPrefix.length()
+                    && lower.startsWith(normalizedPrefix)) {
                 return Optional.of(original.substring(prefix.length()).trim());
             }
         }
