@@ -84,6 +84,10 @@ const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
 
 const MIN_SPEAKER_CHANGE_CHARS = 30
+// A candidate new speaker (name-based) must sustain this many chars before the turn
+// is committed, so a brief mid-speech misidentification is folded back to the
+// current speaker instead of cutting their turn short / triggering a stray summary.
+const MIN_NAME_CHANGE_CHARS = 30
 
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
@@ -126,6 +130,12 @@ export default function InterpretationView() {
   // Name-based tracking for Unknown speakers resolved via Pyannote (in translated messages)
   const nameBufferRef = useRef<Record<string, string>>({})
   const prevResolvedNameRef = useRef('')
+  // Candidate new speaker (name-based) accumulates here until MIN_NAME_CHANGE_CHARS;
+  // rejects brief mid-speech misidentifications before committing a turn change.
+  const pendingNameRef = useRef<{ name: string; buffer: string } | null>(null)
+  // (4) Text whose speaker is not yet resolved by voiceprint; re-attributed to the
+  // speaker once their identity resolves, instead of being dropped from the summary.
+  const provisionalNameTextRef = useRef('')
 
   const streamContextRef = useRef<AudioContext | null>(null)
   const streamDestZhRef = useRef<MediaStreamAudioDestinationNode | null>(null)
@@ -481,22 +491,79 @@ export default function InterpretationView() {
             },
           ]
         })
-        // Name-based speaker change detection for Pyannote-resolved speakers.
-        // "Unknown" is Azure's placeholder before Pyannote identifies the speaker —
-        // only trigger when we have a genuinely resolved name.
+        // Name-based speaker turn detection for voiceprint-resolved speakers.
+        // Drives the per-speaker-turn summary off the resolved NAME (the reliable
+        // signal) instead of the diarization id. Active whenever the diarization id
+        // is missing or still "Unknown" — i.e. the speaker was resolved by voiceprint
+        // (name) but Azure did not assign a stable distinct id. When a genuine known
+        // id IS present, the id-based path above handles turn detection instead.
         const isResolved = (n: string) => !!n && n !== 'Unknown' && !n.startsWith('Unknown ')
-        if (!messageSpeakerId && isResolved(messageSpeakerName) && originalText) {
-          nameBufferRef.current[messageSpeakerName] =
-            ((nameBufferRef.current[messageSpeakerName] || '') + ' ' + originalText).trim()
-          const prevName = prevResolvedNameRef.current
-          if (isResolved(prevName) && prevName !== messageSpeakerName) {
-            const prevText = nameBufferRef.current[prevName] || ''
-            if (prevText.length >= 30 && sessionIdRef.current) {
-              void triggerSpeakerSummary('', prevName, prevText, sessionIdRef.current)
+        const nameTrackingActive = !messageSpeakerId || isUnknownSpeakerId(messageSpeakerId)
+        if (nameTrackingActive && originalText) {
+          if (isResolved(messageSpeakerName)) {
+            const speaker = messageSpeakerName
+            // (4) Async re-attribution: fold in any text that arrived before this
+            // speaker's identity was resolved — it is attributed once the name is known.
+            const incoming = provisionalNameTextRef.current
+              ? (provisionalNameTextRef.current + ' ' + originalText).trim()
+              : originalText
+            provisionalNameTextRef.current = ''
+            const prevName = prevResolvedNameRef.current
+            if (!isResolved(prevName)) {
+              // First resolved speaker of the session — adopt directly.
+              nameBufferRef.current[speaker] =
+                ((nameBufferRef.current[speaker] || '') + ' ' + incoming).trim()
+              prevResolvedNameRef.current = speaker
+              pendingNameRef.current = null
+            } else if (speaker === prevName) {
+              // Same confirmed speaker — fold back any pending candidate (it was a
+              // brief misidentification) and append to the current speaker's buffer.
+              const pending = pendingNameRef.current
+              if (pending) {
+                nameBufferRef.current[speaker] =
+                  ((nameBufferRef.current[speaker] || '') + ' ' + pending.buffer).trim()
+                pendingNameRef.current = null
+              }
+              nameBufferRef.current[speaker] =
+                ((nameBufferRef.current[speaker] || '') + ' ' + incoming).trim()
+            } else {
+              // Different speaker — buffer as a candidate until it sustains enough
+              // text, so a one-off mid-speech misidentification does not switch turns.
+              const pending = pendingNameRef.current
+              if (pending?.name === speaker) {
+                pending.buffer = (pending.buffer + ' ' + incoming).trim()
+                if (pending.buffer.length >= MIN_NAME_CHANGE_CHARS) {
+                  // Sustained — commit the turn change and summarize the previous speaker.
+                  const prevText = nameBufferRef.current[prevName] || ''
+                  console.debug('[InterpretationView] speaker turn change (name-based):',
+                    { from: prevName, to: speaker, prevTextLen: prevText.length })
+                  if (prevText.length >= 30 && sessionIdRef.current) {
+                    void triggerSpeakerSummary('', prevName, prevText, sessionIdRef.current)
+                  }
+                  delete nameBufferRef.current[prevName]
+                  nameBufferRef.current[speaker] =
+                    ((nameBufferRef.current[speaker] || '') + ' ' + pending.buffer).trim()
+                  prevResolvedNameRef.current = speaker
+                  pendingNameRef.current = null
+                }
+              } else {
+                // New candidate — discard the prior unconfirmed candidate by folding it
+                // back to the current speaker (it never sustained), then start fresh.
+                if (pending) {
+                  nameBufferRef.current[prevName] =
+                    ((nameBufferRef.current[prevName] || '') + ' ' + pending.buffer).trim()
+                }
+                pendingNameRef.current = { name: speaker, buffer: incoming }
+              }
             }
-            delete nameBufferRef.current[prevName]
+          } else {
+            // (4) Name not resolved yet — stash text so it can be attributed to the
+            // speaker once the voiceprint resolves the identity (instead of dropping it).
+            provisionalNameTextRef.current =
+              (provisionalNameTextRef.current
+                ? provisionalNameTextRef.current + ' ' + originalText
+                : originalText).trim()
           }
-          prevResolvedNameRef.current = messageSpeakerName
         }
         break
       }
@@ -556,6 +623,14 @@ export default function InterpretationView() {
         currentSpeakerIdRef.current = ''
         speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''
+        // Reset speaker-turn tracking so a new session never inherits stale buffers.
+        speakerBufferRef.current = {}
+        prevFinalSpeakerRef.current = ''
+        pendingSpeakerRef.current = null
+        nameBufferRef.current = {}
+        prevResolvedNameRef.current = ''
+        pendingNameRef.current = null
+        provisionalNameTextRef.current = ''
         break
       case 'stopped':
         setIsRunning(false)
@@ -569,8 +644,12 @@ export default function InterpretationView() {
   const triggerSpeakerSummary = useCallback(async (
     speakerId: string, speakerName: string, text: string, sid: string,
   ) => {
+    console.info('[InterpretationView] triggerSpeakerSummary start:',
+      { speakerName, speakerId, textLen: text.length, sessionId: sid })
     try {
-      await generateSpeakerSummary({ userId, sessionId: sid, speakerId, speakerName, text })
+      const res = await generateSpeakerSummary({ userId, sessionId: sid, speakerId, speakerName, text })
+      console.info('[InterpretationView] triggerSpeakerSummary done:',
+        { speakerName, title: res.data?.title, summaryLen: res.data?.summary?.length })
     } catch (e) {
       console.warn('[InterpretationView] speaker summary failed:', e)
     }
@@ -677,6 +756,34 @@ export default function InterpretationView() {
     speakerBufferRef.current = {}
     prevFinalSpeakerRef.current = ''
     pendingSpeakerRef.current = null
+    // Resolve any pending name candidate before the final name-based flush.
+    const pendingName = pendingNameRef.current
+    if (pendingName) {
+      const prevName = prevResolvedNameRef.current
+      if (pendingName.buffer.length >= MIN_NAME_CHANGE_CHARS) {
+        // Sustained at end of session — commit the change and summarize the previous speaker.
+        if (prevName && prevName !== 'Unknown' && !prevName.startsWith('Unknown ')) {
+          const prevText = nameBufferRef.current[prevName] || ''
+          if (prevText.length >= 30) void triggerSpeakerSummary('', prevName, prevText, sid)
+          delete nameBufferRef.current[prevName]
+        }
+        nameBufferRef.current[pendingName.name] =
+          ((nameBufferRef.current[pendingName.name] || '') + ' ' + pendingName.buffer).trim()
+        prevResolvedNameRef.current = pendingName.name
+      } else if (prevName) {
+        // Too short — fold back to the current speaker (mid-speech misidentification).
+        nameBufferRef.current[prevName] =
+          ((nameBufferRef.current[prevName] || '') + ' ' + pendingName.buffer).trim()
+      }
+      pendingNameRef.current = null
+    }
+    // (4) Attribute any leftover unresolved text to the current speaker before flushing.
+    if (provisionalNameTextRef.current && prevResolvedNameRef.current) {
+      const cur = prevResolvedNameRef.current
+      nameBufferRef.current[cur] =
+        ((nameBufferRef.current[cur] || '') + ' ' + provisionalNameTextRef.current).trim()
+    }
+    provisionalNameTextRef.current = ''
     // Flush last Pyannote-resolved speaker's buffer (skip if still "Unknown")
     const lastResolvedName = prevResolvedNameRef.current
     const lastNameText = nameBufferRef.current[lastResolvedName] || ''
@@ -685,6 +792,8 @@ export default function InterpretationView() {
     }
     nameBufferRef.current = {}
     prevResolvedNameRef.current = ''
+    pendingNameRef.current = null
+    provisionalNameTextRef.current = ''
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null

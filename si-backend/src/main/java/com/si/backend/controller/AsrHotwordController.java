@@ -59,6 +59,20 @@ public class AsrHotwordController {
         return Result.ok(result);
     }
 
+    @PostMapping("/from-meeting")
+    public Result<List<AsrHotwordVo>> createFromMeeting(
+            @RequestParam Long userId,
+            @RequestBody com.si.backend.dto.MeetingHotwordsRequest request) {
+        int nameCount = request != null && request.getNames() != null ? request.getNames().size() : 0;
+        log.info("[AsrHotwordController] createFromMeeting start, userId={}, names={}", userId, nameCount);
+        List<AsrHotwordVo> result = facade.createFromMeeting(
+                userId,
+                request != null ? request.getNames() : null,
+                request != null ? request.getVenue() : null);
+        log.info("[AsrHotwordController] createFromMeeting end, userId={}, created={}", userId, result.size());
+        return Result.ok(result);
+    }
+
     @PutMapping("/{id}")
     public Result<Void> update(@PathVariable Long id, @RequestParam Long userId, @RequestBody SaveAsrHotwordRequest request) {
         log.info("[AsrHotwordController] update start, id={}, userId={}", id, userId);

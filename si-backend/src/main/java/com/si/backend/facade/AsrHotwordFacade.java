@@ -61,6 +61,16 @@ public class AsrHotwordFacade {
         return result;
     }
 
+    public List<AsrHotwordVo> createFromMeeting(Long userId, List<String> names, String venue) {
+        log.info("[AsrHotwordFacade] createFromMeeting start, userId={}, names={}, hasVenue={}",
+                userId, names != null ? names.size() : 0, venue != null && !venue.isBlank());
+        List<AsrHotwordVo> result = hotwordService.saveMeetingEntities(userId, names, venue, "TEAMS_MEETING").stream()
+                .map(this::toVo)
+                .toList();
+        log.info("[AsrHotwordFacade] createFromMeeting end, userId={}, created={}", userId, result.size());
+        return result;
+    }
+
     public void update(Long id, Long userId, SaveAsrHotwordRequest request) {
         log.info("[AsrHotwordFacade] update start, id={}, userId={}", id, userId);
         hotwordService.update(id, userId, toEntity(request));

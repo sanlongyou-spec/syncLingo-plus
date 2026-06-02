@@ -39,6 +39,7 @@ import java.io.InputStream;
 import java.text.Normalizer;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -88,6 +89,7 @@ public class PreMeetingService {
     private final PreMeetingUsageMapper usageMapper;
     private final InterpretationResultMapper interpretationResultMapper;
     private final VectorSearchService vectorSearchService;
+    private final RagEnhancementService ragEnhancementService;
     private final com.si.backend.mapper.InterpretationSessionMapper interpretationSessionMapper;
     private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
     private final com.si.backend.mapper.PersistentPreMeetingFileMapper persistentFileMapper;
@@ -141,6 +143,45 @@ public class PreMeetingService {
     public String getDocText(String fileId) {
         PreMeetingDoc doc = store.get(fileId);
         return doc != null ? doc.text() : "";
+    }
+
+    /** Expected participant names + meeting venue parsed from an uploaded meeting agenda. */
+    public record MeetingEntities(List<String> participantNames, String venue) {}
+
+    /**
+     * Extracts expected participant names and the meeting venue from a stored agenda file,
+     * for feeding into the ASR hotword list.
+     */
+    public MeetingEntities extractMeetingEntities(String fileId) {
+        PreMeetingDoc doc = store.get(fileId);
+        if (doc == null) {
+            return new MeetingEntities(List.of(), null);
+        }
+        List<String> names = parseExpectedParticipants(doc.text()).stream()
+                .map(ExpectedParticipant::name)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList();
+        String venue = parseMeetingVenue(doc.text());
+        log.info("[PreMeetingService] extractMeetingEntities, fileId={}, names={}, hasVenue={}",
+                fileId, names.size(), venue != null && !venue.isBlank());
+        return new MeetingEntities(names, venue);
+    }
+
+    private String parseMeetingVenue(String text) {
+        if (text == null) return null;
+        for (String rawLine : text.split("\\R")) {
+            String line = normalizeLine(rawLine);
+            if (line.contains("会议地点") || line.contains("会议室")
+                    || line.contains("会议场地") || line.startsWith("地点")) {
+                String venue = substringAfterColon(line);
+                if (venue == null || venue.isBlank()) {
+                    continue;
+                }
+                return venue.length() > 40 ? venue.substring(0, 40).trim() : venue.trim();
+            }
+        }
+        return null;
     }
 
     public String extractFileText(byte[] bytes, String ext, String fileName) throws IOException {
@@ -1057,14 +1098,14 @@ public class PreMeetingService {
     public UnifiedContextResult buildUnifiedContextResult(long userId, String question, QuestionFilter filter) {
         log.info("[PreMeetingService] buildUnifiedContext vector, userId={}", userId);
         try {
-            float[] queryVec = llmIntegration.embed(question);
-            List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
-                    userId, queryVec,
-                    filter.meetingId(), filter.speakerName(), filter.since(), 40);
+            // P0: multi-query expansion → merged recall → LLM rerank (all no-ops when flags off).
+            List<String> queries = ragEnhancementService.expandQueries(question);
+            List<VectorSearchService.SearchResult> hits = multiQueryRecall(userId, queries, filter, 40);
             if (hits.isEmpty()) {
                 log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions=0, sources=0", userId);
                 return new UnifiedContextResult("", List.of());
             }
+            hits = ragEnhancementService.rerank(question, hits);
 
             Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
             for (VectorSearchService.SearchResult hit : hits) {
@@ -1115,6 +1156,34 @@ public class PreMeetingService {
             log.warn("[PreMeetingService] buildUnifiedContext embed failed: {}", e.getMessage());
             return new UnifiedContextResult("", List.of());
         }
+    }
+
+    /** Embeds each (expanded) query, runs vector search, and merges hits keeping the best score per chunk. */
+    private List<VectorSearchService.SearchResult> multiQueryRecall(
+            long userId, List<String> queries, QuestionFilter filter, int perQueryTopK) {
+        Map<String, VectorSearchService.SearchResult> merged = new LinkedHashMap<>();
+        for (String q : queries) {
+            float[] vec;
+            try {
+                vec = llmIntegration.embed(q);
+            } catch (Exception e) {
+                log.warn("[PreMeetingService] multiQueryRecall embed failed for a query: {}", e.getMessage());
+                continue;
+            }
+            List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
+                    userId, vec, filter.meetingId(), filter.speakerName(), filter.since(), perQueryTopK);
+            for (VectorSearchService.SearchResult h : hits) {
+                String key = h.sourceType() + "|" + h.sourceId() + "|" + h.refId() + "|"
+                        + (h.sourceText() == null ? "" : h.sourceText());
+                VectorSearchService.SearchResult existing = merged.get(key);
+                if (existing == null || h.score() > existing.score()) {
+                    merged.put(key, h);
+                }
+            }
+        }
+        List<VectorSearchService.SearchResult> out = new ArrayList<>(merged.values());
+        out.sort(Comparator.comparingDouble((VectorSearchService.SearchResult r) -> (double) r.score()).reversed());
+        return out;
     }
 
     private String sourceGroupKey(VectorSearchService.SearchResult hit) {

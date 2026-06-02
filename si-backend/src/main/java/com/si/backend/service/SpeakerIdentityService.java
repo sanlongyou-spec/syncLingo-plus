@@ -36,12 +36,18 @@ public class SpeakerIdentityService {
     private static final String SOURCE_SPEAKER_SERVICE = "SPEAKER_SERVICE";
     private static final String SOURCE_MANUAL = "MANUAL";
     private static final String SOURCE_UNKNOWN = "UNKNOWN";
+    private static final String SOURCE_INHERITED = "INHERITED";
 
 
     private final SpeakerIdentityMapper mapper;
     private final SpeakerServiceIntegration speakerServiceIntegration;
+    private final com.si.backend.config.SpeakerServiceProperties speakerServiceProperties;
 
     private final Map<String, SessionSpeakerIdentity> sessionIdentityMap = new ConcurrentHashMap<>();
+    /** Per-stream (sessionId:speakerId) last-accepted speaker + score, for switch hysteresis. */
+    private final Map<String, ResolvedScore> hysteresisMap = new ConcurrentHashMap<>();
+    /** Per-session last successfully-resolved speaker, used to attribute Azure "Unknown" segments. */
+    private final Map<String, SessionSpeakerIdentity> sessionLastResolvedMap = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void initTable() {
@@ -57,6 +63,36 @@ public class SpeakerIdentityService {
     public void cleanupSession(String sessionId) {
         log.info("[SpeakerIdentityService] cleanupSession, sessionId={}", sessionId);
         sessionIdentityMap.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
+        hysteresisMap.keySet().removeIf(key -> key.startsWith(sessionId + ":"));
+        sessionLastResolvedMap.remove(sessionId);
+    }
+
+    /**
+     * Switch hysteresis: once a stream (sessionId:speakerId) has a resolved speaker,
+     * a differing identification only replaces it when the new score is high-confidence
+     * (>= switchScore). Low-confidence differing readings are treated as brief
+     * mid-speech misidentifications and the current speaker is kept.
+     *
+     * @return the speaker name to actually use after hysteresis.
+     */
+    private String applyHysteresis(String sessionId, String speakerId, String candidateName, double score) {
+        String key = buildKey(sessionId, speakerId);
+        ResolvedScore incumbent = hysteresisMap.get(key);
+        if (incumbent == null || incumbent.personName().equals(candidateName)) {
+            hysteresisMap.put(key, new ResolvedScore(candidateName, score));
+            return candidateName;
+        }
+        double switchScore = speakerServiceProperties.getSwitchScore() != null
+                ? speakerServiceProperties.getSwitchScore() : 0.45D;
+        if (score >= switchScore) {
+            log.info("[SpeakerIdentityService] hysteresis switch, sessionId={}, speakerId={}, {}(s={}) -> {}(s={})",
+                    sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score);
+            hysteresisMap.put(key, new ResolvedScore(candidateName, score));
+            return candidateName;
+        }
+        log.info("[SpeakerIdentityService] hysteresis kept incumbent, sessionId={}, speakerId={}, keep={}(s={}), rejected={}(s={}), switchScore={}",
+                sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score, switchScore);
+        return incumbent.personName();
     }
 
     public SpeakerIdentityVo saveIdentity(Long id, SaveSpeakerIdentityRequest request) {
@@ -142,7 +178,7 @@ public class SpeakerIdentityService {
             }
         }
         if (!speakerServiceIntegration.isEnabled()) {
-            SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
+            SessionSpeakerIdentity unknown = unknownOutcome(sessionId, speakerId, transientUnknownSpeaker);
             if (!transientUnknownSpeaker) {
                 sessionIdentityMap.putIfAbsent(key, unknown);
             }
@@ -151,7 +187,7 @@ public class SpeakerIdentityService {
 
         List<SpeakerIdentity> candidates = mapper.findAllWithSpeakerProfile();
         if (candidates.isEmpty() || recentPcm == null || recentPcm.length == 0) {
-            SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
+            SessionSpeakerIdentity unknown = unknownOutcome(sessionId, speakerId, transientUnknownSpeaker);
             if (!transientUnknownSpeaker) {
                 sessionIdentityMap.putIfAbsent(key, unknown);
             }
@@ -165,7 +201,9 @@ public class SpeakerIdentityService {
                 .toList();
         Optional<IdentifyResult> ssResult = speakerServiceIntegration.identify(recentPcm, names);
         if (ssResult.isPresent()) {
-            String personName = ssResult.get().getPersonName();
+            String candidateName = ssResult.get().getPersonName();
+            double score = ssResult.get().getScore() != null ? ssResult.get().getScore() : 0d;
+            String personName = applyHysteresis(sessionId, speakerId, candidateName, score);
             SpeakerIdentity identity = mapper.findByPersonName(personName);
             if (identity != null) {
                 SessionSpeakerIdentity resolved = SessionSpeakerIdentity.builder()
@@ -180,16 +218,44 @@ public class SpeakerIdentityService {
                 if (!transientUnknownSpeaker) {
                     sessionIdentityMap.put(key, resolved);
                 }
-                log.info("[SpeakerIdentityService] speaker identified, sessionId={}, speakerId={}, personName={}, score={}",
-                        sessionId, speakerId, personName, ssResult.get().getScore());
+                sessionLastResolvedMap.put(sessionId, resolved);
+                log.info("[SpeakerIdentityService] speaker identified, sessionId={}, speakerId={}, personName={}, candidate={}, score={}",
+                        sessionId, speakerId, personName, candidateName, score);
                 return resolved.toResolution();
             }
         }
-        SessionSpeakerIdentity unknown = unknownSessionIdentity(sessionId, speakerId);
+        SessionSpeakerIdentity unknown = unknownOutcome(sessionId, speakerId, transientUnknownSpeaker);
         if (!transientUnknownSpeaker) {
             sessionIdentityMap.putIfAbsent(key, unknown);
         }
         return unknown.toResolution();
+    }
+
+    /**
+     * Outcome when a speaker could not be identified. For an Azure "Unknown" segment
+     * (diarization could not attribute it — common in real-time), attribute it to the
+     * last confirmed speaker of the session instead of leaving it nameless, since such
+     * segments are almost always the current speaker continuing. Voiceprint is still
+     * tried first; this only applies when it cannot decide.
+     */
+    private SessionSpeakerIdentity unknownOutcome(String sessionId, String speakerId, boolean transientUnknownSpeaker) {
+        if (transientUnknownSpeaker) {
+            SessionSpeakerIdentity last = sessionLastResolvedMap.get(sessionId);
+            if (last != null && last.getPersonName() != null && !last.getPersonName().isBlank()) {
+                log.info("[SpeakerIdentityService] Unknown segment inherits last confirmed speaker, sessionId={}, personName={}",
+                        sessionId, last.getPersonName());
+                return SessionSpeakerIdentity.builder()
+                        .sessionId(sessionId)
+                        .speakerId(speakerId)
+                        .personName(last.getPersonName())
+                        .speakerProfileId(last.getSpeakerProfileId())
+                        .cartesiaVoiceId(last.getCartesiaVoiceId())
+                        .status(STATUS_IDENTIFIED)
+                        .source(SOURCE_INHERITED)
+                        .build();
+            }
+        }
+        return unknownSessionIdentity(sessionId, speakerId);
     }
 
     public SessionSpeakerIdentityVo mapSessionSpeaker(String sessionId, String speakerId, String personName) {
@@ -213,6 +279,7 @@ public class SpeakerIdentityService {
                 .source(SOURCE_MANUAL)
                 .build();
         sessionIdentityMap.put(buildKey(sessionId, speakerId), mapped);
+        sessionLastResolvedMap.put(sessionId, mapped);
         log.info("[SpeakerIdentityService] mapSessionSpeaker end, sessionId={}, speakerId={}, personName={}",
                 sessionId, speakerId, normalizedName);
         return toVo(mapped);
@@ -363,6 +430,9 @@ public class SpeakerIdentityService {
         String normalized = normalize(value);
         return normalized.isBlank() ? null : normalized;
     }
+
+    /** Last-accepted speaker name + cosine score for a stream, used for switch hysteresis. */
+    private record ResolvedScore(String personName, double score) {}
 
     @Data
     @Builder

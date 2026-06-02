@@ -859,6 +859,66 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十、2026-06-02 LLM 供应商迁移 + 发言人抗干扰 + RAG 增强（P0）
+
+### 10.1 发言人识别抗干扰（说话中途偶发认错）
+- **姓名路径触发修复 + 去抖**（[InterpretationView.tsx](../si-frontend/src/views/InterpretationView.tsx)）：原"基于姓名"的发言摘要触发是死代码（被 `!messageSpeakerId` 拦截）；改为当 id 缺失或为 `Unknown` 时启用，并加 `MIN_NAME_CHANGE_CHARS=30` 候选去抖——换人需持续到阈值才确认，短促误判折回当前发言人；会话起止清空缓冲，避免跨会话污染。
+- **声纹迟滞 hysteresis**（[SpeakerIdentityService](../si-backend/src/main/java/com/si/backend/service/SpeakerIdentityService.java)）：每条流维护"当前已确认说话人+分数"，候选与当前不同时需分数 ≥ `switchScore`（默认 0.45，`SPEAKER_SERVICE_SWITCH_SCORE`）才换人，低置信差异判为误识别、保持当前。
+- **Unknown 段继承上一位**：Azure 实时分轨约 40% 句返回 `speakerId=Unknown`（日志实测 Guest-1×14 / Unknown×9），导致这些句无人名。改为：Unknown 段先跑声纹（用最近音频），声纹也认不出时**继承本会话上一位已确认说话人**（`source=INHERITED`），不再留空。
+
+### 10.2 会议参会人 / 场地自动入 ASR 热词
+- 上传会议安排（[PreMeetingController.upload](../si-backend/src/main/java/com/si/backend/controller/PreMeetingController.java) 异步块）→ 解析参会人姓名 + 会议地点写入热词（`MEETING_AGENDA`）。
+- Teams Bot 拉取参会人（[TeamsBotView.persistKnownParticipants](../si-frontend/src/views/TeamsBotView.tsx)）→ `POST /api/asr-hotwords/from-meeting`（`TEAMS_MEETING`）。
+- 服务端去重（`AsrHotwordService.saveMeetingEntities`，`language=null` 全语种生效、weight=2.0）；新增 DTO `MeetingHotwordsRequest`。
+
+### 10.3 LLM 供应商迁移：DashScope/Qwen → OpenRouter（删除 DashScope）
+- **聊天**全部走 OpenRouter：压缩 `anthropic/claude-haiku-4.5`（按段调用、便宜快），纪要/文件总结/跨会议问答 `anthropic/claude-sonnet-4.5`。
+- **Embedding** 也走 OpenRouter：`openai/text-embedding-3-small`（**1536 维**）。代码新增独立 embedding 端点支持（[OpenAiProperties](../si-backend/src/main/java/com/si/backend/config/OpenAiProperties.java) 的 `embeddingBaseUrl`/`embeddingApiKey` + `effective*` 回退；[LlmIntegration.embed](../si-backend/src/main/java/com/si/backend/integration/LlmIntegration.java) 使用），留空即复用聊天端点。
+- 项目自身代码已无 DashScope 残留；密钥仅存于 gitignored `si-backend/.env`。
+- **Bug 修复**：`anthropic/claude-3.5-sonnet` 在 OpenRouter 已下线（404 No endpoints），会导致**所有聊天**500；改用经 `/models` 接口核实可用的 `claude-sonnet-4.5`。
+
+### 10.4 向量库重建（embedding 维度 1024→1536）
+- 换 embedding 模型后维度变化，旧向量不兼容 → 清空 `interpretation_embedding`（原 992 条 DashScope 1024 维）后用 `POST /api/admin/embeddings/rebuild-all` 全量重嵌。
+
+### 10.5 AI 问答检索增强（P0，config-gated 默认关）
+- 新增 [RagEnhancementService](../si-backend/src/main/java/com/si/backend/service/RagEnhancementService.java)：
+  - **多查询改写**：将问题扩成若干互补检索 query，分别 embed 后合并去重召回。
+  - **LLM 重排序**：召回后由 LLM 选出最相关 top-K（`rag-rerank-top-k`，默认 12）再喂答案。
+  - 两者 **fail-open**：LLM/解析失败回退原查询/原顺序，检索不中断。
+- 集成在 [buildUnifiedContextResult](../si-backend/src/main/java/com/si/backend/service/PreMeetingService.java)：`expandQueries → multiQueryRecall(合并去重) → rerank`。
+- 开关：`OPENAI_RAG_QUERY_EXPANSION_ENABLED`、`OPENAI_RAG_RERANK_ENABLED`、`OPENAI_RAG_RERANK_TOP_K`、`OPENAI_RAG_HELPER_MODEL`。
+
+### 10.6 测试结果（2026-06-02）
+
+**编译/单测**
+- 后端 `mvn -o test`：**BUILD SUCCESS**，`Tests run: 12, Failures: 0, Errors: 0`（VectorSearchServiceTest）。
+- 前端 `tsc --noEmit`：**exit 0**。
+
+**模型可用性（实测 OpenRouter）**
+| 模型 | 用途 | 结果 |
+|------|------|------|
+| `anthropic/claude-sonnet-4.5` | 纪要/总结/问答 | HTTP 200（Amazon Bedrock） |
+| `anthropic/claude-haiku-4.5` | 实时压缩 | HTTP 200（~$0.00003/次） |
+| `openai/text-embedding-3-small` | 向量 | HTTP 200，dims=1536 |
+
+**向量库重建校验（DB）**
+- `rows=1456`，`dims=1536`，来源分布：file_content 1017 / result 300 / speaker_summary 57 / meeting_summary 38 / file_summary 44。
+
+**P0 线上验证**（`POST /api/teams-bot/query`，问"卫星需要具备哪些关键能力"）
+- 日志：`expandQueries done, original=1, total=3`；`rerank done, in=9, out=9`；`buildUnifiedContext done, sessions=5`。
+- 返回：结构化、**带 8 条引用来源**的答案（引用格式 `（来源：会议名·日期）`），responseType=`rag`。
+
+**需人工测试**
+| # | 测试项 | 操作 | 预期 |
+|---|--------|------|------|
+| N-35 | 发言人抗干扰 | 两人对话、音色接近 | 中途偶发误判被去抖/迟滞挡掉，不乱切发言人 |
+| N-36 | Unknown 不丢名 | 连续同一人发言出现 Unknown 段 | 该段继承上一位说话人，不再空名 |
+| N-37 | 参会人入热词 | 上传会议安排 / Teams 拉取参会人 | 术语-热词页出现"参会人员/会议场地"词条 |
+| N-38 | P0 召回/重排 | 开 RAG 开关后跨会议提问 | 日志见 expandQueries/rerank，答案更准、带引用 |
+| N-39 | 压缩成本 | 实时同传压缩 | 日志压缩调用模型为 `claude-haiku-4.5` |
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

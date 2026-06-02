@@ -27,17 +27,24 @@
 
 ## 1. 项目概述
 
-SyncLingo 是一套**实时同声传译**系统，面向中文 ↔ 印尼语的双向同传场景。系统将语音识别（ASR）、机器翻译（MT）、文本压缩（LLM）、语音合成（TTS）串联成一条低延迟流水线，支持用户克隆个人音色，并通过 VoiceMeeter 将合成音频路由到指定输出设备。
+SyncLingo（syncLingo-plus）最初是一套**实时同声传译**系统，面向中文 / 印尼语 / 英语（zh-CN / id-ID / en-US）的多语种同传场景。系统将语音识别（ASR）、机器翻译（MT）、文本压缩（LLM）、语音合成（TTS）串联成一条低延迟流水线，支持用户克隆个人音色，并通过 VoiceMeeter 将合成音频路由到指定输出设备。
+
+在同传内核之上，项目已扩展为一个完整的会议协作平台，新增了**历史记录与 AI 会议纪要、发言人声纹识别与自动摘要、术语表 / ASR 热词管理、成本分析、会议管理与会前资料准备、向量语义检索（RAG）跨会议问答，以及 Microsoft Teams Bot 集成**。这些较新的功能模块在 [docs/sprint-delivery-2026-05.md](docs/sprint-delivery-2026-05.md) 与 [docs/teams-integration-progress-plan.md](docs/teams-integration-progress-plan.md) 中有更详细的交付记录；本文聚焦同传内核与整体开发参考。
 
 **核心功能：**
 
 | 功能 | 描述 |
 |------|------|
-| 实时 ASR | Azure Speech SDK 连续识别，自动检测语种（zh-CN / id-ID） |
-| 双向翻译 | Google Translate + LLM 二次压缩（仅 zh→id 方向） |
-| 流式 TTS | Cartesia WebSocket 流式合成，连接池复用 |
+| 实时 ASR | Azure Speech SDK 连续识别，自动检测语种（zh-CN / id-ID / en-US） |
+| 多语种翻译 | Google Translate / Azure Translator + LLM 二次压缩（zh→id、zh→en 方向） |
+| 流式 TTS | Cartesia WebSocket 流式合成（sonic 模型），连接池复用 |
 | 音色克隆 | 上传 WAV 样本 → Cartesia 克隆 → 自定义音色 |
 | 音频路由 | 前端通过 Web Audio API + setSinkId() 路由到 VoiceMeeter |
+| 会议与纪要 | 会议管理、会前资料总结、AI 会议纪要、行动项提取 |
+| 发言人识别 | speaker-service（Python / ECAPA-TDNN 声纹）+ 自动发言摘要 |
+| 语义检索 | OpenAI Embedding + 余弦相似度，跨会议 RAG 问答 |
+| Teams Bot | Teams 私聊/群聊自然语言问答、会议加入与摘要推送 |
+| 成本分析 | ASR / 翻译 / TTS / LLM 用量与费用统计 |
 
 ---
 
@@ -48,13 +55,18 @@ SyncLingo 是一套**实时同声传译**系统，面向中文 ↔ 印尼语的�
 | 组件 | 版本 | 用途 |
 |------|------|------|
 | Java | 21 | 运行时 |
-| Spring Boot | 3.2.5 | Web 框架、DI、WebSocket |
-| MyBatis | 3.0.3 | ORM / SQL 映射 |
+| Spring Boot | 3.2.5 | Web 框架、DI、WebSocket、Validation、Actuator |
+| MyBatis | mybatis-spring-boot-starter | ORM / SQL 映射 |
 | MySQL | 8.0 | 持久化存储 |
-| Azure Speech SDK | 1.48.2 | ASR 识别 |
-| OkHttp | 4.12.0 | HTTP / WebSocket 客户端 |
-| Commons Pool2 | 2.12.0 | Cartesia WS 连接池 |
-| Lombok | 1.18.32 | 代码生成 |
+| Azure Speech SDK | client-sdk | ASR 识别 + Azure TTS |
+| OpenAI Java SDK | openai-java | LLM 压缩 / 摘要 / 向量嵌入 |
+| OkHttp | 4.x | HTTP / WebSocket 客户端（Cartesia） |
+| java.net.http.HttpClient | JDK 内置 | LLM 流式调用 |
+| Commons Pool2 | 2.x | Cartesia WS 连接池 |
+| Apache POI / PDFBox | poi-ooxml、poi-scratchpad、pdfbox | 会前文件解析与 Word/PDF 导出 |
+| JNA | jna / jna-platform | VoiceMeeter 等本地集成 |
+| Spring Security Crypto | — | BCrypt 密码加密 |
+| Lombok | — | 代码生成 |
 
 ### 前端
 
@@ -72,11 +84,13 @@ SyncLingo 是一套**实时同声传译**系统，面向中文 ↔ 印尼语的�
 
 | 服务 | 用途 |
 |------|------|
-| Azure Cognitive Services Speech | ASR 语音识别 |
+| Azure Cognitive Services Speech | ASR 语音识别 + Azure TTS |
 | Azure Translator（可选） | 文本翻译（备用） |
 | Google Cloud Translation | 主力翻译引擎 |
-| Cartesia | TTS 语音合成 & 音色克隆 |
-| DashScope（阿里云） | LLM 压缩模型（qwen3-max/qwen-turbo） |
+| Cartesia | TTS 语音合成（sonic）& 音色克隆 |
+| OpenAI（兼容接口） | LLM 压缩 / 会议纪要 / 文件总结（gpt-5-nano/mini/gpt-5）+ 向量嵌入（text-embedding-3-small） |
+| speaker-service（自建 Python） | ECAPA-TDNN 声纹识别（独立服务，默认 7000 端口） |
+| Microsoft Teams / Bot Framework | Teams Bot 集成（独立 C# Bot，默认 3978 端口） |
 
 ---
 
@@ -167,65 +181,40 @@ RealtimeInterpretationFacade.processFinalRecognition()
 
 ## 4. 目录结构
 
+> 项目已显著增长，下面只列出目录骨架与核心文件；具体类清单以源码为准（截至本次更新：后端约 13 个 controller、24 个 service、11 个 facade、8 个 integration）。
+
 ```
-syncLingo/
+syncLingo-plus/
 ├── si-backend/                          # Spring Boot 后端
 │   ├── pom.xml
 │   ├── Dockerfile                       # 运行时镜像（Runtime Only）
-│   ├── sql/
-│   │   └── schema.sql                   # 数据库建表脚本
+│   ├── sql/                             # 建表脚本（schema.sql + 按日期增量 DDL）
+│   │   ├── schema.sql
+│   │   ├── 2026-05-12-add-interpretation-result.sql
+│   │   ├── 2026-05-12-add-session-history-fields.sql
+│   │   ├── 2026-05-25-add-meeting-tables.sql
+│   │   ├── 2026-05-28-add-action-item-table.sql
+│   │   └── 2026-05-28-add-embedding-table.sql
 │   └── src/main/
 │       ├── java/com/si/backend/
 │       │   ├── SiBackendApplication.java
-│       │   ├── common/
-│       │   │   ├── Constants.java       # 全局常量（禁止在业务代码中使用魔法值）
-│       │   │   ├── ErrorCode.java       # 错误码枚举
-│       │   │   ├── BizException.java    # 业务异常
-│       │   │   ├── Result.java          # 统一响应包装
-│       │   │   └── GlobalExceptionHandler.java
-│       │   ├── config/
-│       │   │   ├── AzureSpeechProperties.java
-│       │   │   ├── CartesiaProperties.java
-│       │   │   ├── GoogleTranslateProperties.java
-│       │   │   ├── JwtProperties.java
-│       │   │   ├── CorsProperties.java
-│       │   │   ├── HttpClientConfig.java  # OkHttp 全局 Bean（含重试拦截器）
-│       │   │   ├── WebSocketConfig.java
-│       │   │   └── WebMvcConfig.java
-│       │   ├── controller/
-│       │   │   ├── InterpretationController.java
-│       │   │   ├── VoiceController.java
-│       │   │   ├── TranslateController.java
-│       │   │   └── HealthController.java
+│       │   ├── common/                  # Constants / ErrorCode / BizException / Result / GlobalExceptionHandler
+│       │   ├── config/                  # *Properties + HttpClientConfig / WebSocketConfig / WebMvcConfig
+│       │   ├── controller/              # REST 接口（interpretation/voice/translate/meeting/
+│       │   │                            #   pre-meeting/cost/terminology/asr-hotword/teams-bot/admin/...）
 │       │   ├── dto/                     # 请求 DTO
 │       │   ├── vo/                      # 响应 VO
 │       │   ├── entity/                  # 数据库实体
 │       │   ├── mapper/                  # MyBatis Mapper 接口
-│       │   ├── service/
-│       │   │   ├── AsrService.java
-│       │   │   ├── TtsService.java      # 含 CartesiaWsClient 内部类
-│       │   │   ├── TranslationService.java
-│       │   │   ├── InterpretationSessionService.java
-│       │   │   └── VoiceCloneService.java
-│       │   ├── facade/
-│       │   │   ├── RealtimeInterpretationFacade.java  # 核心：ASR→翻译→TTS 编排
-│       │   │   ├── InterpretationFacade.java
-│       │   │   ├── VoiceCloneFacade.java
-│       │   │   └── TranslateFacade.java
-│       │   ├── integration/
-│       │   │   ├── AzureAsrIntegration.java
-│       │   │   ├── AzureTranslatorIntegration.java
-│       │   │   ├── GoogleTranslateIntegration.java
-│       │   │   ├── CartesiaTtsIntegration.java        # 音色克隆 REST API
-│       │   │   └── LlmIntegration.java                # DashScope 文本压缩
-│       │   └── ws/
-│       │       ├── AsrWebSocketHandler.java
-│       │       └── JwtHandshakeInterceptor.java
+│       │   ├── service/                 # 业务逻辑（含 VectorSearchService / ContentEmbeddingService /
+│       │   │                            #   SpeakerSummaryService / MeetingService / PreMeetingService / TeamsBotQueryService 等）
+│       │   ├── facade/                  # 编排层（RealtimeInterpretationFacade 为同传核心）
+│       │   ├── integration/             # 外部 API 封装（Azure ASR/Translator、Google、Cartesia、Llm、SpeakerService）
+│       │   └── ws/                      # AsrWebSocketHandler / ShareWebSocketHandler / JwtHandshakeInterceptor
 │       └── resources/
-│           ├── application.yml
-│           ├── application-dev.yml
-│           ├── application-prod.yml
-│           └── mapper/                  # MyBatis XML 映射文件
+│           ├── application.yml / application-dev.yml / application-prod.yml
+│           ├── logback-spring.xml
+│           └── mapper/                  # MyBatis XML（InterpretationEmbeddingMapper.xml 等）
 │
 ├── si-frontend/                         # React / TypeScript 前端
 │   ├── package.json
@@ -234,25 +223,23 @@ syncLingo/
 │   └── src/
 │       ├── api/
 │       │   ├── constants.ts             # 接口路径、WS 配置、音频默认值
-│       │   ├── client.ts                # Axios 实例（30s 超时）
-│       │   └── index.ts                 # 7 个 API 调用函数
+│       │   ├── client.ts                # Axios 实例
+│       │   └── index.ts                 # API 调用函数（数十个，覆盖各业务模块）
 │       ├── lib/
 │       │   ├── websocket.ts             # AsrWebSocket 客户端类
-│       │   ├── audioCapture.ts          # 麦克风采集 & PCM 编码
-│       │   └── audioOutput.ts           # TTS 音频播放 & VoiceMeeter 路由
+│       │   └── audioCapture.ts          # 麦克风采集 & PCM 编码
 │       ├── components/                  # 通用 UI 组件
-│       ├── views/
-│       │   ├── LoginView.tsx
-│       │   ├── InterpretationView.tsx   # 主界面
-│       │   └── VoiceCloneView.tsx
-│       ├── types/index.ts               # TypeScript 接口定义
-│       └── constants.ts                 # 应用级常量
+│       ├── views/                       # LoginView / InterpretationView（主界面）/ VoiceCloneView /
+│       │                                #   HistoryView / TerminologyView / TeamsBotView /
+│       │                                #   CostAnalysisView / ShareView / UserShareView
+│       ├── constants/ + constants.ts    # 应用级常量、WS 消息类型
+│       └── types/index.ts               # TypeScript 接口定义
 │
+├── speaker-service/                     # Python 声纹识别服务（ECAPA-TDNN）
+├── docs/                                # 交付记录、优化计划、Teams 集成进度等文档
 ├── Dockerfile                           # 多阶段构建（Maven + JRE）
-├── start-backend.bat                    # 一键构建 & 运行 Docker 容器
-├── start-frontend.bat                   # 启动前端开发服务器
-├── start-all.bat / stop-all.bat
-└── test-api.bat                         # curl 接口测试脚本
+├── start-all.bat / stop-all.bat         # 一键启动 / 停止全部服务
+└── test-api.bat                         # 接口冒烟测试脚本
 ```
 
 ---
@@ -289,7 +276,7 @@ export AZURE_SPEECH_KEY=your_key
 export AZURE_SPEECH_REGION=southeastasia
 export GOOGLE_TRANSLATE_API_KEY=your_key
 export CARTESIA_API_KEY=sk_car_...
-export DASHSCOPE_API_KEY=sk-...
+export OPENAI_API_KEY=sk-...
 export JWT_SECRET=your_32_char_secret
 
 # 启动（dev profile，自动使用 application-dev.yml）
@@ -331,29 +318,44 @@ npm run dev
 | `AZURE_SPEECH_REGION` | `southeastasia` | Azure 语音服务区域 |
 | `GOOGLE_TRANSLATE_API_KEY` | `AIzaSyC...` | Google 翻译 API Key |
 | `CARTESIA_API_KEY` | `sk_car_...` | Cartesia API Key |
-| `DASHSCOPE_API_KEY` | `sk-f225...` | 阿里云百炼 API Key |
+| `OPENAI_API_KEY` | `sk-...` | OpenAI（或兼容接口）API Key，用于 LLM 压缩/摘要/嵌入 |
 | `JWT_SECRET` | 随机 32+ 字符串 | JWT 签名密钥 |
 | `DB_PASSWORD` | `ysl666` | MySQL 密码 |
 
 ### 可选变量（有默认值）
 
+以默认值以 `application.yml` 为准，下表列出常用项：
+
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `APP_PORT` | `8080` | 服务端口 |
-| `DB_HOST` | `localhost` | MySQL 主机 |
-| `DB_PORT` | `3306` | MySQL 端口 |
-| `DB_NAME` | `si_backend` | 数据库名 |
+| `APP_HOST` | `0.0.0.0` | 监听地址 |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | `localhost` / `3306` / `si_backend` | MySQL 连接 |
 | `DB_USERNAME` | `root` | MySQL 用户名 |
 | `AZURE_SPEECH_REGION` | `eastus` | Azure 区域 |
-| `AZURE_ASR_LANGUAGES` | `zh-CN,id-ID` | ASR 语种列表 |
+| `AZURE_ASR_LANGUAGES` | `zh-CN,id-ID,en-US` | ASR 语种列表（或 `auto`） |
+| `AZURE_TRANSLATOR_KEY` / `AZURE_TRANSLATOR_REGION` | 空 / `eastus` | Azure 翻译（备用） |
 | `CARTESIA_API_URL` | `wss://api.cartesia.ai` | Cartesia WebSocket URL |
 | `CARTESIA_DEFAULT_VOICE_ID_ZH` | `6eb8965c-...` | 默认中文音色 UUID |
 | `CARTESIA_DEFAULT_VOICE_ID_ID` | `a053f6bc-...` | 默认印尼语音色 UUID |
-| `COMPRESSION_MODEL` | `qwen3-max` | LLM 压缩模型 |
-| `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | DashScope API 地址 |
+| `CARTESIA_DEFAULT_VOICE_ID_EN` | `default` | 默认英语音色 |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址（当前生产用 OpenRouter `https://openrouter.ai/api/v1`） |
+| `OPENAI_COMPRESSION_MODEL` | `gpt-5-nano` | 同传文本压缩模型（生产：`anthropic/claude-haiku-4.5`，按段调用要便宜快） |
+| `OPENAI_SUMMARY_MODEL` | `gpt-5-mini` | 会议纪要/发言摘要模型（生产：`anthropic/claude-sonnet-4.5`） |
+| `OPENAI_DOCUMENT_SUMMARY_MODEL` | `gpt-5` | 会前文件总结模型（生产：`anthropic/claude-sonnet-4.5`） |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | 向量嵌入模型（OpenRouter 上写作 `openai/text-embedding-3-small`，1536 维） |
+| `OPENAI_EMBEDDING_BASE_URL` / `OPENAI_EMBEDDING_API_KEY` | 空 | embedding 专用端点/密钥；空则复用聊天的 base-url/api-key |
+| `OPENAI_EMBEDDING_TOP_K` / `OPENAI_EMBEDDING_MIN_SCORE` | `20` / `0.3` | 向量检索 topK / 最低相似度 |
+| `OPENAI_RAG_QUERY_EXPANSION_ENABLED` / `OPENAI_RAG_RERANK_ENABLED` | `false` / `false` | P0 检索增强：多查询改写 / LLM 重排序（默认关） |
+| `OPENAI_RAG_RERANK_TOP_K` / `OPENAI_RAG_HELPER_MODEL` | `12` / 空 | 重排保留条数 / 改写重排用的模型（空=复用 summary 模型） |
+| `SPEAKER_SERVICE_SWITCH_SCORE` | `0.45` | 声纹换人迟滞阈值（抗中途误识别） |
+| `SPEAKER_SERVICE_ENABLED` / `SPEAKER_SERVICE_URL` | `false` / `http://localhost:7000` | 声纹识别服务开关与地址 |
+| `BOT_API_URL` | `http://localhost:3978` | Teams Bot 服务地址 |
+| `TEAMS_BOT_API_SECRET` / `ADMIN_API_SECRET` | 空 | Teams Bot 查询接口 / 管理接口鉴权密钥 |
+| `COST_*`（费率/预算） | 见 `application.yml` | 成本分析单价与预算 |
 | `JWT_EXPIRATION_MS` | `86400000` | JWT 有效期（24h） |
 | `SPRING_PROFILES_ACTIVE` | `dev` | Spring profile |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,...` | CORS 允许来源 |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5174` | CORS 允许来源 |
 
 ---
 
@@ -408,6 +410,22 @@ CREATE TABLE interpretation_session (
 );
 ```
 
+### 7.4 其余数据表（随功能扩展新增）
+
+除上述核心表外，随着会议、术语、声纹、成本、向量检索等模块加入，数据库已包含以下表。完整 DDL 见 `si-backend/sql/`（`schema.sql` + 按日期命名的增量脚本），部分表由对应 Service 在启动时 `CREATE TABLE IF NOT EXISTS` 自建。
+
+| 表 | 用途 |
+|----|------|
+| `interpretation_result` / `interpretation_record` | 同传逐句结果 / 记录 |
+| `interpretation_embedding` | 同传/会议内容的向量嵌入（语义检索） |
+| `meeting` / `meeting_material` / `meeting_action_item` | 会议、会议资料、行动项 |
+| `pre_meeting_file_persistent` / `pre_meeting_usage_record` | 会前持久化文件 / 用量记录 |
+| `terminology` / `asr_hotword` / `user_glossary_config` | 术语表 / ASR 热词 / 术语表配置 |
+| `speaker_identity` / `speaker_summary` / `session_speaker_voice` | 发言人身份 / 自动摘要 / 会话声纹映射 |
+| `user_language_preference` / `user_voice` / `voice_usage_record` | 用户语言偏好 / 克隆音色 / 音色用量 |
+
+> 对应 SQL 脚本：`2026-05-12-add-interpretation-result.sql`、`2026-05-12-add-session-history-fields.sql`、`2026-05-25-add-meeting-tables.sql`、`2026-05-28-add-action-item-table.sql`、`2026-05-28-add-embedding-table.sql`。
+
 ---
 
 ## 8. 后端 REST API
@@ -423,6 +441,8 @@ CREATE TABLE interpretation_session (
 ```
 
 所有接口返回 HTTP 200，业务错误通过 `code` 字段区分。
+
+> 本节仅列出同传内核的核心接口。随平台扩展，后端现有约 13 个 controller，另含会议（`/api/meeting`、`/api/meeting-material`、`/api/meeting-summary`）、会前准备（`/api/pre-meeting`）、成本分析（`/api/cost`）、术语表（`/api/terminology`）、ASR 热词（`/api/asr-hotword`）、用户语言偏好、Teams Bot 查询（`/api/teams-bot/query`、`/query/stream`）、Bot 代理（`/api/bot`）、管理（`/api/admin`，含 `POST /api/admin/embeddings/rebuild`）等接口。完整路径以各 `*Controller` 与前端 `si-frontend/src/api/index.ts` 为准。
 
 ### 8.1 同传会话（/api/interpretation）
 
@@ -823,10 +843,11 @@ SpeechRecognizer（连续识别）
 ```
 GoogleTranslateIntegration.translate()
     │
-    │ 仅当：源语言 = zh-CN，目标语言 = id，文本长度 > 40
+    │ 仅当：compression-enabled=true，方向为 zh→id 或 zh→en，
+    │       且文本长度 ≥ compression-min-text-length（默认 80）
     ▼
-LlmIntegration.compress()（DashScope qwen3-max）
-    目标压缩到 50%~60% 原始长度
+LlmIntegration.compress()（OpenAI，默认 gpt-5-nano）
+    目标压缩比可配（zh→id 默认 0.75，zh→en 默认 0.85）
     删除填充词、重复、弱修饰词
     保留所有事实和关键动作
     │
@@ -943,13 +964,13 @@ voicePools: Map<voiceId, GenericObjectPool<CartesiaWsClient>>
 **翻译压缩逻辑：**
 
 ```java
-// 满足以下所有条件时触发 LLM 压缩：
-sourceLang == "zh-CN"
-targetLang == "id"
-text.length() > 40   // 过短文本跳过，节省延迟
+// 满足以下所有条件时触发 LLM 压缩（参数见 openai.compression-*）：
+openai.compression-enabled == true
+方向为 zh→id 或 zh→en（zh→en 由 compression-zh-to-en-enabled 控制）
+text.length() >= compression-min-text-length   // 默认 80，过短文本跳过
 ```
 
-压缩目标：50%~60% 原始长度，仅删除填充词/重复/广告语，保留所有事实。
+压缩目标比例可配（zh→id 默认 0.75，zh→en 默认 0.85），仅删除填充词/重复/广告语，保留所有事实。
 
 ---
 
@@ -957,7 +978,7 @@ text.length() > 40   // 过短文本跳过，节省延迟
 
 **路径：** `config/HttpClientConfig.java`
 
-提供全局共享的 `OkHttpClient` Bean，所有 HTTP 调用（Google Translate、DashScope、Cartesia 克隆 API）共用。
+提供全局共享的 `OkHttpClient` Bean，HTTP 调用（Google Translate、Cartesia 克隆 API 等）共用；LLM 流式调用另用 JDK 内置 `java.net.http.HttpClient`（见 `LlmIntegration`）。
 
 **重试策略：**
 
@@ -1099,13 +1120,17 @@ cartesia:
 azure:
   speech:
     asr:
-      end-silence-timeout-ms: 2500   # 停顿超过 2.5s 触发 final 识别
-      language: zh-CN,id-ID          # 自动语种检测候选列表
+      end-silence-timeout-ms: 1200            # 句末静音触发 final 识别（默认 1200ms）
+      segmentation-silence-timeout-ms: 300    # 分段静音阈值
+      language: zh-CN,id-ID,en-US             # 自动语种检测候选列表（或 auto）
+      max-segment-zh-chars: 50                # 单段中文最大字数（超出强制切分）
+      max-segment-chars: 80                   # 单段最大字符数
 ```
 
 **调优建议：**
-- `end-silence-timeout-ms` 降低可提高实时性，但可能导致句子被截断
+- `end-silence-timeout-ms` / `segmentation-silence-timeout-ms` 降低可提高实时性，但可能导致句子被截断
 - 增加 `language` 列表会略微增加 Continuous LID 识别延迟
+- `max-segment-*` 控制长句强制分段，避免单段过长拖慢翻译/TTS
 
 ---
 
@@ -1158,7 +1183,7 @@ docker run -d \
   -e AZURE_SPEECH_REGION=southeastasia \
   -e GOOGLE_TRANSLATE_API_KEY=your_key \
   -e CARTESIA_API_KEY=sk_car_... \
-  -e DASHSCOPE_API_KEY=sk-... \
+  -e OPENAI_API_KEY=sk-... \
   -e JWT_SECRET=your_32_char_secret \
   si-backend:latest
 ```
@@ -1174,15 +1199,17 @@ npm run build
 ### 14.5 一键脚本（Windows）
 
 ```batch
-# 构建并启动后端 Docker 容器
-start-backend.bat
+:: 构建并启动全部服务（后端 Docker、前端、Teams Bot、speaker-service、ngrok）
+start-all.bat
 
-# 启动前端开发服务器
-start-frontend.bat
-
-# 停止所有服务
+:: 停止所有服务（含关闭对应 CMD 窗口、docker rm 后端容器）
 stop-all.bat
+
+:: 接口冒烟测试
+test-api.bat
 ```
+
+> 说明：`start-all.bat` 通过 Docker 运行后端（容器名 `si-backend`），`stop-all.bat` 先 `docker rm -f si-backend` 再按窗口标题/端口兜底清理，避免误杀 Docker Desktop 的 8080 端口代理。
 
 ---
 
@@ -1275,12 +1302,13 @@ curl http://localhost:8080/health
 
 ### Q5: 翻译延迟过高（> 3s）
 
-**原因：** LLM 压缩（qwen3-max）耗时较长
+**原因：** LLM 压缩耗时较长
 
 **排查：**
-1. 检查 `COMPRESSION_MODEL` 是否设置为更快的模型（如 `qwen-turbo`）
-2. 增大文本压缩阈值（`text.length() > 40`），跳过短文本压缩
-3. 检查 DashScope API 响应时间（日志中 `[LlmIntegration] doCall done, costMs=...`）
+1. 将 `OPENAI_COMPRESSION_MODEL` 设置为更快的模型（默认 `gpt-5-nano`）
+2. 增大 `OPENAI_COMPRESSION_MIN_TEXT_LENGTH`（默认 80），跳过更多短文本压缩
+3. 或设 `OPENAI_COMPRESSION_ENABLED=false` 关闭压缩
+4. 检查 OpenAI 接口响应时间（日志中 `[LlmIntegration] ...`）
 
 ---
 
@@ -1295,4 +1323,4 @@ curl http://localhost:8080/health
 
 ---
 
-*文档版本：2026-05-06 | 对应代码分支：master*
+*文档初版：2026-05-06 | 本次校订：2026-05-29（同步至当前代码现状）| 对应代码分支：final-version*

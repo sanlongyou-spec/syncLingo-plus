@@ -495,6 +495,13 @@ public class LlmIntegration {
         return value == null ? "" : value;
     }
 
+    /**
+     * Generic non-streaming chat completion, for RAG helpers (query expansion, reranking, etc.).
+     */
+    public String complete(String model, String systemPrompt, String userMessage, long maxOutputTokens) throws IOException {
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens);
+    }
+
     private String createTextResponse(
             String model,
             String systemPrompt,
@@ -605,8 +612,9 @@ public class LlmIntegration {
      */
     public float[] embed(String text) throws IOException {
         if (text == null || text.isBlank()) return new float[0];
-        if (openAiProperties.getApiKey() == null || openAiProperties.getApiKey().isBlank()) {
-            throw new IOException("OPENAI_API_KEY is blank");
+        String embKey = openAiProperties.effectiveEmbeddingApiKey();
+        if (embKey == null || embKey.isBlank()) {
+            throw new IOException("Embedding API key is blank (openai.embedding-api-key / OPENAI_API_KEY)");
         }
         String truncated = text.length() > 8000 ? text.substring(0, 8000) : text;
         Map<String, Object> req = new LinkedHashMap<>();
@@ -614,11 +622,11 @@ public class LlmIntegration {
         req.put("input", truncated);
         String bodyJson = OBJECT_MAPPER.writeValueAsString(req);
 
-        String embUrl = openAiProperties.getBaseUrl().replaceAll("/+$", "") + "/embeddings";
+        String embUrl = openAiProperties.effectiveEmbeddingBaseUrl().replaceAll("/+$", "") + "/embeddings";
         HttpRequest.Builder rb = HttpRequest.newBuilder()
                 .uri(URI.create(embUrl))
                 .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + openAiProperties.getApiKey())
+                .header("Authorization", "Bearer " + embKey)
                 .timeout(Duration.ofSeconds(30))
                 .POST(HttpRequest.BodyPublishers.ofString(bodyJson, StandardCharsets.UTF_8));
         if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {

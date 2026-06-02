@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  addMeetingHotwords,
   createMeeting,
   deleteMeetingFile,
   exportPreMeetingAttendanceDocx,
@@ -43,9 +44,19 @@ const downloadBlob = (blob: Blob, filename: string) => {
   URL.revokeObjectURL(url)
 }
 
-const persistKnownParticipants = (incoming: MeetingParticipant[]) => {
+const persistKnownParticipants = (incoming: MeetingParticipant[], userId?: number) => {
   const validParticipants = incoming.filter(p => p.aadId)
   if (validParticipants.length === 0) return
+  // Add participant display names to the ASR hotword list (fire-and-forget, deduped server-side).
+  if (userId != null) {
+    const names = incoming
+      .map(p => p.displayName?.trim())
+      .filter((name): name is string => !!name)
+    if (names.length > 0) {
+      addMeetingHotwords(userId, names).catch(error =>
+        console.warn('[TeamsBotView] add meeting hotwords failed:', error))
+    }
+  }
   try {
     const saved = localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.ALL_KNOWN_PARTICIPANTS)
     const existing = saved ? JSON.parse(saved) as MeetingParticipant[] : []
@@ -318,7 +329,7 @@ export default function TeamsBotView() {
     try {
       const data = await getMeetingParticipants()
       setParticipants(data.participants)
-      persistKnownParticipants(data.participants)
+      persistKnownParticipants(data.participants, userId)
       if (data.callId) setActiveCallId(data.callId)
       if (data.threadId) {
         localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, data.threadId)
@@ -373,7 +384,7 @@ export default function TeamsBotView() {
     try {
       const data = await getMeetingParticipants()
       setParticipants(data.participants)
-      persistKnownParticipants(data.participants)
+      persistKnownParticipants(data.participants, userId)
       if (data.callId) setActiveCallId(data.callId)
       if (data.meetingTitle) {
         setMeetingTitle(data.meetingTitle)

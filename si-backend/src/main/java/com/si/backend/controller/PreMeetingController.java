@@ -37,6 +37,7 @@ public class PreMeetingController {
 
     private final PreMeetingService preMeetingService;
     private final HotwordExtractionService hotwordExtractionService;
+    private final com.si.backend.service.AsrHotwordService asrHotwordService;
 
     @PostMapping("/upload")
     public Result<List<PreMeetingFileVo>> upload(
@@ -58,6 +59,10 @@ public class PreMeetingController {
                     try {
                         String text = preMeetingService.getDocText(fileId);
                         hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
+                        // Add expected participant names + meeting venue from the agenda as hotwords.
+                        PreMeetingService.MeetingEntities entities = preMeetingService.extractMeetingEntities(fileId);
+                        asrHotwordService.saveMeetingEntities(
+                                finalUserId, entities.participantNames(), entities.venue(), "MEETING_AGENDA");
                     } catch (Exception e) {
                         log.warn("[PreMeetingController] hotword extraction failed for fileId={}", fileId, e);
                     }

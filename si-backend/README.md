@@ -3,12 +3,15 @@
 ## 技术栈
 
 - Java 21 + Spring Boot 3.2.5
-- Azure AI Speech SDK（ASR 语音识别）
-- Azure AI Translator（文本翻译）
-- Cartesia WebSocket TTS（声色克隆）
+- Azure AI Speech SDK（ASR 语音识别 + Azure TTS）
+- Google Cloud Translation（主力翻译）+ Azure AI Translator（备用）
+- Cartesia WebSocket TTS（sonic 模型，声色克隆）
+- OpenAI（LLM 压缩/会议纪要/文件总结 + 向量嵌入）
+- Apache POI / PDFBox（会前文件解析与 Word/PDF 导出）
 - VoiceMeeter（虚拟音频设备直通）
-- MyBatis 3 + MySQL 8
+- MyBatis + MySQL 8
 - WebSocket（实时同传）
+- speaker-service（独立 Python 声纹识别服务，可选）
 
 ## 项目结构
 
@@ -94,6 +97,8 @@ java -jar target/si-backend-1.0.0.jar --spring.profiles.active=dev
 |------|------|------|
 | POST | `/api/translate` | 文本翻译 |
 
+> 以上为同传内核接口。平台另含会议（`/api/meeting`、`/api/meeting-material`、`/api/meeting-summary`）、会前准备（`/api/pre-meeting`）、成本分析（`/api/cost`）、术语表（`/api/terminology`）、ASR 热词（`/api/asr-hotword`）、用户语言偏好、Teams Bot 查询（`/api/teams-bot/query`、`/query/stream`）、Bot 代理（`/api/bot`）等接口，完整列表以各 `*Controller` 为准。
+
 ### WebSocket
 
 **路径：** `/ws/asr?token=<jwt>`
@@ -101,8 +106,8 @@ java -jar target/si-backend-1.0.0.jar --spring.profiles.active=dev
 **客户端 → 服务端：**
 
 ```json
-{ "type": "start", "sessionId": "uuid", "sourceLang": "zh-CN", "targetLang": "id-ID" }
-{ "type": "audio", "sessionId": "uuid", "data": "base64_pcm" }
+{ "type": "start", "sessionId": "uuid", "sourceLang": "auto", "targetLang": "id" }
+{ "type": "audio", "sessionId": "uuid", "audioBase64": "base64_pcm" }
 { "type": "stop", "sessionId": "uuid" }
 ```
 
@@ -110,7 +115,9 @@ java -jar target/si-backend-1.0.0.jar --spring.profiles.active=dev
 
 ```json
 { "type": "recognizing", "sessionId": "uuid", "text": "正在识别..." }
-{ "type": "recognized", "sessionId": "uuid", "text": "...", "translatedText": "..." }
+{ "type": "recognized", "sessionId": "uuid", "text": "..." }
+{ "type": "translated", "sessionId": "uuid", "text": "...", "translatedText": "...", "targetLanguage": "id" }
+{ "type": "tts_audio", "sessionId": "uuid", "audioBase64": "base64_pcm", "targetLanguage": "id" }
 { "type": "error", "code": "ASR_ERROR", "message": "..." }
 ```
 

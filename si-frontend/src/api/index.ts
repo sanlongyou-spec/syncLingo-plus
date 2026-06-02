@@ -185,6 +185,13 @@ export const deleteAsrHotword = (userId: number, id: number): Promise<Result<voi
 export const createAsrHotwordsBatch = (userId: number, params: AsrHotword[]): Promise<Result<AsrHotword[]>> =>
   client.post<Result<AsrHotword[]>>('/api/asr-hotwords/batch', params, { params: { userId } }).then(r => r.data)
 
+export const addMeetingHotwords = (
+  userId: number,
+  names: string[],
+  venue?: string,
+): Promise<Result<AsrHotword[]>> =>
+  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/from-meeting', { names, venue }, { params: { userId } }).then(r => r.data)
+
 export const previewHotwordsFromSession = (sessionId: string, userId: number): Promise<Result<HotwordSuggestion[]>> =>
   client.get<Result<HotwordSuggestion[]>>(`/api/asr-hotwords/extract-preview/${sessionId}`, { params: { userId } }).then(r => r.data)
 

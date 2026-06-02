@@ -119,6 +119,55 @@ public class AsrHotwordService {
         log.info("[AsrHotwordService] delete end, id={}, userId={}", id, userId);
     }
 
+    /**
+     * Adds meeting participant names and the meeting venue as ASR hotwords (deduplicated).
+     * Stored with no language so they stay active across all session languages, and with a
+     * higher weight so recognition is biased toward these proper nouns.
+     *
+     * @param sourceType provenance tag, e.g. {@code MEETING_AGENDA} or {@code TEAMS_MEETING}
+     * @return the newly created hotwords (existing phrases are skipped)
+     */
+    @Transactional
+    public List<AsrHotword> saveMeetingEntities(Long userId, List<String> participantNames, String venue, String sourceType) {
+        if (userId == null) return List.of();
+        log.info("[AsrHotwordService] saveMeetingEntities start, userId={}, names={}, hasVenue={}, sourceType={}",
+                userId, participantNames != null ? participantNames.size() : 0,
+                venue != null && !venue.isBlank(), sourceType);
+        List<AsrHotword> created = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        if (participantNames != null) {
+            for (String name : participantNames) {
+                addMeetingHotword(created, seen, userId, name, "参会人员", sourceType);
+            }
+        }
+        addMeetingHotword(created, seen, userId, venue, "会议场地", sourceType);
+        log.info("[AsrHotwordService] saveMeetingEntities end, userId={}, created={}", userId, created.size());
+        return created;
+    }
+
+    private void addMeetingHotword(
+            List<AsrHotword> created,
+            java.util.Set<String> seen,
+            Long userId,
+            String rawPhrase,
+            String category,
+            String sourceType) {
+        if (rawPhrase == null) return;
+        String phrase = rawPhrase.trim();
+        if (phrase.length() < 2 || phrase.length() > 40) return;
+        if (!seen.add(phrase.toLowerCase())) return;
+        // language "" matches NULL/empty/any in the dedup query — avoids duplicates across runs.
+        if (hotwordMapper.countByUserIdPhraseAndLanguage(userId, phrase, "") > 0) return;
+        AsrHotword hotword = new AsrHotword();
+        hotword.setPhrase(phrase);
+        hotword.setLanguage(null);
+        hotword.setCategory(category);
+        hotword.setWeight(2.0);
+        hotword.setSourceType(sourceType);
+        hotword.setEnabled(true);
+        created.add(create(userId, hotword));
+    }
+
     @Transactional
     public List<AsrHotword> createFromTerminology(Long userId, Terminology terminology) {
         log.info("[AsrHotwordService] createFromTerminology start, userId={}, terminologyId={}",

@@ -44,7 +44,45 @@ public class OpenAiProperties {
 
     private String embeddingModel = "text-embedding-3-small";
 
+    /**
+     * Optional separate endpoint for embeddings. OpenRouter has no /embeddings API, so when
+     * chat runs on OpenRouter, embeddings must use a different provider. Blank = reuse baseUrl.
+     */
+    private String embeddingBaseUrl;
+
+    /** API key for the embedding provider. Blank = reuse apiKey. */
+    private String embeddingApiKey;
+
     private int embeddingTopK = 20;
 
     private float embeddingMinScore = 0.3f;
+
+    public String effectiveEmbeddingBaseUrl() {
+        return (embeddingBaseUrl != null && !embeddingBaseUrl.isBlank()) ? embeddingBaseUrl : baseUrl;
+    }
+
+    public String effectiveEmbeddingApiKey() {
+        return (embeddingApiKey != null && !embeddingApiKey.isBlank()) ? embeddingApiKey : apiKey;
+    }
+
+    // ── RAG quality (P0): query expansion + reranking. Default off — flip on to enable. ──
+
+    /** Rewrite/expand the question into several queries before retrieval (multi-query recall). */
+    private boolean ragQueryExpansionEnabled = false;
+
+    /** How many extra reformulations to generate (besides the original question). */
+    private int ragQueryExpansionCount = 2;
+
+    /** Rerank recalled chunks with the LLM and keep the most relevant ones. */
+    private boolean ragRerankEnabled = false;
+
+    /** Model used for query expansion / reranking. Blank = reuse summaryModel. */
+    private String ragHelperModel;
+
+    /** How many chunks to keep after reranking (fed into the answer context). */
+    private int ragRerankTopK = 12;
+
+    public String effectiveRagHelperModel() {
+        return (ragHelperModel != null && !ragHelperModel.isBlank()) ? ragHelperModel : summaryModel;
+    }
 }
