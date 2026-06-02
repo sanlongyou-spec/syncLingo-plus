@@ -175,14 +175,14 @@ public final class Constants {
     public static final String TTS_ERROR_UNKNOWN = "unknown error";
     /** TTS 单段链路最大等待时间，超过后释放串行链，避免后续任务永久阻塞 */
     public static final int TTS_STREAM_TIMEOUT_SECONDS = 30;
-    /** 自动音色克隆每个说话人目标采样秒数 */
-    public static final int SPEAKER_VOICE_TARGET_SAMPLE_SECONDS = 8;
+    /** 自动音色克隆每个说话人目标采样秒数（越长克隆越像，20s 比 8s 明显更准） */
+    public static final int SPEAKER_VOICE_TARGET_SAMPLE_SECONDS = 20;
     /** 声纹自动注册触发秒数（积累到此秒数时自动提交注册） */
     public static final int SPEAKER_VOICE_ENROLL_SAMPLE_SECONDS = 20;
     /** 自动音色克隆每个说话人最大采样秒数（用于 Cartesia 克隆与声纹注册） */
     public static final int SPEAKER_VOICE_MAX_SAMPLE_SECONDS = 30;
-    /** 每次 final recognition 后归集到说话人的最近音频秒数 */
-    public static final int SPEAKER_VOICE_RECENT_AUDIO_SECONDS = 4;
+    /** 每次 final recognition 后归集到说话人的最近音频秒数（识别窗口；越长嵌入越稳、分数越高） */
+    public static final int SPEAKER_VOICE_RECENT_AUDIO_SECONDS = 8;
 /** 说话人音色克隆状态：采样中 */
     public static final String SPEAKER_VOICE_STATUS_COLLECTING = "COLLECTING";
     /** 说话人音色克隆状态：克隆中 */

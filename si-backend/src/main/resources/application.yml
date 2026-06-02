@@ -67,6 +67,7 @@ azure:
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:50}
       max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:50}
       max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:80}
+      diarize-intermediate-results: ${AZURE_ASR_DIARIZE_INTERMEDIATE_RESULTS:true}
     tts:
       voice: zh-CN-XiaoxiaoMultilingualNeural
       sample-rate: 24000
@@ -78,8 +79,9 @@ speaker:
   service:
     enabled: ${SPEAKER_SERVICE_ENABLED:false}
     url: ${SPEAKER_SERVICE_URL:http://localhost:7000}
-    min-score: ${SPEAKER_SERVICE_MIN_SCORE:0.25}
+    min-score: ${SPEAKER_SERVICE_MIN_SCORE:0.4}
     switch-score: ${SPEAKER_SERVICE_SWITCH_SCORE:0.45}
+    margin-threshold: ${SPEAKER_SERVICE_MARGIN_THRESHOLD:0.06}
     timeout-seconds: ${SPEAKER_SERVICE_TIMEOUT_SECONDS:15}
 
 google:
@@ -93,9 +95,9 @@ openai:
   compression-enabled: ${OPENAI_COMPRESSION_ENABLED:true}
   compression-min-text-length: ${OPENAI_COMPRESSION_MIN_TEXT_LENGTH:80}
   compression-model: ${OPENAI_COMPRESSION_MODEL:gpt-5-nano}
-  compression-zh-to-id-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_ID_TARGET_RATIO:0.75}
+  compression-zh-to-id-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_ID_TARGET_RATIO:0.60}
   compression-zh-to-en-enabled: ${OPENAI_COMPRESSION_ZH_TO_EN_ENABLED:true}
-  compression-zh-to-en-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_EN_TARGET_RATIO:0.85}
+  compression-zh-to-en-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_EN_TARGET_RATIO:0.70}
   summary-model: ${OPENAI_SUMMARY_MODEL:gpt-5-mini}
   document-summary-model: ${OPENAI_DOCUMENT_SUMMARY_MODEL:gpt-5}
   compression-max-output-tokens: ${OPENAI_COMPRESSION_MAX_OUTPUT_TOKENS:512}
@@ -121,6 +123,7 @@ cartesia:
   default-voice-id-chinese: ${CARTESIA_DEFAULT_VOICE_ID_ZH:6eb8965c-e295-47bd-a9e4-3eeebb3abcff}
   default-voice-id-indonesian: ${CARTESIA_DEFAULT_VOICE_ID_ID:a053f6bc-7df4-40de-96d4-de026bc47ce8}
   default-voice-id-english: ${CARTESIA_DEFAULT_VOICE_ID_EN:default}
+  clone-enhance: ${CARTESIA_CLONE_ENHANCE:false}
   tts:
     model: sonic
     sample-rate: 24000

@@ -43,7 +43,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("speaker-service")
 
 EMBEDDINGS_FILE = Path(os.environ.get("EMBEDDINGS_FILE", "embeddings.json"))
-MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.25"))
+MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.4"))
 MODEL_SOURCE = os.environ.get("SPEAKER_MODEL_SOURCE", "speechbrain/spkrec-ecapa-voxceleb")
 MODEL_SAVEDIR = os.environ.get("SPEAKER_MODEL_SAVEDIR", "pretrained_models/spkrec-ecapa-voxceleb")
 
@@ -151,6 +151,9 @@ class IdentifyResponse(BaseModel):
     name: Optional[str]
     score: float
     identified: bool
+    second_name: Optional[str] = None
+    second_score: float = 0.0
+    margin: float = 0.0
 
 
 @app.post("/enroll", response_model=EnrollResponse)
@@ -189,25 +192,33 @@ async def identify(req: IdentifyRequest):
     query_emb = get_embedding(wav_tensor)
     candidates = req.candidates if req.candidates else list(embedding_store.keys())
 
-    best_name = None
-    best_score = -1.0
+    # Rank candidates so we can return the runner-up (for Top-2 margin disambiguation).
+    scored = []
     for name in candidates:
         if name not in embedding_store:
             continue
-        score = best_score_for_speaker(query_emb, embedding_store[name])
-        if score > best_score:
-            best_score = score
-            best_name = name
+        scored.append((name, best_score_for_speaker(query_emb, embedding_store[name])))
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    best_name = scored[0][0] if scored else None
+    best_score = scored[0][1] if scored else -1.0
+    second_name = scored[1][0] if len(scored) > 1 else None
+    second_score = scored[1][1] if len(scored) > 1 else 0.0
+    margin = best_score - second_score if len(scored) > 1 else best_score
 
     identified = best_score >= MIN_SCORE
     if identified:
-        log.info("Identified speaker '%s' with score=%.4f", best_name, best_score)
+        log.info("Identified speaker '%s' score=%.4f (runner-up '%s' %.4f, margin %.4f)",
+                 best_name, best_score, second_name, second_score, margin)
     else:
         log.info("No confident match, best='%s' score=%.4f threshold=%.4f", best_name, best_score, MIN_SCORE)
     return IdentifyResponse(
         name=best_name if identified else None,
         score=best_score,
         identified=identified,
+        second_name=second_name,
+        second_score=second_score,
+        margin=margin,
     )
 
 

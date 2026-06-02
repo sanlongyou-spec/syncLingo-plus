@@ -14,6 +14,7 @@ import {
 import { AUDIO_DEFAULTS, VOICEMEETER } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
+import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { AsrWebSocket } from '../lib/websocket'
 import { LANGUAGE_OPTIONS } from '../types'
 import type { Meeting, WsMessage } from '../types'
@@ -118,7 +119,11 @@ export default function InterpretationView() {
   const sessionIdRef = useRef<string | null>(null)
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
-  const bodyRef = useRef<HTMLDivElement>(null)
+  const {
+    scrollRef: bodyRef,
+    isPaused: isTranscriptAutoScrollPaused,
+    scrollToBottom: scrollTranscriptToBottom,
+  } = useSmartAutoScroll<HTMLDivElement>([transcripts, currentSource])
   const ttsChunkIndexByTaskRef = useRef<Map<string, number>>(new Map())
 
   // Speaker change detection refs (ID-based for known speakers)
@@ -206,11 +211,6 @@ export default function InterpretationView() {
     window.addEventListener('hashchange', refreshMeetings)
     return () => window.removeEventListener('hashchange', refreshMeetings)
   }, [userId])
-
-  useEffect(() => {
-    const el = bodyRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [transcripts, currentSource])
 
   const initStreamAudio = useCallback(async () => {
     if (!streamContextRef.current) {
@@ -986,6 +986,15 @@ export default function InterpretationView() {
                     </div>
                   )}
                 </div>
+                {isTranscriptAutoScrollPaused && (
+                  <button
+                    type="button"
+                    className="si-auto-scroll-btn"
+                    onClick={scrollTranscriptToBottom}
+                  >
+                    回到底部
+                  </button>
+                )}
               </div>
             </div>
 

@@ -31,6 +31,8 @@ public class AzureSpeechProperties {
         private int maxSegmentWords = 50;
         /** 单段最大字符数；超过时在应用层强制切段（0 = 不限制） */
         private int maxSegmentChars = 80;
+        /** 让中间结果也带说话人分轨（减少 Unknown，强制分段也能拿到 speakerId） */
+        private boolean diarizeIntermediateResults = true;
     }
 
     @Data

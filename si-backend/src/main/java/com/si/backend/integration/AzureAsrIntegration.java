@@ -68,6 +68,11 @@ public class AzureAsrIntegration {
             config.setProperty("Speech_SegmentationMaximumTimeMs",
                     String.valueOf(asrProperties.getAsr().getSegmentationMaximumTimeMs()));
         }
+        // Diarize intermediate (transcribing) results too, so forced-segmented chunks emitted from
+        // interim events carry a speakerId instead of "Unknown" — cuts the Unknown rate at the source.
+        if (asrProperties.getAsr().isDiarizeIntermediateResults()) {
+            config.setProperty(PropertyId.SpeechServiceResponse_DiarizeIntermediateResults, "true");
+        }
         log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}",
                 asrProperties.getAsr().getEndSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationSilenceTimeoutMs(),

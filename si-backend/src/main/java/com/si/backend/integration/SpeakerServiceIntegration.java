@@ -119,8 +119,10 @@ public class SpeakerServiceIntegration {
                 boolean identified = root.path("identified").asBoolean(false);
                 double score = root.path("score").asDouble(0D);
                 String name = root.path("name").asText(null);
-                log.info("[SpeakerServiceIntegration] identify result, identified={}, name={}, score={}, costMs={}",
-                        identified, name, score, costMs);
+                double secondScore = root.path("second_score").asDouble(0D);
+                double margin = root.has("margin") ? root.path("margin").asDouble(0D) : score - secondScore;
+                log.info("[SpeakerServiceIntegration] identify result, identified={}, name={}, score={}, secondScore={}, margin={}, costMs={}",
+                        identified, name, score, secondScore, margin, costMs);
                 if (!identified || name == null || name.isBlank()) {
                     return Optional.empty();
                 }
@@ -128,7 +130,7 @@ public class SpeakerServiceIntegration {
                     log.info("[SpeakerServiceIntegration] score {} below local threshold {}, rejecting", score, properties.getMinScore());
                     return Optional.empty();
                 }
-                return Optional.of(IdentifyResult.builder().personName(name).score(score).build());
+                return Optional.of(IdentifyResult.builder().personName(name).score(score).margin(margin).build());
             }
         } catch (Exception e) {
             log.warn("[SpeakerServiceIntegration] identify failed, reason={}", e.getMessage());
@@ -210,5 +212,7 @@ public class SpeakerServiceIntegration {
     public static class IdentifyResult {
         private String personName;
         private Double score;
+        /** best − second-best score; small margin = ambiguous (e.g. similar voices). */
+        private Double margin;
     }
 }

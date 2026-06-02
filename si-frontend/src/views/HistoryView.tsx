@@ -57,6 +57,22 @@ const readStoredKnownParticipants = () => {
   }
 }
 
+const readStoredRecipientSet = (key: string) => {
+  try {
+    const saved = localStorage.getItem(key)
+    if (!saved) return new Set<string>()
+    const parsed = JSON.parse(saved)
+    if (!Array.isArray(parsed)) return new Set<string>()
+    return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== ''))
+  } catch {
+    return new Set<string>()
+  }
+}
+
+const saveStoredRecipientSet = (key: string, recipients: Set<string>) => {
+  localStorage.setItem(key, JSON.stringify(Array.from(recipients)))
+}
+
 const parseSavedAttendance = (json?: string | null) => {
   if (!json) return { result: null, participants: [] as MeetingParticipant[] }
   try {
@@ -149,7 +165,9 @@ export default function HistoryView() {
   const [includeMeetingChat, setIncludeMeetingChat] = useState(
     () => localStorage.getItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT) === 'true'
   )
-  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set())
+  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
+    () => readStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS)
+  )
   const hasFetchedSummaryRef = useRef(false)
 
   // ── Speaker tab ─────────────────────────────────────────
@@ -159,7 +177,9 @@ export default function HistoryView() {
     () => localStorage.getItem(STORAGE_KEYS.SPEAKER_SUMMARY_REQUIREMENTS) ?? ''
   )
   const [speakerReqSaved, setSpeakerReqSaved] = useState(false)
-  const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(new Set())
+  const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(
+    () => readStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS)
+  )
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
 
@@ -206,8 +226,8 @@ export default function HistoryView() {
     setSpeakerRecords([])
     setSessions([])
     setSelectedSessionId(null)
-    setSelectedRecipients(new Set())
-    setSelectedSpeakerRecipients(new Set())
+    setSelectedRecipients(readStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS))
+    setSelectedSpeakerRecipients(readStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS))
     setSpeakerRegenStatus({})
     setSpeakerPushStatus({})
     setTeamsPushStatus('idle')
@@ -338,6 +358,7 @@ export default function HistoryView() {
     setSelectedRecipients(prev => {
       const next = new Set(prev)
       next.has(aadId) ? next.delete(aadId) : next.add(aadId)
+      saveStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS, next)
       return next
     })
   }
@@ -346,6 +367,7 @@ export default function HistoryView() {
     setSelectedSpeakerRecipients(prev => {
       const next = new Set(prev)
       next.has(aadId) ? next.delete(aadId) : next.add(aadId)
+      saveStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS, next)
       return next
     })
   }
@@ -695,9 +717,11 @@ export default function HistoryView() {
                   .map(p => p.aadId)
                 const allSelected = validParticipants.length > 0
                   && validParticipants.every(p => selectedSpeakerRecipients.has(p.aadId))
-                const toggleAll = () => setSelectedSpeakerRecipients(
-                  allSelected ? new Set() : new Set(validParticipants.map(p => p.aadId))
-                )
+                const toggleAll = () => {
+                  const next = allSelected ? new Set<string>() : new Set(validParticipants.map(p => p.aadId))
+                  saveStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS, next)
+                  setSelectedSpeakerRecipients(next)
+                }
                 return (
                   <div className="history-tab-content">
                     <div className="history-summary-requirements">
@@ -781,7 +805,13 @@ export default function HistoryView() {
                               </button>
                             </div>
                           </div>
-                          <pre className="history-speaker-record-summary">{rec.summary}</pre>
+                          <textarea
+                            className="history-speaker-record-edit"
+                            value={rec.summary}
+                            onChange={e => setSpeakerRecords(prev => prev.map((r, i) => i === idx ? { ...r, summary: e.target.value } : r))}
+                            spellCheck={false}
+                          />
+                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」发送修改后的版本</div>
                         </div>
                       )
                     })}
@@ -794,9 +824,11 @@ export default function HistoryView() {
                 const displayed = summaryText
                 const validP = allKnownParticipants.filter(p => p.aadId)
                 const allSummarySelected = validP.length > 0 && validP.every(p => selectedRecipients.has(p.aadId))
-                const toggleAllSummary = () => setSelectedRecipients(
-                  allSummarySelected ? new Set() : new Set(validP.map(p => p.aadId))
-                )
+                const toggleAllSummary = () => {
+                  const next = allSummarySelected ? new Set<string>() : new Set(validP.map(p => p.aadId))
+                  saveStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS, next)
+                  setSelectedRecipients(next)
+                }
                 const chosenSummaryRecipients = validP.filter(p => selectedRecipients.has(p.aadId)).map(p => p.aadId)
                 return (
                   <div className="history-summary-tab">
@@ -898,7 +930,13 @@ export default function HistoryView() {
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
                         <div className="history-summary-body">
-                          <pre className="history-summary-text">{displayed}</pre>
+                          <div className="history-summary-edit-hint">可手动修改下方内容，再点上方「发送」按钮发送修改后的版本</div>
+                          <textarea
+                            className="history-summary-edit"
+                            value={displayed}
+                            onChange={e => setSummaryText(e.target.value)}
+                            spellCheck={false}
+                          />
                         </div>
                       </>
                     )}

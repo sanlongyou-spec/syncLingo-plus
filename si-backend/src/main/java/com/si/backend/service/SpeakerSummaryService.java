@@ -18,6 +18,12 @@ public class SpeakerSummaryService {
 
     private static final long REFUSAL_RETRY_BASE_DELAY_MS = 2_000L;
     private static final long REFUSAL_RETRY_MAX_DELAY_MS = 10_000L;
+    /**
+     * Safety cap on a single speaker's accumulated text (keeps the most recent). High enough to
+     * effectively hold a whole meeting's worth of one person's speech — Claude's context is ~200k
+     * tokens, so this only guards against pathological runaway, it does not truncate real meetings.
+     */
+    private static final int MAX_SPEAKER_TEXT_CHARS = 100000;
     private static final String TITLE_PREFIX = "\u6807\u9898";
 
     private final LlmIntegration llmIntegration;
@@ -63,24 +69,56 @@ public class SpeakerSummaryService {
     public SpeakerSummaryVo summarize(String speakerName, String text, String sessionId, String speakerId, String requirements) {
         log.info("[SpeakerSummaryService] summarize start, speaker={}, textLen={}", speakerName, text.length());
         try {
-            String raw = summarizeSpeakerUntilAccepted(speakerName, text, requirements);
+            // One summary per person per session: accumulate this speaker's full text across the
+            // meeting and (re)generate a single summary, triggered on each confirmed speaker change.
+            SpeakerSummaryRecord existing = null;
+            try {
+                existing = mapper.findBySessionIdAndSpeakerName(sessionId, speakerName);
+            } catch (Exception e) {
+                log.warn("[SpeakerSummaryService] lookup existing summary failed, sessionId={}, speaker={}: {}",
+                        sessionId, speakerName, e.getMessage());
+            }
+            String cumulativeText = text;
+            if (existing != null && existing.getTextSnippet() != null && !existing.getTextSnippet().isBlank()) {
+                cumulativeText = (existing.getTextSnippet() + " " + text).trim();
+            }
+            if (cumulativeText.length() > MAX_SPEAKER_TEXT_CHARS) {
+                cumulativeText = cumulativeText.substring(cumulativeText.length() - MAX_SPEAKER_TEXT_CHARS);
+            }
+
+            String raw = summarizeSpeakerUntilAccepted(speakerName, cumulativeText, requirements);
             String[] parts = parseTitleAndContent(raw);
             String title = parts[0];
             String summary = parts[1];
-            log.info("[SpeakerSummaryService] summarize done, speaker={}, title={}, summaryLen={}", speakerName, title, summary.length());
+            log.info("[SpeakerSummaryService] summarize done, speaker={}, title={}, cumulativeLen={}, mode={}",
+                    speakerName, title, cumulativeText.length(), existing != null ? "update" : "insert");
+            Long recordId = null;
             try {
-                SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
-                        .sessionId(sessionId)
-                        .speakerId(speakerId)
-                        .speakerName(speakerName)
-                        .title(title)
-                        .textSnippet(text.length() > 2000 ? text.substring(0, 2000) : text)
-                        .summary(summary)
-                        .build();
-                mapper.insert(record);
-                if (record.getId() != null) {
+                if (existing != null) {
+                    existing.setTitle(title);
+                    existing.setSummary(summary);
+                    existing.setTextSnippet(cumulativeText);
+                    if (existing.getSpeakerId() == null && speakerId != null) {
+                        existing.setSpeakerId(speakerId);
+                    }
+                    mapper.updateSummaryAndSnippet(existing);
+                    recordId = existing.getId();
+                } else {
+                    SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
+                            .sessionId(sessionId)
+                            .speakerId(speakerId)
+                            .speakerName(speakerName)
+                            .title(title)
+                            .textSnippet(cumulativeText)
+                            .summary(summary)
+                            .build();
+                    mapper.insert(record);
+                    recordId = record.getId();
+                }
+                if (recordId != null) {
+                    // asyncEmbedSpeakerSummary upserts by record id, so re-embedding on update is safe.
                     contentEmbeddingService.asyncEmbedSpeakerSummary(
-                            record.getId(), sessionId, speakerName, title, summary);
+                            recordId, sessionId, speakerName, title, summary);
                 }
             } catch (Exception e) {
                 log.warn("[SpeakerSummaryService] failed to persist summary, sessionId={}", sessionId, e);

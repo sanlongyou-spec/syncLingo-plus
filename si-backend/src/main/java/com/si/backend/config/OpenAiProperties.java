@@ -26,11 +26,11 @@ public class OpenAiProperties {
 
     private String compressionModel = "gpt-5-nano";
 
-    private double compressionZhToIdTargetRatio = 0.75;
+    private double compressionZhToIdTargetRatio = 0.60;
 
     private boolean compressionZhToEnEnabled = true;
 
-    private double compressionZhToEnTargetRatio = 0.85;
+    private double compressionZhToEnTargetRatio = 0.70;
 
     private String summaryModel = "gpt-5-mini";
 

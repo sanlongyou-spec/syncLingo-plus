@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { getActiveSessionForUser, getPublicInterpretationResults } from '../api'
 import { WS_DEFAULTS } from '../api/constants'
+import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import type { InterpretationResultItem, WsMessage } from '../types'
 import './InterpretationView.css'
 
@@ -82,7 +83,11 @@ export default function UserShareView() {
   const [currentSpeakerName, setCurrentSpeakerName] = useState('')
   const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
   const [isWaiting, setIsWaiting] = useState(true)
-  const bodyRef = useRef<HTMLDivElement>(null)
+  const {
+    scrollRef: bodyRef,
+    isPaused: isTranscriptAutoScrollPaused,
+    scrollToBottom: scrollTranscriptToBottom,
+  } = useSmartAutoScroll<HTMLDivElement>([items, currentRecognizing])
   const wsRef = useRef<WebSocket | null>(null)
   const liveIdRef = useRef(-1)
   const speakerNameMapRef = useRef<Record<string, string>>({})
@@ -325,11 +330,6 @@ export default function UserShareView() {
     }
   }, [userId, connectWs, disconnectWs, clearSessionState])
 
-  useEffect(() => {
-    const el = bodyRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [items, currentRecognizing])
-
   return (
     <div className="si-root">
       <header className="si-topbar">
@@ -405,6 +405,15 @@ export default function UserShareView() {
                   </div>
                 )}
               </div>
+              {isTranscriptAutoScrollPaused && (
+                <button
+                  type="button"
+                  className="si-auto-scroll-btn"
+                  onClick={scrollTranscriptToBottom}
+                >
+                  回到底部
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -76,7 +76,7 @@ public class CartesiaTtsIntegration {
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("name", voiceName)
                 .addFormDataPart("language", language)
-                .addFormDataPart("enhance", Constants.CARTESIA_ENHANCE_DISABLED)
+                .addFormDataPart("enhance", String.valueOf(properties.isCloneEnhance()))
                 .addFormDataPart("clip", "sample.wav",
                         RequestBody.create(audioSample, MediaType.parse("audio/wav")))
                 .build();

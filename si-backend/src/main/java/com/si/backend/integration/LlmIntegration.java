@@ -71,12 +71,9 @@ public class LlmIntegration {
             + "Output only the compressed English text, no explanation.";
 
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
-            "You are a meeting minutes assistant. Generate concise Chinese minutes from bilingual or trilingual transcripts.\n"
-            + "Return only these sections:\n"
-            + "1. 会议摘要\n"
-            + "2. 重点事项\n"
-            + "3. 待办事项\n"
-            + "Keep proper nouns unchanged.";
+            "你是会议总结助手。请根据用户要求和会议记录生成会议总结。\n"
+            + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
+            + "保留专有名词、数字和关键事实，不要编造，不要强制固定章节结构。";
 
     private static final String HOTWORD_EXTRACTION_SYSTEM_PROMPT =
             "You are an NLP assistant. Extract named entities and domain-specific terms from the meeting transcript that would benefit ASR speech recognition accuracy.\n"
@@ -88,13 +85,9 @@ public class LlmIntegration {
             + "Output ONLY a valid JSON array with no explanation or markdown fences.";
 
     private static final String DOCUMENT_SUMMARY_SYSTEM_PROMPT =
-            "你是一个专业的报告分析助手。请对以下报告内容进行结构化总结。\n"
-            + "总结应包含以下部分：\n"
-            + "1. 报告概要\n"
-            + "2. 核心内容\n"
-            + "3. 重点结论\n"
-            + "4. 关键数据与事实\n"
-            + "请使用中文输出，保留专有名词、数字和数据原样。";
+            "你是文件总结助手。请根据用户要求和文件内容生成总结。\n"
+            + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
+            + "保留专有名词、数字和关键事实，不要编造，不要强制固定章节结构。";
 
     private static final String CHAT_SYSTEM_PROMPT =
             "你是一个专业的会议助手，能够基于提供的参考资料（会议文件或同传记录）回答用户问题。\n"
@@ -116,18 +109,9 @@ public class LlmIntegration {
             + "7. 使用中文回答。";
 
     private static final String MATERIAL_SUMMARY_SYSTEM_PROMPT =
-            "You are an executive meeting minutes assistant. Use the prepared agenda, reports, and live transcript together.\n"
-            + "Write in polished Chinese. Preserve names, numbers, project names, regions, and bilingual terms.\n"
-            + "Prioritize executive speeches when the executive name list is provided.\n"
-            + "Do not invent facts not supported by the material or transcript.\n"
-            + "Return only these sections:\n"
-            + "1. 会议基本信息\n"
-            + "2. 议程完成情况\n"
-            + "3. 报告要点汇总\n"
-            + "4. 高管发言摘要\n"
-            + "5. 决议与结论\n"
-            + "6. 待办事项与责任人\n"
-            + "7. 风险、问题与后续跟进";
+            "你是会议总结助手。请结合会议安排、报告、高管名单和实时会议记录生成会议总结。\n"
+            + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
+            + "保留姓名、数字、项目名、地区和双语术语；不要编造材料或记录中没有的事实；不要强制固定章节结构。";
 
     private static final HttpClient STREAM_HTTP_CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -236,13 +220,8 @@ public class LlmIntegration {
     }
 
     public String summarizeMeetingRetry(String text) throws IOException {
-        String systemPrompt = "你是专业会议秘书，负责整理正式商务会议纪要。\n"
-                + "以下内容是真实商务会议的同声传译文本记录（含中文、英语或印尼语），请提炼结构化中文纪要。\n"
-                + "按以下格式输出：\n"
-                + "## 会议摘要\n（简要概述会议内容）\n"
-                + "## 重点事项\n（逐条列出关键议题与结论）\n"
-                + "## 待办事项\n（列出需要跟进的行动项）\n"
-                + "保留专有名词和数字原样，只输出纪要正文，无需解释。";
+        String systemPrompt = "你是会议总结助手。请根据会议记录生成中文总结。\n"
+                + "保留专有名词、数字和关键事实，不要编造，不要强制固定章节结构。";
         String userMessage = "【商务会议同声传译记录】\n\n" + text;
         log.info("[LlmIntegration] summarizeMeetingRetry start, textLen={}", text != null ? text.length() : 0);
         String result = createTextResponse(
@@ -283,12 +262,9 @@ public class LlmIntegration {
     }
 
     public String summarizeSpeakerSegment(String speakerName, String text, String requirements) throws IOException {
-        String systemPrompt = "你是会议纪要助手。针对下面这段发言内容生成结构化中文摘要。\n"
-                + "第一行输出「标题：」加上简短的发言主题标题（不超过10个字）。\n"
-                + "然后空一行，根据内容要点逐条列出，每条以「•」开头。\n"
-                + "要点数量根据内容自然决定，不强制数量限制，完整覆盖发言要点即可。\n"
-                + "保留专有名词、数字、决议和行动项。\n"
-                + "只输出标题行和要点列表，不要其他说明。"
+        String systemPrompt = "你是发言摘要助手。请根据用户要求为这段发言生成摘要。\n"
+                + "如果用户没有提供额外要求，输出简洁、准确的中文摘要。\n"
+                + "保留专有名词、数字、决议和行动项，不要编造，不要强制固定标题或章节结构。"
                 + (requirements != null && !requirements.isBlank() ? "\n额外要求：" + requirements : "");
         String userMessage = "发言人：" + speakerName + "\n\n内容：\n" + text;
         log.info("[LlmIntegration] summarizeSpeakerSegment start, speaker={}, textLen={}, hasReq={}", speakerName, text.length(), requirements != null && !requirements.isBlank());
@@ -303,12 +279,8 @@ public class LlmIntegration {
     }
 
     public String summarizeSpeakerSegmentRetry(String speakerName, String text) throws IOException {
-        String systemPrompt = "你是专业会议秘书，负责整理正式业务会议的发言要点。"
-                + "以下内容来自真实会议的中文发言记录，请提炼为结构化摘要。\n"
-                + "输出格式（严格遵守）：\n"
-                + "第一行：「标题：」加发言主题（不超过10字）\n"
-                + "第二行起：用「•」逐条列出核心观点、数据、决议和行动项\n"
-                + "只输出标题行与要点，不要前言、解释或评论。";
+        String systemPrompt = "你是发言摘要助手。请根据发言记录生成中文摘要。\n"
+                + "保留专有名词、数字、决议和行动项，不要编造，不要强制固定标题或章节结构。";
         String userMessage = "【会议发言人】" + speakerName + "\n\n【发言记录】\n" + text;
         log.info("[LlmIntegration] summarizeSpeakerSegmentRetry start, speaker={}, textLen={}", speakerName, text.length());
         String result = createTextResponse(

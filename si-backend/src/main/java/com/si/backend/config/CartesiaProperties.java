@@ -23,6 +23,12 @@ public class CartesiaProperties {
     /** 默认英语音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_EN 环境变量覆盖 */
     private String defaultVoiceIdEnglish = "default";
 
+    /**
+     * 音色克隆 enhance 参数。干净样本用 false 相似度最高；现场会议音频较嘈杂时设 true 让
+     * Cartesia 先降噪，往往更准。可通过 CARTESIA_CLONE_ENHANCE 覆盖。
+     */
+    private boolean cloneEnhance = false;
+
     @Data
     public static class TtsProperties {
         private String modelId = "sonic-3";

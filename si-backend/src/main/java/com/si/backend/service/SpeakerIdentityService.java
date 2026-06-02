@@ -75,7 +75,7 @@ public class SpeakerIdentityService {
      *
      * @return the speaker name to actually use after hysteresis.
      */
-    private String applyHysteresis(String sessionId, String speakerId, String candidateName, double score) {
+    private String applyHysteresis(String sessionId, String speakerId, String candidateName, double score, double margin) {
         String key = buildKey(sessionId, speakerId);
         ResolvedScore incumbent = hysteresisMap.get(key);
         if (incumbent == null || incumbent.personName().equals(candidateName)) {
@@ -84,14 +84,17 @@ public class SpeakerIdentityService {
         }
         double switchScore = speakerServiceProperties.getSwitchScore() != null
                 ? speakerServiceProperties.getSwitchScore() : 0.45D;
-        if (score >= switchScore) {
-            log.info("[SpeakerIdentityService] hysteresis switch, sessionId={}, speakerId={}, {}(s={}) -> {}(s={})",
-                    sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score);
+        double marginThreshold = speakerServiceProperties.getMarginThreshold() != null
+                ? speakerServiceProperties.getMarginThreshold() : 0.06D;
+        // Switch only when high-confidence AND unambiguous (clear gap over the runner-up).
+        if (score >= switchScore && margin >= marginThreshold) {
+            log.info("[SpeakerIdentityService] hysteresis switch, sessionId={}, speakerId={}, {}(s={}) -> {}(s={}, margin={})",
+                    sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score, margin);
             hysteresisMap.put(key, new ResolvedScore(candidateName, score));
             return candidateName;
         }
-        log.info("[SpeakerIdentityService] hysteresis kept incumbent, sessionId={}, speakerId={}, keep={}(s={}), rejected={}(s={}), switchScore={}",
-                sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score, switchScore);
+        log.info("[SpeakerIdentityService] hysteresis kept incumbent, sessionId={}, speakerId={}, keep={}(s={}), rejected={}(s={}, margin={}), switchScore={}, marginThreshold={}",
+                sessionId, speakerId, incumbent.personName(), incumbent.score(), candidateName, score, margin, switchScore, marginThreshold);
         return incumbent.personName();
     }
 
@@ -203,7 +206,8 @@ public class SpeakerIdentityService {
         if (ssResult.isPresent()) {
             String candidateName = ssResult.get().getPersonName();
             double score = ssResult.get().getScore() != null ? ssResult.get().getScore() : 0d;
-            String personName = applyHysteresis(sessionId, speakerId, candidateName, score);
+            double margin = ssResult.get().getMargin() != null ? ssResult.get().getMargin() : 1d;
+            String personName = applyHysteresis(sessionId, speakerId, candidateName, score, margin);
             SpeakerIdentity identity = mapper.findByPersonName(personName);
             if (identity != null) {
                 SessionSpeakerIdentity resolved = SessionSpeakerIdentity.builder()

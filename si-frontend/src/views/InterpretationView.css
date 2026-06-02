@@ -329,6 +329,7 @@ body {
   flex-direction: column;
   border-top: 1px solid #e8e8ec;
   background: #f5f5f7;
+  position: relative;
 }
 
 .si-tri-transcript-dock-inner {
@@ -337,6 +338,29 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 0.35rem 0;
+}
+
+.si-auto-scroll-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(91, 91, 214, 0.24);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #4f46e5;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.14);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.si-auto-scroll-btn:hover {
+  background: #f5f4ff;
+  border-color: rgba(91, 91, 214, 0.42);
+  transform: translateY(-1px);
 }
 
 /* ========== Empty State ========== */
