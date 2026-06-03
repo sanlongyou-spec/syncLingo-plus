@@ -919,6 +919,46 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十一、2026-06-03 模型配置 + 实时调优 + Teams Bot 会前体验
+
+### 11.1 LLM 模型
+- 聊天默认写进代码（[OpenAiProperties](../si-backend/src/main/java/com/si/backend/config/OpenAiProperties.java) + application.yml）：压缩 `anthropic/claude-haiku-4.5`、纪要/总结/问答/RAG `deepseek/deepseek-v4-pro`、embedding `openai/text-embedding-3-small`。实际模型仍可被 `.env` 覆盖（运行时配置不入 git）。
+- 修复历史坑：`anthropic/claude-3.5-sonnet` 已从 OpenRouter 下线（404）；改用经 `/models` 核实可用的 `claude-sonnet-4.5` / `deepseek-v4-*`。
+
+### 11.2 说话人识别准确率（接 10.x）
+- **MIN_SCORE 0.25 → 0.4**（Python 默认 + start.bat/sh + Java application.yml/Properties/.env.example 全部一致）：挡住"对谁都 ~0.3"的垃圾匹配，宁可显示 Guest-N 也不认错。
+- **Top-2 间隔拒判**：speaker-service `/identify` 返回次高分 + margin；后端在迟滞里加"最高分和第二名差距 < `SPEAKER_SERVICE_MARGIN_THRESHOLD`(0.06) 就不换人"（专治音色相近）。
+- **Azure 中间结果分轨**：开 `SpeechServiceResponse_DiarizeIntermediateResults`（`AZURE_ASR_DIARIZE_INTERMEDIATE_RESULTS`，默认 true），让强制分段也带 speakerId，从源头减少 ~40% 的 Unknown。
+- **识别窗口 4s→8s、自动克隆样本 8s→20s、Cartesia clone `enhance` 可配**（`CARTESIA_CLONE_ENHANCE`）。
+- 诊断结论（日志实证）：翻译"不准"根因是 **ASR 语种误判**（中文被判成 en/id → 原文即乱码），Google 翻译只是忠实翻译乱码；压缩/翻译本身没问题。
+
+### 11.3 实时延迟调优
+- `AZURE_ASR_END_SILENCE_TIMEOUT_MS` 1200 → **600**（停顿更早定稿，译文/TTS 更早出）。
+- `OPENAI_COMPRESSION_MIN_TEXT_LENGTH` 80 → **50**（更短的中文句也压缩）。
+- 压缩触发条件确认：**仅 源语言=zh-CN 且 目标=id/en 且 中文原文 ≥ 50 字** 才触发。
+
+### 11.4 Teams Bot 会前体验
+- **AI 总结导出 Word**（[buildExportDocx](../si-backend/src/main/java/com/si/backend/service/PreMeetingService.java)）：总结追加在原文件之后；.docx 原件**完整保留原格式**，追加的总结正文改为**继承原文档默认格式**（去掉强制字号），更贴近"和原文一致"。（.doc/.pdf 因 POI 限制只能用提取文本重建。）
+- **AI 总结可手动编辑后再导出**（[TeamsBotView](../si-frontend/src/views/TeamsBotView.tsx)）：只读 `<pre>` 改为文本框，导出 Word/PDF 用改后的版本。
+- **参会模块重构**：合并原"刷新"和"刷新并生成实际参加情况"为**一个「刷新」**（拉取 Teams 实到 + 有会议安排时直接核对应到/实到/未到）；**去掉参会人员列表**；加入会议后一键出统计 + 明细表；后台自动拉取失败静默不弹错。
+
+### 11.5 测试结果（2026-06-03）
+- 后端 `mvn -o test`：**BUILD SUCCESS**，`Tests run: 12, Failures: 0, Errors: 0`。
+- 前端 `tsc --noEmit`：**0 错误**。
+- 后端 `/actuator/health`：**200**（已部署 Word 格式改动 + 各 .env 调优值，容器内核对一致）。
+- 模型可用性实测（OpenRouter `/models` + 实调）：`deepseek/deepseek-v4-pro`、`deepseek/deepseek-v4-flash`、`claude-sonnet-4.5`、`claude-haiku-4.5`、`openai/text-embedding-3-small` 均 HTTP 200。
+
+**需人工测试**
+| # | 测试项 | 操作 | 预期 |
+|---|--------|------|------|
+| N-40 | AI 总结导出 Word | 上传 .docx → 生成总结 → 导出 Word | 原文格式不变、总结追加在后、字体与原文一致 |
+| N-41 | 总结可编辑 | 改总结文本框 → 导出 | 导出的是改后的版本 |
+| N-42 | 参会一键核对 | 机器人入会 → 点「刷新」 | 直接出应到/实到/未到统计 + 明细，无独立参会人列表 |
+| N-43 | 延迟 | 实时同传一段中文 | 停顿 0.6s 即出译文，整体更跟手 |
+| N-44 | 声纹抗误判 | 音色相近两人 | 分数接近时不乱切；低于 0.4 显示 Guest-N 不认错 |
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

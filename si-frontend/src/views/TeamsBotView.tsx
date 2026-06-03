@@ -340,7 +340,9 @@ export default function TeamsBotView() {
         await syncCurrentSessionTitle(data.meetingTitle)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : '获取参会人员失败')
+      // Background/auto fetch (on mount and after join) — stay silent; the manual
+      // 「刷新」(handleRefreshParticipants) surfaces errors instead.
+      console.warn('[TeamsBotView] auto fetchParticipants failed:', e)
     } finally {
       setParticipantsLoading(false)
     }
@@ -374,11 +376,11 @@ export default function TeamsBotView() {
     }
   }
 
-  const handleGenerateAttendance = async () => {
-    if (!scheduleFile) { setError('请先上传会议安排文件'); return }
-    if (!selectedMeetingId) { setError('请先在上方选择关联会议，否则参会情况无法保存到历史记录'); return }
-    setAttendanceLoading(true)
+  // Merged action: always refresh the Teams participant list; if a meeting-schedule file is
+  // present, also generate (and save, when a meeting is selected) the actual-attendance check.
+  const handleRefreshParticipants = async () => {
     setParticipantsLoading(true)
+    if (scheduleFile) setAttendanceLoading(true)
     setError('')
     setSuccess('')
     try {
@@ -386,9 +388,18 @@ export default function TeamsBotView() {
       setParticipants(data.participants)
       persistKnownParticipants(data.participants, userId)
       if (data.callId) setActiveCallId(data.callId)
+      if (data.threadId) {
+        localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, data.threadId)
+        localStorage.setItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT, 'true')
+      }
       if (data.meetingTitle) {
         setMeetingTitle(data.meetingTitle)
         await syncCurrentSessionTitle(data.meetingTitle)
+      }
+
+      if (!scheduleFile) {
+        setSuccess('已刷新参会人员')
+        return
       }
       const res = await generatePreMeetingAttendance(scheduleFile.fileId, data.participants)
       setAttendanceResult(res.data)
@@ -406,10 +417,12 @@ export default function TeamsBotView() {
           console.warn('[TeamsBotView] attendance save failed:', err)
           setError('参会情况保存到历史记录失败，请重启后端服务后重试')
         })
+        setSuccess('已刷新参会人员并核对实际参加情况')
+      } else {
+        setSuccess('已刷新并核对（未选关联会议，结果未保存到历史记录）')
       }
-      setSuccess('已生成实际参加情况')
     } catch (e) {
-      setError(e instanceof Error ? e.message : '生成实际参加情况失败')
+      setError(e instanceof Error ? e.message : '刷新参会人员失败')
     } finally {
       setParticipantsLoading(false)
       setAttendanceLoading(false)
@@ -668,7 +681,17 @@ export default function TeamsBotView() {
                       >导出 PDF</button>
                     </div>
                   </div>
-                  <pre className="tb-prep-summary-text">{summaryResult.summary}</pre>
+                  <div className="tb-prep-summary-edit-hint">可手动修改总结，再点上方「导出 Word / PDF」导出修改后的版本</div>
+                  <textarea
+                    className="tb-prep-summary-edit"
+                    value={summaryResult.summary}
+                    spellCheck={false}
+                    onChange={e => {
+                      if (!selectedFileId) return
+                      const next = e.target.value
+                      setSummaryMap(prev => ({ ...prev, [selectedFileId]: { ...prev[selectedFileId], summary: next } }))
+                    }}
+                  />
                 </>
               )}
             </div>
@@ -723,67 +746,42 @@ export default function TeamsBotView() {
             <p className="tb-meeting-title"><span>会议名称</span><strong>{meetingTitle}</strong></p>
           )}
 
-          {/* 参会人员 */}
-          <div className="tb-card-header" style={{ marginTop: 20 }}>
-            <h3 className="tb-card-subtitle">参会人员</h3>
-            <button
-              className="tb-btn tb-btn--secondary tb-btn--sm"
-              onClick={() => void fetchParticipants()}
-              disabled={participantsLoading}
-            >
-              {participantsLoading ? '刷新中…' : '刷新'}
-            </button>
-          </div>
-          {participants.length === 0 ? (
-            <p className="tb-empty">
-              {participantsLoading ? '正在获取参会人员…' : '暂无参会人员（机器人尚未加入会议）'}
-            </p>
-          ) : (
-            <div className="tb-recipient-list">
-              {participants.map(p => (
-                <div key={p.aadId} className="tb-recipient-row">
-                  <span className="tb-type-pill tb-type-pill--person">参会</span>
-                  <span className="tb-recipient-value">
-                    {p.displayName || p.aadId}
-                    {p.email && <span className="tb-recipient-sub"> · {p.email}</span>}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 实际参加情况 */}
+          {/* 实际参加情况：一个「刷新」= 拉取 Teams 实到并核对应到/未到 */}
           <div className="tb-card-header" style={{ marginTop: 20 }}>
             <h3 className="tb-card-subtitle">实际参加情况</h3>
+            <div className="tb-attendance-actions">
+              <button
+                className={`tb-btn tb-btn--primary tb-btn--sm ${(participantsLoading || attendanceLoading) ? 'tb-btn--loading' : ''}`}
+                disabled={participantsLoading || attendanceLoading}
+                onClick={() => void handleRefreshParticipants()}
+                title={scheduleFile ? '从 Teams 拉取实到人员并核对应到/未到' : '请先在上方上传会议安排'}
+              >
+                {(participantsLoading || attendanceLoading) ? '刷新中…' : '刷新'}
+              </button>
+              {attendanceResult && (
+                <button
+                  className={`tb-btn tb-btn--secondary tb-btn--sm ${attendanceExportLoading ? 'tb-btn--loading' : ''}`}
+                  disabled={attendanceExportLoading}
+                  onClick={() => void handleExportAttendance()}
+                >
+                  {attendanceExportLoading ? '导出中…' : '导出 Word'}
+                </button>
+              )}
+            </div>
           </div>
-          <div className="tb-attendance-actions">
-            <button
-              className={`tb-btn tb-btn--primary ${attendanceLoading ? 'tb-btn--loading' : ''}`}
-              disabled={attendanceLoading || !scheduleFile}
-              onClick={() => void handleGenerateAttendance()}
-              title={scheduleFile ? undefined : '请先在上方上传会议安排'}
-            >
-              {attendanceLoading ? '生成中…' : '刷新并生成实际参加情况'}
-            </button>
-            <button
-              className={`tb-btn tb-btn--secondary ${attendanceExportLoading ? 'tb-btn--loading' : ''}`}
-              disabled={attendanceExportLoading || !attendanceResult}
-              onClick={() => void handleExportAttendance()}
-            >
-              {attendanceExportLoading ? '导出中…' : '导出 Word'}
-            </button>
-          </div>
-          {!scheduleFile && (
-            <p className="tb-empty">请先在顶部上传会议安排文件，才能核对实际参加情况</p>
-          )}
-          {scheduleFile && !selectedMeetingId && (
-            <p className="tb-empty" style={{ color: '#b45309' }}>⚠️ 未选择关联会议，参会情况将无法保存到历史记录</p>
-          )}
-          {scheduleFile && (
+          {scheduleFile ? (
             <div className="tb-attendance-file">
               <span>会议安排</span>
               <strong>{scheduleFile.fileName}</strong>
             </div>
+          ) : (
+            <p className="tb-empty">请先在顶部上传会议安排文件，点「刷新」即可拉取 Teams 实到人员并核对应到 / 未到</p>
+          )}
+          {scheduleFile && !selectedMeetingId && (
+            <p className="tb-empty" style={{ color: '#b45309' }}>⚠️ 未选择关联会议，核对结果不会保存到历史记录</p>
+          )}
+          {scheduleFile && !attendanceResult && !attendanceLoading && (
+            <p className="tb-empty">机器人加入会议后，点「刷新」即可直接核对出应到 / 实到 / 未到</p>
           )}
           {attendanceResult && (
             <>

@@ -959,12 +959,13 @@ public class PreMeetingService {
             headingRun.setFontSize(14);
             headingRun.setColor("4338CA");
 
-            // Summary body — split by line to preserve paragraph breaks
+            // Summary body — split by line to preserve paragraph breaks.
+            // Do NOT set font/size, so the appended summary inherits the original document's
+            // default text format (keeps it consistent with the original content).
             for (String line : summary.split("\n")) {
                 XWPFParagraph p = output.createParagraph();
                 XWPFRun r = p.createRun();
                 r.setText(line);
-                r.setFontSize(11);
             }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();

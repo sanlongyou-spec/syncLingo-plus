@@ -799,6 +799,33 @@
   word-break: break-word;
 }
 
+.tb-prep-summary-edit-hint {
+  padding: 6px 22px 0;
+  font-size: 0.75rem;
+  color: #98a2b3;
+}
+
+.tb-prep-summary-edit {
+  flex: 1;
+  min-height: 220px;
+  margin: 6px 16px 14px;
+  padding: 16px 18px;
+  border: 1px solid #d0d5dd;
+  border-radius: 10px;
+  background: #fff;
+  color: #1d2939;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.9;
+  resize: vertical;
+}
+
+.tb-prep-summary-edit:focus {
+  outline: none;
+  border-color: #4338ca;
+  box-shadow: 0 0 0 3px rgba(67, 56, 202, 0.12);
+}
+
 /* ── Right-panel tab switcher ── */
 .tb-prepare-right-tabs {
   display: flex;

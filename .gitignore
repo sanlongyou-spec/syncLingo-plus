@@ -57,3 +57,4 @@ outputs/
 speaker-service/__pycache__/
 speaker-service/embeddings.json
 speaker-service/pretrained_models/
+speaker-service/embeddings.json.bak.*
