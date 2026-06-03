@@ -24,7 +24,8 @@ public class OpenAiProperties {
 
     private int compressionMinTextLength = 80;
 
-    private String compressionModel = "gpt-5-nano";
+    // Real-time per-segment compression — kept on a fast, non-reasoning model.
+    private String compressionModel = "anthropic/claude-haiku-4.5";
 
     private double compressionZhToIdTargetRatio = 0.60;
 
@@ -32,9 +33,10 @@ public class OpenAiProperties {
 
     private double compressionZhToEnTargetRatio = 0.70;
 
-    private String summaryModel = "gpt-5-mini";
+    // Summaries / Q&A / RAG helper — DeepSeek V4 (good Chinese, low cost).
+    private String summaryModel = "deepseek/deepseek-v4-pro";
 
-    private String documentSummaryModel = "gpt-5";
+    private String documentSummaryModel = "deepseek/deepseek-v4-pro";
 
     private long compressionMaxOutputTokens = 512L;
 
@@ -42,7 +44,7 @@ public class OpenAiProperties {
 
     private long documentSummaryMaxOutputTokens = 4000L;
 
-    private String embeddingModel = "text-embedding-3-small";
+    private String embeddingModel = "openai/text-embedding-3-small";
 
     /**
      * Optional separate endpoint for embeddings. OpenRouter has no /embeddings API, so when
