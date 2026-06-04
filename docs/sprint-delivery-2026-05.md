@@ -1001,7 +1001,15 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 - Phase1 切块改动**需重建向量库**（`TRUNCATE interpretation_embedding` + `/api/admin/embeddings/rebuild-all`）才完全生效；Phase2A/P0-2/P0-3/P1-4/P1-6 重建后端即生效。
 - C# bot 改动需停 bot → `dotnet build` → 重启。
 
-**未实现（重量级，下批）**：P1-5 结构化抽取、P2-7 层级摘要、P2-8 Agentic 迭代检索。
+### 12.5 RAG 进阶（P1-5 / P2-7 / P2-8，2026-06-04 第二批）
+- **P1-5 结构化抽取**（`MeetingInsightService`）：一次 LLM 从转写抽出 `{decisions, risks, metrics, topics}`，每条作为**独立可检索对象**嵌入（新 source_type：decision/risk/metric/topic）。接在行动项抽取端点上顺带触发；`source_id=sessionPk*1000+i, ref_id=sessionPk`，重抽前先删同类旧条目。→ 治"风险点串台"，问"有哪些风险/决策"直接命中干净条目。
+- **P2-7 跨会议层级摘要（RAPTOR-lite）**（`HierarchicalSummaryService`）：把用户各会议的 `meetingSummary` 汇总成一份「跨会议概览」（主要议题/趋势/共性风险）作根节点嵌入（`cross_summary`，挂到用户最近会议以便检索）。离线端点 `POST /api/admin/embeddings/rebuild-overview?userId=`。→ 补"整体趋势/主要议题"等聚合问题。
+- **P2-8 Agentic 迭代检索**（`RagEnhancementService.agenticFollowup` + `TeamsBotQueryService.retrieveWithAgentic`）：检索→LLM 判断是否充分→不足则补一个查询再检索，最多 `max-steps`。**默认关**（多 LLM 调用）。→ 多步推理问题。
+- 检索标签：决策/风险/关键指标/主题/跨会议概览；检索/去重/rerank/句窗全部复用。
+- 配置：`rag.insight.*`、`rag.hierarchical.*`、`rag.agentic.*`（agentic 默认关）。
+- **测试**：后端 `mvn -o test` **BUILD SUCCESS，Tests run: 56**。新增 `MeetingInsightParseTest`(5)、`AgenticDecisionParseTest`(5)。
+- 说明：P2-7/P2-8 为 LLM 编排/离线管线，单测仅覆盖纯逻辑（JSON/决策解析），完整行为需部署后用 `docs/rag-eval-questions.md` 验证。
+- P2-7 为 RAPTOR 轻量版（单层根概览）；完整聚类树需加 `user_id` 列等更大改造。
 
 ---
 

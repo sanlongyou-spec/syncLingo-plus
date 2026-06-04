@@ -43,6 +43,22 @@ public class RagEnhancementService {
     private boolean decomposeEnabled;
     @Value("${rag.decompose.max:3}")
     private int decomposeMax;
+    /** P2-8 agentic iterative retrieval (retrieve → judge → follow-up). Off by default (extra LLM calls). */
+    @Value("${rag.agentic.enabled:false}")
+    private boolean agenticEnabled;
+    @Value("${rag.agentic.max-steps:3}")
+    private int agenticMaxSteps;
+
+    public boolean isAgenticEnabled() { return agenticEnabled; }
+    public int getAgenticMaxSteps() { return Math.max(1, agenticMaxSteps); }
+
+    /** Decision from the agentic follow-up step. */
+    public record AgenticDecision(boolean enough, String nextQuery) {}
+
+    private static final String AGENTIC_SYSTEM_PROMPT =
+            "你是检索规划助手。给定原问题和已检索到的资料，判断资料是否足以【完整】回答原问题。"
+            + "若已足够，输出 {\"enough\":true}；若还缺信息，输出 {\"enough\":false,\"next_query\":\"下一步应检索的查询\"}，"
+            + "next_query 要针对缺失的那部分、与原问题相同语言。只输出该 JSON，不要解释。";
 
     private static final String REWRITE_SYSTEM_PROMPT =
             "你是检索查询改写助手。给定最近的对话和用户的最新问题，把最新问题改写成一个【自包含】的检索查询："
@@ -155,6 +171,48 @@ public class RagEnhancementService {
             log.warn("[RagEnhancementService] decompose failed, using original only: {}", e.getMessage());
         }
         return result;
+    }
+
+    /**
+     * P2-8: after a retrieval pass, ask the LLM whether the gathered context is enough to answer the
+     * original question; if not, propose one follow-up query. Returns "enough" when disabled or on
+     * any failure (so the loop terminates safely).
+     */
+    public AgenticDecision agenticFollowup(String question, String contextSoFar) {
+        if (!agenticEnabled || question == null || question.isBlank()) {
+            return new AgenticDecision(true, null);
+        }
+        try {
+            String ctx = contextSoFar == null ? "" : contextSoFar;
+            if (ctx.length() > 4000) ctx = ctx.substring(0, 4000);
+            String user = "原问题：" + question + "\n已检索到的资料：\n" + ctx;
+            String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
+                    AGENTIC_SYSTEM_PROMPT, user, 200L);
+            return parseAgenticDecision(raw);
+        } catch (Exception e) {
+            log.warn("[RagEnhancementService] agenticFollowup failed, treating as enough: {}", e.getMessage());
+            return new AgenticDecision(true, null);
+        }
+    }
+
+    /** Parse {"enough":bool,"next_query":string}. Defaults to "enough" on anything unparseable. */
+    static AgenticDecision parseAgenticDecision(String raw) {
+        if (raw == null || raw.isBlank()) return new AgenticDecision(true, null);
+        try {
+            String json = raw.trim();
+            if (json.startsWith("```")) {
+                int nl = json.indexOf('\n');
+                if (nl > 0) json = json.substring(nl + 1);
+                if (json.endsWith("```")) json = json.substring(0, json.length() - 3);
+            }
+            JsonNode root = new ObjectMapper().readTree(json.trim());
+            boolean enough = root.path("enough").asBoolean(true);
+            String next = root.hasNonNull("next_query") ? root.get("next_query").asText().trim() : null;
+            if (next != null && next.isBlank()) next = null;
+            return new AgenticDecision(enough || next == null, next);
+        } catch (Exception e) {
+            return new AgenticDecision(true, null);
+        }
     }
 
     /**

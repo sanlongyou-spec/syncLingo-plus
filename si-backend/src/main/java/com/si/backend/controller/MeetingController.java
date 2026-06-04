@@ -7,6 +7,7 @@ import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.service.MeetingActionItemService;
+import com.si.backend.service.MeetingInsightService;
 import com.si.backend.service.MeetingService;
 import com.si.backend.service.PreMeetingService;
 import com.si.backend.service.SpeakerSummaryService;
@@ -40,6 +41,7 @@ public class MeetingController {
     private final SpeakerSummaryService speakerSummaryService;
     private final InterpretationFacade interpretationFacade;
     private final MeetingActionItemService actionItemService;
+    private final MeetingInsightService meetingInsightService;
     private final PreMeetingService preMeetingService;
 
     @PostMapping
@@ -172,7 +174,10 @@ public class MeetingController {
         Long userId = body != null && body.get("userId") != null
                 ? Long.valueOf(body.get("userId").toString()) : null;
         log.info("[MeetingController] extractActionItems, sessionId={}", sessionId);
-        return Result.ok(actionItemService.extractAndSave(sessionId, meetingId, userId));
+        List<MeetingActionItem> items = actionItemService.extractAndSave(sessionId, meetingId, userId);
+        // P1-5: also extract structured insights (decisions/risks/metrics/topics) for retrieval.
+        meetingInsightService.extractAndEmbed(sessionId, meetingId);
+        return Result.ok(items);
     }
 
     /** 查询会话的所有行动项 */

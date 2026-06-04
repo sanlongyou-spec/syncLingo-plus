@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -68,6 +69,7 @@ public class TeamsBotQueryService {
     private final UserMapper userMapper;
     private final TeamsBotProperties teamsBotProperties;
     private final PreMeetingService preMeetingService;
+    private final RagEnhancementService ragEnhancementService;
     private final LlmIntegration llmIntegration;
     private final MeetingActionItemMapper actionItemMapper;
     private final InterpretationSessionMapper sessionMapper;
@@ -460,8 +462,7 @@ public class TeamsBotQueryService {
         }
 
         PreMeetingService.QuestionFilter filter = extractQuestionFilter(question);
-        PreMeetingService.UnifiedContextResult ragResult =
-                preMeetingService.buildUnifiedContextResult(userId, question, filter);
+        PreMeetingService.UnifiedContextResult ragResult = retrieveWithAgentic(userId, question, filter);
         KnowledgeContext fallbackContext = KnowledgeContext.empty();
         if (ragResult.context().isBlank()) {
             fallbackContext = buildMeetingKnowledgeContext(userId, question);
@@ -488,6 +489,40 @@ public class TeamsBotQueryService {
             log.error("[TeamsBotQueryService] answerNaturalQuestion llm failed, userId={}", userId, e);
             return BotAnswer.text("已找到相关会议内容，但生成回答时遇到 LLM 错误：" + e.getMessage(), RESPONSE_RAG);
         }
+    }
+
+    /**
+     * P2-8: agentic iterative retrieval. Runs one retrieval pass, then (if enabled) asks the LLM
+     * whether the context is sufficient; if not, retrieves a follow-up query and merges results,
+     * up to {@code max-steps}. When agentic is off, this is a single normal retrieval pass.
+     */
+    private PreMeetingService.UnifiedContextResult retrieveWithAgentic(
+            Long userId, String question, PreMeetingService.QuestionFilter filter) {
+        PreMeetingService.UnifiedContextResult first =
+                preMeetingService.buildUnifiedContextResult(userId, question, filter);
+        if (!ragEnhancementService.isAgenticEnabled()) {
+            return first;
+        }
+        StringBuilder ctx = new StringBuilder(first.context());
+        LinkedHashMap<String, TeamsBotQuerySourceVo> srcs = new LinkedHashMap<>();
+        for (TeamsBotQuerySourceVo s : first.sources()) srcs.putIfAbsent(sourceKey(s), s);
+
+        int steps = ragEnhancementService.getAgenticMaxSteps();
+        for (int i = 1; i < steps; i++) {
+            RagEnhancementService.AgenticDecision decision =
+                    ragEnhancementService.agenticFollowup(question, ctx.toString());
+            if (decision.enough() || decision.nextQuery() == null) break;
+            log.info("[TeamsBotQueryService] agentic step {} follow-up query: {}", i, decision.nextQuery());
+            PreMeetingService.UnifiedContextResult more =
+                    preMeetingService.buildUnifiedContextResult(userId, decision.nextQuery(), filter);
+            if (!more.context().isBlank()) ctx.append('\n').append(more.context());
+            for (TeamsBotQuerySourceVo s : more.sources()) srcs.putIfAbsent(sourceKey(s), s);
+        }
+        return new PreMeetingService.UnifiedContextResult(ctx.toString(), new ArrayList<>(srcs.values()));
+    }
+
+    private static String sourceKey(TeamsBotQuerySourceVo s) {
+        return s.getSourceType() + "|" + s.getFileId() + "|" + s.getSessionId() + "|" + s.getSourceName();
     }
 
     private Optional<BotAnswer> answerStructuredQuestion(Long userId, String question) {

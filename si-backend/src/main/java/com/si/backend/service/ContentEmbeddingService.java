@@ -40,6 +40,13 @@ public class ContentEmbeddingService {
     public static final String TYPE_FILE_SUMMARY    = "file_summary";
     public static final String TYPE_FILE_CONTENT    = "file_content";
     public static final String TYPE_ACTION_ITEM     = "action_item";
+    // P1-5 structured insights — each extracted item is a first-class, independently retrievable object.
+    public static final String TYPE_DECISION        = "decision";
+    public static final String TYPE_RISK            = "risk";
+    public static final String TYPE_METRIC          = "metric";
+    public static final String TYPE_TOPIC           = "topic";
+    // P2-7 cross-meeting overview (one per user) — the "root" aggregation layer for global questions.
+    public static final String TYPE_CROSS_SUMMARY   = "cross_summary";
 
     private static final int FILE_CONTENT_CHUNK_SIZE = 500;
 
@@ -159,6 +166,60 @@ public class ContentEmbeddingService {
                 log.warn("[ContentEmbeddingService] asyncEmbedActionItem failed, itemId={}: {}", item.getId(), e.getMessage());
             }
         });
+    }
+
+    /**
+     * P1-5: embed extracted structured insights (decisions / risks / metrics / topics) for a session,
+     * each as its own retrievable object. Replaces any prior insights of this type for the session so
+     * re-extraction doesn't pile up duplicates. source_id = sessionPk*1000+idx, ref_id = sessionPk.
+     */
+    public void asyncEmbedInsights(String type, String sessionId, Long sessionPk, Long meetingId,
+                                   String sessionTitle, java.time.LocalDate sessionDate, List<String> items) {
+        if (sessionPk == null || items == null || items.isEmpty()) return;
+        CompletableFuture.runAsync(() -> {
+            try {
+                contentEmbeddingDeleteByType(type, sessionPk);
+                int i = 0;
+                for (String item : items) {
+                    if (blank(item)) continue;
+                    upsert(type, sessionPk * 1000L + i, sessionPk,
+                            sessionId, meetingId, sessionTitle, sessionDate, null, item.trim(), null);
+                    i++;
+                }
+                log.info("[ContentEmbeddingService] asyncEmbedInsights done, type={}, sessionId={}, count={}",
+                        type, sessionId, i);
+            } catch (Exception e) {
+                log.warn("[ContentEmbeddingService] asyncEmbedInsights failed, type={}, sessionId={}: {}",
+                        type, sessionId, e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * P2-7: embed a per-user cross-meeting overview as the aggregation "root" node. Linked to one of
+     * the user's meetings ({@code linkageMeetingId}) so the user-scoped retrieval query returns it.
+     * One node per user (source_id = ref_id = userId), replaced on each rebuild.
+     */
+    public void asyncEmbedCrossSummary(Long userId, Long linkageMeetingId, String overviewText) {
+        if (userId == null || linkageMeetingId == null || blank(overviewText)) return;
+        CompletableFuture.runAsync(() -> {
+            try {
+                contentEmbeddingDeleteByType(TYPE_CROSS_SUMMARY, userId);
+                upsert(TYPE_CROSS_SUMMARY, userId, userId, "", linkageMeetingId,
+                        "跨会议概览", null, null, overviewText.trim(), null);
+                log.info("[ContentEmbeddingService] asyncEmbedCrossSummary done, userId={}", userId);
+            } catch (Exception e) {
+                log.warn("[ContentEmbeddingService] asyncEmbedCrossSummary failed, userId={}: {}", userId, e.getMessage());
+            }
+        });
+    }
+
+    private void contentEmbeddingDeleteByType(String type, Long refId) {
+        try {
+            embeddingMapper.deleteBySourceTypeAndRefId(type, refId);
+        } catch (Exception e) {
+            log.debug("[ContentEmbeddingService] insight pre-delete skipped, type={}, refId={}: {}", type, refId, e.getMessage());
+        }
     }
 
     // ── Synchronous deletes ───────────────────────────────────────────────

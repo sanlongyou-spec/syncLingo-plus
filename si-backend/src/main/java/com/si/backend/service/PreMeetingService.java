@@ -1748,6 +1748,11 @@ public class PreMeetingService {
         if (ContentEmbeddingService.TYPE_MEETING_SUMMARY.equals(type)) return "会议总结";
         if (ContentEmbeddingService.TYPE_SPEAKER_SUMMARY.equals(type)) return "发言摘要";
         if (ContentEmbeddingService.TYPE_ACTION_ITEM.equals(type)) return "行动项";
+        if (ContentEmbeddingService.TYPE_DECISION.equals(type)) return "决策";
+        if (ContentEmbeddingService.TYPE_RISK.equals(type)) return "风险";
+        if (ContentEmbeddingService.TYPE_METRIC.equals(type)) return "关键指标";
+        if (ContentEmbeddingService.TYPE_TOPIC.equals(type)) return "主题";
+        if (ContentEmbeddingService.TYPE_CROSS_SUMMARY.equals(type)) return "跨会议概览";
         return meetingTitle;
     }
 

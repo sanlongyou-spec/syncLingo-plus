@@ -139,6 +139,15 @@ rag:
   decompose:                                         # P1-4: split multi-hop / comparison questions
     enabled: ${RAG_DECOMPOSE_ENABLED:true}
     max: ${RAG_DECOMPOSE_MAX:3}
+  insight:                                            # P1-5: extract decisions/risks/metrics/topics as retrievable items
+    enabled: ${RAG_INSIGHT_ENABLED:true}
+    max-per-category: ${RAG_INSIGHT_MAX_PER_CATEGORY:12}
+  hierarchical:                                        # P2-7: cross-meeting overview (RAPTOR-lite root node)
+    enabled: ${RAG_HIERARCHICAL_ENABLED:true}
+    max-meetings: ${RAG_HIERARCHICAL_MAX_MEETINGS:30}
+  agentic:                                             # P2-8: iterative retrieve→judge→follow-up (off by default)
+    enabled: ${RAG_AGENTIC_ENABLED:false}
+    max-steps: ${RAG_AGENTIC_MAX_STEPS:3}
 
 cartesia:
   api-key: ${CARTESIA_API_KEY:}

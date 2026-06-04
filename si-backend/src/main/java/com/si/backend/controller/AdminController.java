@@ -26,6 +26,7 @@ public class AdminController {
 
     private final InterpretationResultService interpretationResultService;
     private final ContentEmbeddingService contentEmbeddingService;
+    private final com.si.backend.service.HierarchicalSummaryService hierarchicalSummaryService;
     private final AppAdminProperties adminProperties;
 
     /**
@@ -64,6 +65,18 @@ public class AdminController {
                 "contentEmbeddings", contentCreated,
                 "total", total,
                 "batchPerType", batchPerType));
+    }
+
+    /** P2-7: build/refresh the cross-meeting overview node for a user. */
+    @PostMapping("/embeddings/rebuild-overview")
+    public Result<Map<String, Object>> rebuildOverview(
+            @RequestHeader(value = ADMIN_SECRET_HEADER, required = false) String secret,
+            @RequestParam long userId) {
+        ensureAuthorized(secret);
+        log.info("[AdminController] rebuildOverview start, userId={}", userId);
+        int aggregated = hierarchicalSummaryService.rebuildForUser(userId);
+        log.info("[AdminController] rebuildOverview done, userId={}, aggregated={}", userId, aggregated);
+        return Result.ok(Map.of("userId", userId, "aggregatedMeetings", aggregated));
     }
 
     private void ensureAuthorized(String secret) {
