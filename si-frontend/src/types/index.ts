@@ -261,6 +261,7 @@ export interface Meeting {
   scheduledTime?: string | null
   note?: string | null
   attendanceJson?: string | null
+  hasExpectedParticipants?: boolean
   createTime?: string
   files?: MeetingFile[]
 }

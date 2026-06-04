@@ -242,6 +242,20 @@ export const generatePreMeetingAttendance = (
     actualParticipants,
   }).then(r => r.data)
 
+// Re-generate attendance from the 应到 list saved on the meeting (no in-memory 会议安排 needed).
+export const generateAttendanceFromMeeting = (
+  meetingId: number,
+  actualParticipants: MeetingParticipant[],
+): Promise<Result<PreMeetingAttendanceResult>> =>
+  client.post<Result<PreMeetingAttendanceResult>>('/api/pre-meeting/attendance', {
+    meetingId,
+    actualParticipants,
+  }).then(r => r.data)
+
+// Persist the 应到 list parsed from a freshly-uploaded 会议安排 onto the meeting.
+export const saveExpectedParticipants = (fileId: string, meetingId: number): Promise<Result<number>> =>
+  client.post<Result<number>>('/api/pre-meeting/attendance/save-expected', { fileId, meetingId }).then(r => r.data)
+
 export const exportPreMeetingAttendanceDocx = (
   fileId: string,
   actualParticipants: MeetingParticipant[],
@@ -260,6 +274,9 @@ export const getPreMeetingUsage = (userId: number, days = 365): Promise<Result<P
 
 export const exportPreMeetingDocx = (fileId: string, summary: string): Promise<Blob> =>
   client.post<Blob>(`/api/pre-meeting/export/${fileId}`, { summary }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
+
+export const exportPreMeetingPdf = (fileId: string, summary: string): Promise<Blob> =>
+  client.post<Blob>(`/api/pre-meeting/export/pdf/${fileId}`, { summary }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
 export const chatWithPreMeeting = (
   question: string,
@@ -343,6 +360,10 @@ export const getMeetingFiles = (meetingId: number): Promise<Result<MeetingFile[]
 
 export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}`).then(r => r.data)
+
+// Re-load a previously uploaded meeting file into the in-memory store so it can be re-selected / re-summarized.
+export const loadMeetingFileForSummary = (meetingId: number, fileId: number): Promise<Result<PreMeetingSummaryResult>> =>
+  client.post<Result<PreMeetingSummaryResult>>(`/api/meetings/${meetingId}/files/${fileId}/load`, {}).then(r => r.data)
 
 export const generateSpeakerSummary = (params: {
   userId: number

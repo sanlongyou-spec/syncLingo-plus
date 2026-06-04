@@ -95,23 +95,45 @@ public class PreMeetingController {
 
     @PostMapping("/attendance")
     public Result<PreMeetingAttendanceVo> generateAttendance(@RequestBody PreMeetingAttendanceRequest request) {
-        if (request == null || request.getFileId() == null || request.getFileId().isBlank()) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择会议安排文件");
+        boolean hasFile = request != null && request.getFileId() != null && !request.getFileId().isBlank();
+        boolean hasMeeting = request != null && request.getMeetingId() != null;
+        if (!hasFile && !hasMeeting) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请上传会议安排或选择已保存应到名单的会议");
         }
         try {
             int actualCount = request.getActualParticipants() == null ? 0 : request.getActualParticipants().size();
-            log.info("[PreMeetingController] generateAttendance start, fileId={}, actualCount={}",
-                    request.getFileId(), actualCount);
-            PreMeetingAttendanceVo result = preMeetingService.generateAttendance(
-                    request.getFileId(), request.getActualParticipants());
-            log.info("[PreMeetingController] generateAttendance done, fileId={}, expectedCount={}, presentCount={}",
-                    request.getFileId(), result.getExpectedCount(), result.getPresentCount());
+            // Prefer the freshly-uploaded file; otherwise fall back to the meeting's saved 应到 list.
+            PreMeetingAttendanceVo result = hasFile
+                    ? preMeetingService.generateAttendance(request.getFileId(), request.getActualParticipants())
+                    : preMeetingService.generateAttendanceFromMeeting(request.getMeetingId(), request.getActualParticipants());
+            log.info("[PreMeetingController] generateAttendance done, fileId={}, meetingId={}, actualCount={}, expectedCount={}, presentCount={}",
+                    request.getFileId(), request.getMeetingId(), actualCount, result.getExpectedCount(), result.getPresentCount());
             return Result.ok(result);
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {
-            log.error("[PreMeetingController] generateAttendance failed, fileId={}", request.getFileId(), e);
+            log.error("[PreMeetingController] generateAttendance failed, fileId={}, meetingId={}",
+                    request.getFileId(), request.getMeetingId(), e);
             throw BizException.of(ErrorCode.BAD_REQUEST, "生成实际参加情况失败：" + e.getMessage());
+        }
+    }
+
+    /** Save the 应到 list parsed from a freshly-uploaded 会议安排 onto the meeting (survives sessions). */
+    @PostMapping("/attendance/save-expected")
+    public Result<Integer> saveExpectedParticipants(@RequestBody Map<String, Object> body) {
+        String fileId = body.get("fileId") != null ? body.get("fileId").toString() : null;
+        Long meetingId = body.get("meetingId") != null ? Long.valueOf(body.get("meetingId").toString()) : null;
+        if (fileId == null || fileId.isBlank() || meetingId == null) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "缺少 fileId 或 meetingId");
+        }
+        try {
+            int count = preMeetingService.saveExpectedParticipants(fileId, meetingId);
+            return Result.ok(count);
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] saveExpectedParticipants failed, fileId={}, meetingId={}", fileId, meetingId, e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "保存应到名单失败：" + e.getMessage());
         }
     }
 
@@ -203,9 +225,38 @@ public class PreMeetingController {
         }
     }
 
+    @PostMapping("/export/pdf/{fileId}")
+    public ResponseEntity<byte[]> exportPdf(
+            @PathVariable String fileId,
+            @RequestBody Map<String, String> body) {
+        String summary = body.getOrDefault("summary", "");
+        try {
+            byte[] pdfBytes = preMeetingService.buildExportPdf(fileId, summary);
+            String fileName = preMeetingService.getFileName(fileId);
+            int dot = fileName.lastIndexOf('.');
+            String pdfName = (dot > 0 ? fileName.substring(0, dot) : fileName) + ".pdf";
+            String encoded = URLEncoder.encode(pdfName, StandardCharsets.UTF_8).replace("+", "%20");
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_PDF);
+            headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded);
+            return ResponseEntity.ok().headers(headers).body(pdfBytes);
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] exportPdf failed, fileId={}", fileId, e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "导出 PDF 失败：" + e.getMessage());
+        }
+    }
+
     private String buildAttendanceExportFileName(String fileName) {
         int dot = fileName.lastIndexOf('.');
         String baseName = dot > 0 ? fileName.substring(0, dot) : fileName;
-        return baseName + "_实际参会名单.docx";
+        // Keep the original name (incl. date, title and place names) intact, only swap
+        // 「会议通知」→「参会情况」. If the source name has no 「会议通知」, fall back to a suffix.
+        String renamed = baseName.contains("会议通知")
+                ? baseName.replace("会议通知", "参会情况")
+                : baseName + "_参会情况";
+        return renamed + ".docx";
     }
 }

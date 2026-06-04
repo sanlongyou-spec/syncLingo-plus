@@ -806,8 +806,8 @@
 }
 
 .tb-prep-summary-edit {
-  flex: 1;
-  min-height: 220px;
+  flex: 1 1 auto;
+  min-height: 160px;
   margin: 6px 16px 14px;
   padding: 16px 18px;
   border: 1px solid #d0d5dd;
@@ -1148,6 +1148,26 @@
 }
 .tb-meeting-file-del:hover { color: #ef4444; }
 
+.tb-meeting-file-row--active {
+  background: #e0e7ff;
+  box-shadow: inset 0 0 0 1px #6366f1;
+}
+.tb-meeting-file-select {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.tb-meeting-file-select:disabled { cursor: default; opacity: 0.7; }
+.tb-meeting-file-row--clickable:hover { background: #eef2ff; }
+
 /* ══════════════════════════════════════════════════════
    Single-page layout
 ══════════════════════════════════════════════════════ */
@@ -1161,7 +1181,7 @@
   flex-direction: column;
   gap: 1.25rem;
   padding: 1.5rem 2rem 3rem;
-  max-width: 1100px;
+  max-width: 1360px;
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
@@ -1211,6 +1231,22 @@
   flex: 1;
 }
 
+/* 新建会议区块 */
+.tb-new-meeting {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed #e2e8f0;
+}
+.tb-new-meeting-label {
+  display: block;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  margin-bottom: 0.6rem;
+}
+.tb-new-meeting .tb-meeting-name-row .tb-meeting-input {
+  flex: 1;
+}
+
 /* ── Section 2: files layout ── */
 .tb-files-section .tb-card-desc {
   margin-bottom: 0.75rem;
@@ -1237,7 +1273,7 @@
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 1.25rem;
   margin-top: 0.75rem;
-  align-items: start;
+  align-items: stretch;
 }
 
 .tb-files-left {

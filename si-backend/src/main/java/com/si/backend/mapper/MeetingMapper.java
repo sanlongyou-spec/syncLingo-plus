@@ -44,4 +44,10 @@ public interface MeetingMapper {
 
     @Update("UPDATE meeting SET attendance_json = #{json} WHERE id = #{id}")
     int updateAttendanceJson(@Param("id") Long id, @Param("json") String json);
+
+    @Update("ALTER TABLE meeting ADD COLUMN expected_participants_json MEDIUMTEXT DEFAULT NULL")
+    void addExpectedParticipantsColumnIfNotExists();
+
+    @Update("UPDATE meeting SET expected_participants_json = #{json} WHERE id = #{id}")
+    int updateExpectedParticipants(@Param("id") Long id, @Param("json") String json);
 }

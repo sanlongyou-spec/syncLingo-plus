@@ -25,10 +25,12 @@ import org.apache.poi.hwpf.HWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.apache.poi.xwpf.usermodel.XWPFRun;
+import org.apache.poi.xwpf.usermodel.ParagraphAlignment;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.apache.poi.xwpf.usermodel.XWPFTableCell;
 import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.apache.poi.xwpf.usermodel.UnderlinePatterns;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -36,6 +38,11 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+import java.text.Collator;
 import java.text.Normalizer;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -65,6 +72,9 @@ public class PreMeetingService {
     private static final Pattern DATE_PATTERN = Pattern.compile(
             "\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日");
     private static final Pattern GROUP_COUNT_PATTERN = Pattern.compile("^(.*?)[（(]\\d+[）)]\\s*[:：]\\s*(.*)$");
+    private static final Pattern GROUP_LINE_REWRITE_PATTERN = Pattern.compile("^(.*?[（(])\\d+([）)]\\s*[:：]\\s*)(.*)$");
+    private static final Pattern PARTICIPANT_TOTAL_LINE_PATTERN = Pattern.compile(
+            "^(.*?[:：]\\s*)\\d+\\s*Orang\\s*人?.*$", Pattern.CASE_INSENSITIVE);
     private static final int MAX_ATTENDANCE_NAME_LENGTH = 60;
     private static final int ATTENDANCE_EXPORT_FONT_SIZE = 11;
     private static final int MAX_RAG_SESSIONS = 5;
@@ -74,6 +84,12 @@ public class PreMeetingService {
     private static final String ATTENDANCE_STATUS_PRESENT = "present";
     private static final String ATTENDANCE_STATUS_ABSENT = "absent";
     private static final String ATTENDANCE_STATUS_UNEXPECTED = "unexpected";
+    private static final String ACTUAL_ATTENDANCE_HEADER = "Peserta Akt. 实际参会人员 ：";
+    private static final String PARTICIPANT_TOTAL_FALLBACK_PREFIX = "Jumlah Peserta参会人数\t：\t";
+    private static final String ABSENT_PREFIX = "\t\t\t事假 ：";
+    private static final String ABSENT_COUNT_PREFIX = "Jlh. Absen 请假人数 ：";
+    private static final String UNEXPECTED_PREFIX = "Tambahan 未在安排中（";
+    private static final String NAME_SEPARATOR = "、";
 
     private static final Set<String> ATTENDANCE_SECTION_KEYWORDS = Set.of(
             "参会", "参加", "出席", "列席", "与会", "Peserta", "peserta");
@@ -93,6 +109,16 @@ public class PreMeetingService {
     private final com.si.backend.mapper.InterpretationSessionMapper interpretationSessionMapper;
     private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
     private final com.si.backend.mapper.PersistentPreMeetingFileMapper persistentFileMapper;
+    private final com.si.backend.mapper.MeetingMapper meetingMapper;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
+    /** LibreOffice executable used to convert the export Word into a faithful PDF. */
+    @Value("${libreoffice.path:soffice}")
+    private String libreOfficePath;
+
+    /** Small-to-Big: chars of original text to include on each side of a matched file chunk. */
+    @Value("${rag.retrieval.window-pad:400}")
+    private int retrievalWindowPad;
 
     private record PreMeetingDoc(String fileName, String ext, String text, byte[] originalBytes) {}
     private record ExpectedParticipant(String name, String department, String email, String sourceText) {}
@@ -245,6 +271,67 @@ public class PreMeetingService {
             throw BizException.of(ErrorCode.BAD_REQUEST, "未能从会议安排中识别参会人员，请检查文件中的参会人员格式");
         }
 
+        return buildAttendanceVo(expectedParticipants, actualParticipants, fileId, doc.fileName(), deriveMeetingTitle(doc));
+    }
+
+    /**
+     * Parse the 应到 list from a freshly-uploaded 会议安排 and persist it on the meeting, so the
+     * attendance comparison survives across sessions (next time just refresh 实到 to re-compare).
+     */
+    public int saveExpectedParticipants(String fileId, Long meetingId) {
+        PreMeetingDoc doc = store.get(fileId);
+        if (doc == null) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已过期，请重新上传");
+        }
+        List<ExpectedParticipant> expected = parseExpectedParticipants(doc.text());
+        if (expected.isEmpty()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "未能从会议安排中识别参会人员，请检查文件中的参会人员格式");
+        }
+        try {
+            String json = objectMapper.writeValueAsString(expected);
+            meetingMapper.updateExpectedParticipants(meetingId, json);
+            log.info("[PreMeetingService] saveExpectedParticipants done, meetingId={}, count={}", meetingId, expected.size());
+            return expected.size();
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "保存应到名单失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * Re-generate the attendance comparison using the 应到 list saved on the meeting (no in-memory
+     * 会议安排 needed) against the freshly-pulled Teams 实到 list.
+     */
+    public PreMeetingAttendanceVo generateAttendanceFromMeeting(
+            Long meetingId,
+            List<PreMeetingParticipantRequest> actualParticipants) {
+        com.si.backend.entity.Meeting meeting = meetingMapper.findById(meetingId);
+        if (meeting == null) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "会议不存在");
+        }
+        String json = meeting.getExpectedParticipantsJson();
+        if (json == null || json.isBlank()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "该会议未保存应到名单，请上传会议安排");
+        }
+        List<ExpectedParticipant> expected;
+        try {
+            expected = objectMapper.readValue(json,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, ExpectedParticipant.class));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "读取应到名单失败：" + e.getMessage());
+        }
+        if (expected.isEmpty()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "该会议未保存应到名单，请上传会议安排");
+        }
+        return buildAttendanceVo(expected, actualParticipants, null, null, meeting.getTitle());
+    }
+
+    /** Core 应到 vs 实到 comparison, shared by the file-based and meeting-based attendance paths. */
+    private PreMeetingAttendanceVo buildAttendanceVo(
+            List<ExpectedParticipant> expectedParticipants,
+            List<PreMeetingParticipantRequest> actualParticipants,
+            String fileId,
+            String fileName,
+            String meetingTitle) {
         List<ActualParticipant> actualList = normalizeActualParticipants(actualParticipants);
         Set<Integer> matchedActualIndexes = new HashSet<>();
         List<PreMeetingAttendanceRowVo> rows = new ArrayList<>();
@@ -292,13 +379,13 @@ public class PreMeetingService {
 
         int absentCount = expectedParticipants.size() - presentCount;
         int unexpectedCount = actualList.size() - matchedActualIndexes.size();
-        log.info("[PreMeetingService] generateAttendance done, fileId={}, expectedCount={}, presentCount={}, absentCount={}, unexpectedCount={}",
+        log.info("[PreMeetingService] buildAttendanceVo done, fileId={}, expectedCount={}, presentCount={}, absentCount={}, unexpectedCount={}",
                 fileId, expectedParticipants.size(), presentCount, absentCount, unexpectedCount);
 
         return PreMeetingAttendanceVo.builder()
                 .fileId(fileId)
-                .fileName(doc.fileName())
-                .meetingTitle(deriveMeetingTitle(doc))
+                .fileName(fileName)
+                .meetingTitle(meetingTitle)
                 .expectedCount(expectedParticipants.size())
                 .actualCount(actualList.size())
                 .presentCount(presentCount)
@@ -327,7 +414,15 @@ public class PreMeetingService {
             XWPFDocument output;
             if ("docx".equals(doc.ext())) {
                 output = new XWPFDocument(new ByteArrayInputStream(doc.originalBytes()));
-                replaceAttendanceBlock(output, attendanceLines);
+                boolean templateUpdated = replaceAttendanceBlockPreservingLayout(output, attendance);
+                if (!templateUpdated) {
+                    replaceAttendanceBlock(output, attendanceLines);
+                }
+                // Drop the agenda section (【SUSUNAN JADWAL RAPAT 会议议程】) and everything after it.
+                removeAgendaSectionOnward(output);
+                if (templateUpdated) {
+                    appendAbsenceSection(output, attendance);
+                }
             } else {
                 output = buildNewAttendanceDocument(doc, attendanceLines);
             }
@@ -378,34 +473,96 @@ public class PreMeetingService {
 
     private List<String> buildAttendanceSectionLines(PreMeetingAttendanceVo attendance) {
         List<String> lines = new ArrayList<>();
-        Map<String, List<String>> presentByDepartment = new LinkedHashMap<>();
-        List<String> absentNames = new ArrayList<>();
-        List<String> unexpectedNames = new ArrayList<>();
+        Map<String, List<String>> presentByDepartment = buildPresentNamesByDepartment(attendance);
+        List<String> absentNames = buildAbsentNames(attendance);
+        List<String> unexpectedNames = buildUnexpectedNames(attendance);
 
-        for (PreMeetingAttendanceRowVo row : attendance.getRows()) {
-            String status = safeString(row.getStatus());
-            if (ATTENDANCE_STATUS_PRESENT.equals(status)) {
-                String department = safeString(row.getDepartment()).isBlank() ? "Lainnya 其他连线" : row.getDepartment();
-                presentByDepartment.computeIfAbsent(department, ignored -> new ArrayList<>()).add(safeString(row.getName()));
-            } else if (ATTENDANCE_STATUS_ABSENT.equals(status)) {
-                absentNames.add(safeString(row.getName()));
-            } else if (ATTENDANCE_STATUS_UNEXPECTED.equals(status)) {
-                unexpectedNames.add(!safeString(row.getActualName()).isBlank() ? row.getActualName() : safeString(row.getName()));
-            }
-        }
+        // Names sorted alphabetically (Chinese sorted by pinyin) for the Word export.
+        presentByDepartment.values().forEach(this::sortNamesAlphabetically);
+        sortNamesAlphabetically(absentNames);
+        sortNamesAlphabetically(unexpectedNames);
 
-        lines.add("Peserta Akt. 实际应参会人员\t：");
+        lines.add(ACTUAL_ATTENDANCE_HEADER);
         for (Map.Entry<String, List<String>> entry : presentByDepartment.entrySet()) {
             List<String> names = entry.getValue();
-            lines.add(entry.getKey() + "（" + names.size() + "）\t：" + String.join("、", names));
+            lines.add(entry.getKey() + "（" + names.size() + "）\t：" + String.join(NAME_SEPARATOR, names));
         }
-        lines.add("Jlh. Akt. 实际参会人数\t：" + attendance.getActualCount() + " Orang人");
-        lines.add("Absen 事假\t：" + (absentNames.isEmpty() ? "无" : String.join("、", absentNames)));
-        lines.add("Jlh. Absen 请假人数\t：" + attendance.getAbsentCount() + " Orang 人");
+        lines.add(PARTICIPANT_TOTAL_FALLBACK_PREFIX + safeCount(attendance.getActualCount()) + " Orang人");
+        lines.add(ABSENT_PREFIX + formatNameList(absentNames));
+        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + " Orang 人");
         if (!unexpectedNames.isEmpty()) {
-            lines.add("Tambahan 未在安排中（" + unexpectedNames.size() + "）\t：" + String.join("、", unexpectedNames));
+            lines.add(UNEXPECTED_PREFIX + unexpectedNames.size() + "）\t："
+                    + String.join(NAME_SEPARATOR, unexpectedNames));
         }
         return lines;
+    }
+
+    private Map<String, List<String>> buildPresentNamesByDepartment(PreMeetingAttendanceVo attendance) {
+        Map<String, List<String>> presentByDepartment = new LinkedHashMap<>();
+        for (PreMeetingAttendanceRowVo row : attendanceRows(attendance)) {
+            if (!ATTENDANCE_STATUS_PRESENT.equals(safeString(row.getStatus()))) {
+                continue;
+            }
+            String department = safeString(row.getDepartment()).isBlank()
+                    ? "Lainnya 其他连线"
+                    : row.getDepartment();
+            presentByDepartment.computeIfAbsent(department, ignored -> new ArrayList<>())
+                    .add(safeString(row.getName()));
+        }
+        return presentByDepartment;
+    }
+
+    private List<String> buildAbsentNames(PreMeetingAttendanceVo attendance) {
+        List<String> absentNames = new ArrayList<>();
+        for (PreMeetingAttendanceRowVo row : attendanceRows(attendance)) {
+            if (ATTENDANCE_STATUS_ABSENT.equals(safeString(row.getStatus()))) {
+                absentNames.add(safeString(row.getName()));
+            }
+        }
+        return absentNames;
+    }
+
+    private List<String> buildUnexpectedNames(PreMeetingAttendanceVo attendance) {
+        List<String> unexpectedNames = new ArrayList<>();
+        for (PreMeetingAttendanceRowVo row : attendanceRows(attendance)) {
+            if (!ATTENDANCE_STATUS_UNEXPECTED.equals(safeString(row.getStatus()))) {
+                continue;
+            }
+            String displayName = safeString(row.getActualName());
+            unexpectedNames.add(!displayName.isBlank() ? displayName : safeString(row.getName()));
+        }
+        return unexpectedNames;
+    }
+
+    private List<PreMeetingAttendanceRowVo> attendanceRows(PreMeetingAttendanceVo attendance) {
+        if (attendance == null || attendance.getRows() == null) {
+            return List.of();
+        }
+        return attendance.getRows();
+    }
+
+    private String formatNameList(List<String> names) {
+        if (names == null || names.isEmpty()) {
+            return "无";
+        }
+        return String.join(NAME_SEPARATOR, names);
+    }
+
+    /**
+     * Sort names alphabetically. Chinese names are ordered by pinyin via a zh-CN {@link Collator},
+     * so a list mixing Chinese and Latin names comes out in a consistent A–Z order. A fresh Collator
+     * is created per call because Collator instances are not thread-safe.
+     */
+    private void sortNamesAlphabetically(List<String> names) {
+        if (names == null || names.size() < 2) {
+            return;
+        }
+        Collator collator = Collator.getInstance(Locale.CHINA);
+        names.sort((a, b) -> collator.compare(safeString(a), safeString(b)));
+    }
+
+    private int safeCount(Integer count) {
+        return count == null ? 0 : count;
     }
 
     private XWPFDocument buildNewAttendanceDocument(
@@ -422,11 +579,175 @@ public class PreMeetingService {
             XWPFRun run = paragraph.createRun();
             run.setText(line);
             run.setFontSize(ATTENDANCE_EXPORT_FONT_SIZE);
-            if (line.startsWith("【") || line.contains("实际应参会人员") || line.startsWith("Absen")) {
+            if (line.startsWith("【") || line.contains("实际参会人员") || line.startsWith("Absen")) {
                 run.setBold(true);
             }
         }
         return output;
+    }
+
+    private boolean replaceAttendanceBlockPreservingLayout(
+            XWPFDocument document,
+            PreMeetingAttendanceVo attendance) {
+        AttendanceBlock block = findAttendanceBlock(document.getParagraphs());
+        if (block == null) {
+            return false;
+        }
+
+        List<XWPFParagraph> paragraphs = document.getParagraphs();
+        if (!hasTemplateAttendanceGroup(paragraphs, block)) {
+            return false;
+        }
+
+        Map<String, List<String>> presentByDepartment = buildPresentNamesByDepartment(attendance);
+        Set<Integer> continuationIndexes = new HashSet<>();
+        boolean inGroupContinuation = false;
+        boolean totalLineUpdated = false;
+
+        for (int index = block.startIndex(); index <= block.endIndex() && index < paragraphs.size(); index++) {
+            XWPFParagraph paragraph = paragraphs.get(index);
+            String originalText = paragraph.getText();
+            String line = normalizeLine(originalText);
+            if (line.isBlank()) {
+                continue;
+            }
+
+            Matcher groupMatcher = GROUP_COUNT_PATTERN.matcher(line);
+            if (groupMatcher.matches()) {
+                String department = cleanDepartment(groupMatcher.group(1));
+                List<String> names = presentByDepartment.getOrDefault(department, List.of());
+                replaceParagraphText(paragraph, rewriteAttendanceGroupLine(originalText, names.size(), names), paragraph);
+                inGroupContinuation = true;
+                continue;
+            }
+
+            if (isParticipantTotalLine(line)) {
+                replaceParagraphText(paragraph,
+                        rewriteParticipantTotalLine(originalText, safeCount(attendance.getActualCount())),
+                        paragraph);
+                inGroupContinuation = false;
+                totalLineUpdated = true;
+                continue;
+            }
+
+            if (isTemplateAbsenceLine(line)) {
+                continuationIndexes.add(index);
+                inGroupContinuation = false;
+                continue;
+            }
+
+            if (index == block.startIndex() || isAttendanceHeader(line)) {
+                replaceParagraphText(paragraph, rewriteAttendanceHeaderLine(originalText), paragraph);
+                inGroupContinuation = false;
+                continue;
+            }
+
+            if (inGroupContinuation) {
+                continuationIndexes.add(index);
+            }
+        }
+
+        removeParagraphsByIndex(document, paragraphs, continuationIndexes);
+        if (!totalLineUpdated) {
+            appendParticipantTotalLine(document, attendance);
+        }
+        return true;
+    }
+
+    private boolean hasTemplateAttendanceGroup(List<XWPFParagraph> paragraphs, AttendanceBlock block) {
+        for (int index = block.startIndex(); index <= block.endIndex() && index < paragraphs.size(); index++) {
+            String line = normalizeLine(paragraphs.get(index).getText());
+            if (GROUP_COUNT_PATTERN.matcher(line).matches()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void removeParagraphsByIndex(
+            XWPFDocument document,
+            List<XWPFParagraph> paragraphs,
+            Set<Integer> indexes) {
+        List<Integer> sortedIndexes = new ArrayList<>(indexes);
+        sortedIndexes.sort(Comparator.reverseOrder());
+        for (Integer index : sortedIndexes) {
+            if (index == null || index < 0 || index >= paragraphs.size()) {
+                continue;
+            }
+            int bodyPosition = document.getPosOfParagraph(paragraphs.get(index));
+            if (bodyPosition >= 0) {
+                document.removeBodyElement(bodyPosition);
+            }
+        }
+    }
+
+    private void appendParticipantTotalLine(
+            XWPFDocument document,
+            PreMeetingAttendanceVo attendance) {
+        XWPFParagraph paragraph = document.createParagraph();
+        replaceParagraphText(paragraph,
+                PARTICIPANT_TOTAL_FALLBACK_PREFIX + safeCount(attendance.getActualCount()) + " Orang人",
+                findLastNonEmptyParagraph(document));
+    }
+
+    private void appendAbsenceSection(
+            XWPFDocument document,
+            PreMeetingAttendanceVo attendance) {
+        List<String> lines = new ArrayList<>();
+        lines.add(ABSENT_PREFIX + formatNameList(buildAbsentNames(attendance)));
+        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + " Orang 人");
+
+        List<String> unexpectedNames = buildUnexpectedNames(attendance);
+        if (!unexpectedNames.isEmpty()) {
+            lines.add(UNEXPECTED_PREFIX + unexpectedNames.size() + "）\t："
+                    + String.join(NAME_SEPARATOR, unexpectedNames));
+        }
+
+        XWPFParagraph paragraph = document.createParagraph();
+        replaceParagraphLines(paragraph, lines, findLastNonEmptyParagraph(document));
+    }
+
+    private XWPFParagraph findLastNonEmptyParagraph(XWPFDocument document) {
+        List<XWPFParagraph> paragraphs = document.getParagraphs();
+        for (int index = paragraphs.size() - 1; index >= 0; index--) {
+            XWPFParagraph paragraph = paragraphs.get(index);
+            if (!normalizeLine(paragraph.getText()).isBlank()) {
+                return paragraph;
+            }
+        }
+        return null;
+    }
+
+    private String rewriteAttendanceHeaderLine(String originalText) {
+        return leadingWhitespace(originalText) + ACTUAL_ATTENDANCE_HEADER;
+    }
+
+    private String rewriteAttendanceGroupLine(
+            String originalText,
+            int count,
+            List<String> names) {
+        Matcher matcher = GROUP_LINE_REWRITE_PATTERN.matcher(originalText);
+        if (matcher.matches()) {
+            return matcher.group(1) + count + matcher.group(2) + String.join(NAME_SEPARATOR, names);
+        }
+        return originalText + "（" + count + "）：" + String.join(NAME_SEPARATOR, names);
+    }
+
+    private String rewriteParticipantTotalLine(String originalText, int actualCount) {
+        Matcher matcher = PARTICIPANT_TOTAL_LINE_PATTERN.matcher(originalText);
+        if (matcher.matches()) {
+            return matcher.group(1) + actualCount + " Orang人";
+        }
+        return leadingWhitespace(originalText) + PARTICIPANT_TOTAL_FALLBACK_PREFIX + actualCount + " Orang人";
+    }
+
+    private String leadingWhitespace(String value) {
+        String text = value == null ? "" : value;
+        int index = 0;
+        while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
+            index++;
+        }
+        return text.substring(0, index);
     }
 
     private void replaceAttendanceBlock(
@@ -528,6 +849,28 @@ public class PreMeetingService {
             return null;
         }
         return paragraph.getRuns().get(0);
+    }
+
+    /**
+     * Pick a representative BODY run from the document so the appended summary can inherit the
+     * original's font/size. Uses the longest paragraph (body content, not a short centered title)
+     * to avoid copying the title's larger/centered formatting onto the summary body.
+     */
+    private XWPFRun findBodySampleRun(XWPFDocument doc) {
+        XWPFRun best = null;
+        int bestLen = 0;
+        for (XWPFParagraph p : doc.getParagraphs()) {
+            String t = p.getText();
+            if (t == null || t.trim().isEmpty()) {
+                continue;
+            }
+            XWPFRun r = firstRun(p);
+            if (r != null && r.getText(0) != null && t.trim().length() > bestLen) {
+                bestLen = t.trim().length();
+                best = r;
+            }
+        }
+        return best;
     }
 
     private RunShell captureRunShell(XWPFRun source) {
@@ -730,12 +1073,23 @@ public class PreMeetingService {
     private boolean isAttendanceBlockStart(String line) {
         return isAttendanceHeader(line)
                 || line.contains("应参会人员")
-                || line.contains("实际应参会人员")
+                || line.contains("实际参会人员")
                 || GROUP_COUNT_PATTERN.matcher(line).matches();
     }
 
     private boolean isAttendanceBlockTerminalLine(String line) {
         return line.contains("请假人数")
+                || line.contains("Jlh. Absen");
+    }
+
+    private boolean isParticipantTotalLine(String line) {
+        return line.contains("Jumlah Peserta")
+                || line.contains("参会人数");
+    }
+
+    private boolean isTemplateAbsenceLine(String line) {
+        return line.contains("事假")
+                || line.contains("请假人数")
                 || line.contains("Jlh. Absen");
     }
 
@@ -745,6 +1099,32 @@ public class PreMeetingService {
                 || line.contains("议题")
                 || line.contains("事项")
                 || line.contains("Pembahasan");
+    }
+
+    /** The agenda heading (e.g. 「【SUSUNAN JADWAL RAPAT 会议议程】」) that marks the end of the kept content. */
+    private boolean isAgendaSectionHeading(String line) {
+        return line.contains("会议议程")
+                || line.toUpperCase(Locale.ROOT).contains("SUSUNAN JADWAL");
+    }
+
+    /**
+     * Remove the agenda section and everything after it from the export. Finds the agenda heading
+     * paragraph and deletes every body element (paragraphs AND tables) from there to the end.
+     */
+    private void removeAgendaSectionOnward(XWPFDocument document) {
+        int agendaPos = -1;
+        for (XWPFParagraph p : document.getParagraphs()) {
+            if (isAgendaSectionHeading(normalizeLine(p.getText()))) {
+                agendaPos = document.getPosOfParagraph(p);
+                break;
+            }
+        }
+        if (agendaPos < 0) {
+            return;
+        }
+        for (int index = document.getBodyElements().size() - 1; index >= agendaPos; index--) {
+            document.removeBodyElement(index);
+        }
     }
 
     private boolean isAttendanceStopLine(String line) {
@@ -945,26 +1325,35 @@ public class PreMeetingService {
                 }
             }
 
-            // Separator paragraph
+            // Capture the original document's body text format (font/size/etc.) BEFORE appending,
+            // so the summary we add below matches the original content's look.
+            RunShell bodyShell = captureRunShell(findBodySampleRun(output));
+
+            // Separator paragraph (centered, in the document's font)
             XWPFParagraph sep = output.createParagraph();
+            sep.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun sepRun = sep.createRun();
-            sepRun.setText("─────────────────────────────────────────");
-            sepRun.setColor("94A3B8");
+            applyRunShell(bodyShell, sepRun);
+            sepRun.setBold(false);
+            sepRun.setText("──────────────────────");
 
-            // AI summary heading
+            // AI summary heading — centered like a title, bold, in the document's font (sized up).
             XWPFParagraph heading = output.createParagraph();
+            heading.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun headingRun = heading.createRun();
-            headingRun.setText("AI 会议摘要");
+            applyRunShell(bodyShell, headingRun);
             headingRun.setBold(true);
-            headingRun.setFontSize(14);
-            headingRun.setColor("4338CA");
+            int bodySize = bodyShell != null ? bodyShell.fontSize() : -1;
+            headingRun.setFontSize(bodySize > 0 ? bodySize + 2 : 14);
+            headingRun.setText("AI 会议摘要");
 
-            // Summary body — split by line to preserve paragraph breaks.
-            // Do NOT set font/size, so the appended summary inherits the original document's
-            // default text format (keeps it consistent with the original content).
+            // Summary body — split by line to preserve paragraph breaks. Each paragraph inherits
+            // the original document's body format so font/size match the rest of the document.
             for (String line : summary.split("\n")) {
                 XWPFParagraph p = output.createParagraph();
                 XWPFRun r = p.createRun();
+                applyRunShell(bodyShell, r);
+                r.setBold(false);
                 r.setText(line);
             }
 
@@ -974,6 +1363,54 @@ public class PreMeetingService {
             return out.toByteArray();
         } finally {
             Thread.currentThread().setContextClassLoader(orig);
+        }
+    }
+
+    /**
+     * Build the export PDF: generate the same Word document (original content + appended summary)
+     * as {@link #buildExportDocx}, then convert it to PDF with LibreOffice headless so the PDF is a
+     * faithful render of the Word (centered titles, fonts, tables all preserved).
+     */
+    public byte[] buildExportPdf(String fileId, String summary) throws IOException {
+        byte[] docxBytes = buildExportDocx(fileId, summary);
+
+        Path tmpDir = Files.createTempDirectory("si-pdf-");
+        try {
+            Path docxPath = tmpDir.resolve("export.docx");
+            Files.write(docxPath, docxBytes);
+            // Use a per-call user profile so concurrent conversions don't fight over the default lock.
+            String profileArg = "-env:UserInstallation=" + tmpDir.resolve("profile").toUri();
+
+            Process proc = new ProcessBuilder(
+                    libreOfficePath, profileArg, "--headless", "--norestore", "--nolockcheck",
+                    "--convert-to", "pdf", "--outdir", tmpDir.toString(), docxPath.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            // LibreOffice closes its streams on exit, so draining first returns when it finishes.
+            String procOutput = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            boolean finished = proc.waitFor(90, TimeUnit.SECONDS);
+            if (!finished) {
+                proc.destroyForcibly();
+                throw BizException.of(ErrorCode.BAD_REQUEST, "PDF 转换超时，请重试");
+            }
+
+            Path pdfPath = tmpDir.resolve("export.pdf");
+            if (!Files.exists(pdfPath)) {
+                log.error("[PreMeetingService] LibreOffice 未生成 PDF, exit={}, output={}",
+                        proc.exitValue(), procOutput);
+                throw BizException.of(ErrorCode.BAD_REQUEST,
+                        "PDF 转换失败（请确认后端已安装 LibreOffice）");
+            }
+            return Files.readAllBytes(pdfPath);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw BizException.of(ErrorCode.BAD_REQUEST, "PDF 转换被中断");
+        } finally {
+            try (var paths = Files.walk(tmpDir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(p -> {
+                    try { Files.deleteIfExists(p); } catch (IOException ignored) { }
+                });
+            } catch (IOException ignored) { }
         }
     }
 
@@ -1021,9 +1458,11 @@ public class PreMeetingService {
         String since = days > 0 ? LocalDate.now().minusDays(days).toString() : null;
         log.info("[PreMeetingService] chatCrossMeeting vector, userId={}, days={}", userId, days);
 
-        float[] queryVec = llmIntegration.embed(question);
+        // P0-3: resolve pronouns/ellipsis against recent history so retrieval matches the real intent.
+        String retrievalQuery = ragEnhancementService.rewriteQuery(history, question);
+        float[] queryVec = llmIntegration.embed(retrievalQuery);
         List<VectorSearchService.SearchResult> hits =
-                vectorSearchService.search(userId, queryVec, null, null, since, 40);
+                vectorSearchService.search(userId, retrievalQuery, queryVec, null, null, since, 40);
 
         if (hits.isEmpty()) {
             String range = days > 0 ? "过去 " + days + " 天的" : "所有";
@@ -1100,7 +1539,13 @@ public class PreMeetingService {
         log.info("[PreMeetingService] buildUnifiedContext vector, userId={}", userId);
         try {
             // P0: multi-query expansion → merged recall → LLM rerank (all no-ops when flags off).
-            List<String> queries = ragEnhancementService.expandQueries(question);
+            // P1-4: split multi-hop / comparison questions into sub-questions, then expand each.
+            List<String> queries = new ArrayList<>();
+            for (String sub : ragEnhancementService.decompose(question)) {
+                for (String q : ragEnhancementService.expandQueries(sub)) {
+                    if (queries.stream().noneMatch(q::equalsIgnoreCase)) queries.add(q);
+                }
+            }
             List<VectorSearchService.SearchResult> hits = multiQueryRecall(userId, queries, filter, 40);
             if (hits.isEmpty()) {
                 log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions=0, sources=0", userId);
@@ -1129,13 +1574,19 @@ public class PreMeetingService {
 
                 // 同传片段
                 int count = 0;
+                Set<Long> expandedFiles = new HashSet<>();   // Small-to-Big: expand each file's window once
                 for (VectorSearchService.SearchResult snippet : snippets) {
                     if (count++ >= MAX_RAG_SNIPPETS_PER_SESSION) break;
+                    String contextText = contextTextForHit(snippet, expandedFiles);
+                    if (contextText == null) continue;   // a later chunk of an already-expanded file
                     if (snippet.speakerName() != null && !snippet.speakerName().isBlank()) {
                         context.append(snippet.speakerName()).append(": ");
                     }
-                    context.append(snippet.sourceText())
-                            .append(" → ").append(snippet.translatedText()).append("\n");
+                    context.append(contextText);
+                    if (snippet.translatedText() != null && !snippet.translatedText().isBlank()) {
+                        context.append(" → ").append(snippet.translatedText());
+                    }
+                    context.append("\n");
                     addSourceFromHit(sources, sourceKeys, snippet, title, date);
                 }
 
@@ -1172,7 +1623,7 @@ public class PreMeetingService {
                 continue;
             }
             List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
-                    userId, vec, filter.meetingId(), filter.speakerName(), filter.since(), perQueryTopK);
+                    userId, q, vec, filter.meetingId(), filter.speakerName(), filter.since(), perQueryTopK);
             for (VectorSearchService.SearchResult h : hits) {
                 String key = h.sourceType() + "|" + h.sourceId() + "|" + h.refId() + "|"
                         + (h.sourceText() == null ? "" : h.sourceText());
@@ -1207,6 +1658,58 @@ public class PreMeetingService {
         return groupKey.length() > 8 ? groupKey.substring(0, 8) : groupKey;
     }
 
+    /**
+     * Small-to-Big: for a file_content hit, return a wider window of the ORIGINAL file text around the
+     * matched chunk (precise retrieval on the small chunk, full context for the LLM). Each file's window
+     * is emitted only once per context block ({@code expandedFiles}); later chunks of the same file
+     * return null and are skipped. Non-file hits (transcripts/summaries are already short) return the
+     * chunk text as-is.
+     */
+    private String contextTextForHit(VectorSearchService.SearchResult hit, Set<Long> expandedFiles) {
+        if (ContentEmbeddingService.TYPE_FILE_CONTENT.equals(hit.sourceType()) && hit.refId() != null) {
+            if (!expandedFiles.add(hit.refId())) {
+                return null;   // already expanded this file's window
+            }
+            if (hit.chunkStart() != null) {
+                try {
+                    var file = persistentFileMapper.findById(hit.refId());
+                    if (file != null && file.getFileContent() != null && !file.getFileContent().isBlank()) {
+                        String full = file.getFileContent();
+                        int chunkLen = hit.sourceText() != null ? hit.sourceText().length() : 0;
+                        int s = Math.max(0, Math.min(hit.chunkStart() - retrievalWindowPad, full.length()));
+                        int e = Math.max(s, Math.min(hit.chunkStart() + chunkLen + retrievalWindowPad, full.length()));
+                        return full.substring(snapToSentenceStart(full, s), snapToSentenceEnd(full, e));
+                    }
+                } catch (Exception ex) {
+                    log.debug("[PreMeetingService] window expand failed, refId={}: {}", hit.refId(), ex.getMessage());
+                }
+            }
+        }
+        return hit.sourceText();
+    }
+
+    /** Move start backward to just after the previous sentence ender, so the window begins cleanly. */
+    private int snapToSentenceStart(String text, int pos) {
+        for (int i = pos; i > 0; i--) {
+            char c = text.charAt(i - 1);
+            if (c == '。' || c == '！' || c == '？' || c == '\n' || c == '!' || c == '?' || c == '；') {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    /** Move end forward to the next sentence ender, so the window finishes on a whole sentence. */
+    private int snapToSentenceEnd(String text, int pos) {
+        for (int i = pos; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '。' || c == '！' || c == '？' || c == '\n' || c == '!' || c == '?' || c == '；') {
+                return i + 1;
+            }
+        }
+        return text.length();
+    }
+
     private void addSourceFromHit(
             List<TeamsBotQuerySourceVo> sources,
             Set<String> sourceKeys,
@@ -1214,7 +1717,13 @@ public class PreMeetingService {
             String meetingTitle,
             String sourceDate) {
         if (sources.size() >= MAX_RAG_SOURCES) return;
-        String key = hit.sourceType() + ":" + hit.sourceId() + ":" + hit.refId();
+        // Dedup by DOCUMENT (refId), not by chunk (sourceId): a file is embedded as many chunks,
+        // each with a distinct sourceId but the same refId. Keying on sourceId would list the same
+        // file once per retrieved chunk; keying on refId collapses them into a single citation.
+        String entityId = hit.refId() != null ? String.valueOf(hit.refId())
+                : hit.sessionId() != null ? hit.sessionId()
+                : String.valueOf(hit.sourceId());
+        String key = hit.sourceType() + ":" + entityId;
         if (!sourceKeys.add(key)) return;
 
         Long fileId = isFileSource(hit.sourceType()) ? hit.refId() : null;
@@ -1335,6 +1844,27 @@ public class PreMeetingService {
         String fileId = UUID.randomUUID().toString();
         store.put(fileId, new PreMeetingDoc(fileName, ext, text, originalBytes));
         return fileId;
+    }
+
+    /**
+     * Re-load a persisted meeting file (saved in DB) back into the in-memory store so it can be
+     * re-selected for summary / export. Returns a fresh ephemeral fileId plus the previously saved
+     * summary (if any) and the extracted text.
+     */
+    public PreMeetingSummaryVo rehydratePersistedFile(com.si.backend.entity.PersistentPreMeetingFile pf) {
+        if (pf == null) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已删除");
+        }
+        String fileName = pf.getFileName() != null ? pf.getFileName() : "document";
+        String ext = extension(fileName).toLowerCase();
+        String text = pf.getFileContent() != null ? pf.getFileContent() : "";
+        String fileId = storeDoc(fileName, ext, text, pf.getFileData());
+        return PreMeetingSummaryVo.builder()
+                .fileId(fileId)
+                .fileName(fileName)
+                .summary(pf.getSummary() != null ? pf.getSummary() : "")
+                .extractedText(text)
+                .build();
     }
 
     private String extension(String fileName) {

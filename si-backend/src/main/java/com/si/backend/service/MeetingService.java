@@ -38,6 +38,7 @@ public class MeetingService {
         fileMapper.createTableIfNotExists();
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
         addFileColumnIfMissing("attendance_json", meetingMapper::addAttendanceJsonColumnIfNotExists);
+        addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
         log.info("[MeetingService] initTables end");
     }
 
@@ -137,6 +138,13 @@ public class MeetingService {
         return f;
     }
 
+    /** Full record incl. both extracted text and original bytes — used to re-load a file for re-summary. */
+    public PersistentPreMeetingFile getFileFull(Long fileId) {
+        PersistentPreMeetingFile f = fileMapper.findByIdFull(fileId);
+        if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        return f;
+    }
+
     public void saveAttendance(Long meetingId, String attendanceJson) {
         requireMeeting(meetingId);
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
@@ -163,6 +171,8 @@ public class MeetingService {
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
                 .attendanceJson(m.getAttendanceJson())
+                .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
+                        && !m.getExpectedParticipantsJson().isBlank())
                 .createTime(m.getCreateTime())
                 .files(files.stream().map(this::toFileVo).toList())
                 .build();

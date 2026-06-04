@@ -195,18 +195,18 @@ public class TeamsBotQueryService {
      * B2: 从自然语言问题中提取过滤维度（发言人姓名、时间范围）。
      * 规则优先，无法匹配时返回空过滤器。
      */
-    PreMeetingService.QuestionFilter extractQuestionFilter(String question) {
+    static PreMeetingService.QuestionFilter extractQuestionFilter(String question) {
         String speakerName = extractSpeakerName(question);
         String since = extractSinceDate(question);
         return new PreMeetingService.QuestionFilter(null, speakerName, since);
     }
 
     private static final Pattern SPEAKER_PATTERN = Pattern.compile(
-            "(?:关于|关于|(?:是)?([\\p{IsHan}]{2,4})(?:说|提到|讲|谈|汇报|表示|提出|指出|强调))");
+            "(?:是)?([\\p{IsHan}]{2,4})(?:说|提到|讲|谈|汇报|表示|提出|指出|强调)");
     private static final Pattern SPEAKER_PLAIN = Pattern.compile(
             "^([\\p{IsHan}]{2,4})(?:说|提到|讲|谈|说的|说过|汇报)");
 
-    private String extractSpeakerName(String question) {
+    private static String extractSpeakerName(String question) {
         Matcher m = SPEAKER_PLAIN.matcher(question.trim());
         if (m.find()) return m.group(1);
         m = SPEAKER_PATTERN.matcher(question);
@@ -214,14 +214,28 @@ public class TeamsBotQueryService {
         return null;
     }
 
+    private static final Pattern DATE_RECENT_DAYS = Pattern.compile("(?:最近|近)\\s*(\\d+)\\s*天");
     private static final Pattern DATE_N_DAYS = Pattern.compile("(\\d+)\\s*天前");
     private static final Pattern DATE_N_WEEKS = Pattern.compile("(\\d+)\\s*周前|上\\s*(\\d+)?\\s*周");
     private static final Pattern DATE_MONTH = Pattern.compile("上个?月|本月|这个?月");
     private static final Pattern DATE_WEEK = Pattern.compile("本周|这周|上周");
     private static final Pattern DATE_YESTERDAY = Pattern.compile("昨天|昨日");
+    private static final Pattern DATE_ABS_YMD = Pattern.compile("(20\\d{2})年(\\d{1,2})月(\\d{1,2})日");
+    private static final Pattern DATE_ABS_MD = Pattern.compile("(?<!\\d)(\\d{1,2})月(\\d{1,2})日");
+    private static final Pattern DATE_ABS_YM = Pattern.compile("(20\\d{2})年(\\d{1,2})月(?!\\d*日)");
 
-    private String extractSinceDate(String question) {
-        Matcher m = DATE_N_DAYS.matcher(question);
+    private static String extractSinceDate(String question) {
+        // Absolute dates first (most specific).
+        Matcher m = DATE_ABS_YMD.matcher(question);
+        if (m.find()) return safeDate(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)));
+        m = DATE_ABS_MD.matcher(question);
+        if (m.find()) return safeDate(LocalDate.now().getYear(), Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)));
+        m = DATE_ABS_YM.matcher(question);
+        if (m.find()) return safeDate(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), 1);
+
+        m = DATE_RECENT_DAYS.matcher(question);
+        if (m.find()) return LocalDate.now().minusDays(Long.parseLong(m.group(1))).toString();
+        m = DATE_N_DAYS.matcher(question);
         if (m.find()) return LocalDate.now().minusDays(Long.parseLong(m.group(1))).toString();
         m = DATE_N_WEEKS.matcher(question);
         if (m.find()) return LocalDate.now().minusWeeks(1).toString();
@@ -236,6 +250,16 @@ public class TeamsBotQueryService {
         if (DATE_YESTERDAY.matcher(question).find())
             return LocalDate.now().minusDays(1).toString();
         return null;
+    }
+
+    /** Build an ISO date string, returning null for out-of-range month/day (don't filter on junk). */
+    private static String safeDate(int year, int month, int day) {
+        if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+        try {
+            return LocalDate.of(year, month, day).toString();
+        } catch (java.time.DateTimeException e) {
+            return null;
+        }
     }
 
     private void sendSseAndComplete(SseEmitter emitter, String text) {

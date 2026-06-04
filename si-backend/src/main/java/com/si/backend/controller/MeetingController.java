@@ -8,10 +8,12 @@ import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.service.MeetingActionItemService;
 import com.si.backend.service.MeetingService;
+import com.si.backend.service.PreMeetingService;
 import com.si.backend.service.SpeakerSummaryService;
 import com.si.backend.vo.InterpretationSessionVo;
 import com.si.backend.vo.MeetingFileVo;
 import com.si.backend.vo.MeetingVo;
+import com.si.backend.vo.PreMeetingSummaryVo;
 import com.si.backend.vo.SpeakerSummaryVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +40,7 @@ public class MeetingController {
     private final SpeakerSummaryService speakerSummaryService;
     private final InterpretationFacade interpretationFacade;
     private final MeetingActionItemService actionItemService;
+    private final PreMeetingService preMeetingService;
 
     @PostMapping
     public Result<MeetingVo> create(@Valid @RequestBody CreateMeetingRequest request) {
@@ -101,6 +104,13 @@ public class MeetingController {
     @GetMapping("/{meetingId}/files/{fileId}/content")
     public Result<String> getFileContent(@PathVariable Long meetingId, @PathVariable Long fileId) {
         return Result.ok(meetingService.getFileWithContent(fileId).getFileContent());
+    }
+
+    /** Re-load a previously uploaded file into the in-memory store so it can be re-selected / re-summarized. */
+    @PostMapping("/{meetingId}/files/{fileId}/load")
+    public Result<PreMeetingSummaryVo> loadFileForSummary(@PathVariable Long meetingId, @PathVariable Long fileId) {
+        log.info("[MeetingController] loadFileForSummary, meetingId={}, fileId={}", meetingId, fileId);
+        return Result.ok(preMeetingService.rehydratePersistedFile(meetingService.getFileFull(fileId)));
     }
 
     @GetMapping("/{meetingId}/files/{fileId}/download")

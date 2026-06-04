@@ -40,6 +40,7 @@ public class InterpretationResultService {
         addColumnIfMissing("ref_id",              embeddingMapper::addRefIdColumnIfNotExists);
         addColumnIfMissing("uk_emb_source index", embeddingMapper::addSourceUniqueIndexIfNotExists);
         addColumnIfMissing("idx_emb_refid index", embeddingMapper::addRefIdIndexIfNotExists);
+        addColumnIfMissing("chunk_start",         embeddingMapper::addChunkStartColumnIfNotExists);
         log.info("[InterpretationResultService] initTable end");
     }
 
@@ -135,6 +136,11 @@ public class InterpretationResultService {
         CompletableFuture.runAsync(() -> {
             try {
                 if (sourceText == null || sourceText.isBlank()) return;
+                // P0-1: skip ASR noise so it never pollutes retrieval.
+                if (TranscriptQuality.isLikelyNoise(sourceText)) {
+                    log.debug("[InterpretationResultService] skip embedding noisy transcript, resultId={}", resultId);
+                    return;
+                }
                 if (embeddingMapper.countByResultId(resultId) > 0) return;
 
                 float[] vec = llmIntegration.embed(sourceText);

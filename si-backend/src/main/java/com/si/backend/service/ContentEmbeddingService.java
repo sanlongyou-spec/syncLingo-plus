@@ -8,6 +8,7 @@ import com.si.backend.mapper.InterpretationEmbeddingMapper;
 import com.si.backend.mapper.InterpretationSessionMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -41,6 +42,25 @@ public class ContentEmbeddingService {
     public static final String TYPE_ACTION_ITEM     = "action_item";
 
     private static final int FILE_CONTENT_CHUNK_SIZE = 500;
+
+    /** Chunking strategy: "smart" = sentence-aware + overlap (Phase 1); "fixed" = legacy fixed-length. */
+    @Value("${rag.chunking.mode:smart}")
+    private String chunkingMode;
+    /** Target chunk size in chars for smart chunking. */
+    @Value("${rag.chunking.target-size:300}")
+    private int chunkTargetSize;
+    /** Overlap in chars between adjacent smart chunks (~1 sentence). */
+    @Value("${rag.chunking.overlap:60}")
+    private int chunkOverlap;
+
+    /** Contextual Retrieval (Phase 2B): prepend an LLM-generated situating context to each file chunk
+     *  before embedding. Off by default (adds one LLM call per chunk at ingest). */
+    @Value("${rag.contextual.enabled:false}")
+    private boolean contextualEnabled;
+    @Value("${rag.contextual.model:anthropic/claude-haiku-4.5}")
+    private String contextualModel;
+    /** Max chars of the surrounding document handed to the situate prompt (bounds token cost). */
+    private static final int CONTEXTUAL_DOC_MAX = 4000;
 
     private final LlmIntegration llmIntegration;
     private final InterpretationEmbeddingMapper embeddingMapper;
@@ -107,13 +127,14 @@ public class ContentEmbeddingService {
         CompletableFuture.runAsync(() -> {
             try {
                 SessionContext ctx = resolveSession(meetingId);
-                List<String> chunks = chunk(fileContent, FILE_CONTENT_CHUNK_SIZE);
+                List<Chunk> chunks = buildChunks(fileContent);
                 for (int i = 0; i < chunks.size(); i++) {
                     long sourceId = fileId * 1000L + i;
-                    String chunkText = (i == 0 && !blank(fileName) ? fileName + "\n" : "") + chunks.get(i);
+                    Chunk ck = chunks.get(i);
+                    String chunkText = (i == 0 && !blank(fileName) ? fileName + "\n" : "") + ck.text();
                     upsert(TYPE_FILE_CONTENT, sourceId, fileId,
                             ctx.sessionId, meetingId, ctx.sessionTitle, ctx.sessionDate,
-                            null, chunkText, null);
+                            null, chunkText, null, ck.start(), situate(fileContent, chunkText));
                 }
             } catch (Exception e) {
                 log.warn("[ContentEmbeddingService] asyncEmbedFileContent failed, fileId={}: {}", fileId, e.getMessage());
@@ -255,14 +276,16 @@ public class ContentEmbeddingService {
         for (var c : candidates) {
             try {
                 SessionContext ctx = resolveSession(c.getMeetingId());
-                List<String> chunks = chunk(c.getSourceText(), FILE_CONTENT_CHUNK_SIZE);
+                String fullText = c.getSourceText();
+                List<Chunk> chunks = buildChunks(fullText);
                 Long fileId = c.getSourceId();
                 for (int i = 0; i < chunks.size(); i++) {
                     long sourceId = fileId * 1000L + i;
-                    String chunkText = (i == 0 && !blank(c.getSessionTitle()) ? c.getSessionTitle() + "\n" : "") + chunks.get(i);
+                    Chunk ck = chunks.get(i);
+                    String chunkText = (i == 0 && !blank(c.getSessionTitle()) ? c.getSessionTitle() + "\n" : "") + ck.text();
                     upsert(TYPE_FILE_CONTENT, sourceId, fileId,
                             ctx.sessionId(), c.getMeetingId(), ctx.sessionTitle(), ctx.sessionDate(),
-                            null, chunkText, null);
+                            null, chunkText, null, ck.start(), situate(fullText, chunkText));
                     count++;
                 }
             } catch (Exception e) {
@@ -301,8 +324,31 @@ public class ContentEmbeddingService {
                         String sessionId, Long meetingId,
                         String sessionTitle, LocalDate sessionDate,
                         String speakerName, String text, String translatedText) throws Exception {
+        upsert(sourceType, sourceId, refId, sessionId, meetingId, sessionTitle, sessionDate,
+                speakerName, text, translatedText, null);
+    }
+
+    private void upsert(String sourceType, Long sourceId, Long refId,
+                        String sessionId, Long meetingId,
+                        String sessionTitle, LocalDate sessionDate,
+                        String speakerName, String text, String translatedText,
+                        Integer chunkStart) throws Exception {
+        upsert(sourceType, sourceId, refId, sessionId, meetingId, sessionTitle, sessionDate,
+                speakerName, text, translatedText, chunkStart, null);
+    }
+
+    /**
+     * @param embedText optional alternate text to embed (Phase 2B contextual retrieval embeds the
+     *                  situated text but stores the raw chunk in {@code chunk_text}). Null = embed {@code text}.
+     */
+    private void upsert(String sourceType, Long sourceId, Long refId,
+                        String sessionId, Long meetingId,
+                        String sessionTitle, LocalDate sessionDate,
+                        String speakerName, String text, String translatedText,
+                        Integer chunkStart, String embedText) throws Exception {
         if (blank(text)) return;
-        float[] vec = llmIntegration.embed(text);
+        String toEmbed = (embedText != null && !embedText.isBlank()) ? embedText : text;
+        float[] vec = llmIntegration.embed(toEmbed);
         if (vec.length == 0) return;
 
         InterpretationEmbedding emb = new InterpretationEmbedding();
@@ -316,6 +362,7 @@ public class ContentEmbeddingService {
         emb.setSpeakerName(speakerName);
         emb.setChunkText(text);
         emb.setTranslatedText(translatedText);
+        emb.setChunkStart(chunkStart);
         emb.setEmbedding(VectorSearchService.toBytes(vec));
         embeddingMapper.upsertContent(emb);
         log.debug("[ContentEmbeddingService] upserted type={}, sourceId={}", sourceType, sourceId);
@@ -341,12 +388,109 @@ public class ContentEmbeddingService {
         return sb.toString();
     }
 
-    private static List<String> chunk(String text, int size) {
-        List<String> chunks = new ArrayList<>();
-        for (int i = 0; i < text.length(); i += size) {
-            chunks.add(text.substring(i, Math.min(i + size, text.length())));
+    /**
+     * Phase 2B Contextual Retrieval: ask an LLM for a one-sentence context that situates this chunk
+     * within the whole document, and prepend it to the text we embed (improves dense recall by
+     * restoring context lost to chunking). The stored chunk_text stays raw; only the embedded text
+     * changes. Disabled by default; any failure falls back to the raw chunk.
+     */
+    private String situate(String fullDoc, String chunk) {
+        if (!contextualEnabled || blank(chunk) || blank(fullDoc)) return chunk;
+        try {
+            String doc = fullDoc.length() > CONTEXTUAL_DOC_MAX ? fullDoc.substring(0, CONTEXTUAL_DOC_MAX) : fullDoc;
+            String system = "你是检索增强助手。请用一句话概括下面这段文字在整篇文档中的语境"
+                    + "（属于哪部分、在讲什么），只输出这句简短语境，使用与文段相同的语言，不要加引号或解释。";
+            String user = "<文档>\n" + doc + "\n</文档>\n\n<文段>\n" + chunk + "\n</文段>\n\n请给出这段文段的简短语境：";
+            String ctx = llmIntegration.complete(contextualModel, system, user, 120);
+            if (ctx == null || ctx.isBlank()) return chunk;
+            return ctx.trim() + "\n" + chunk;
+        } catch (Exception e) {
+            log.warn("[ContentEmbeddingService] situate failed (fallback to raw chunk): {}", e.getMessage());
+            return chunk;
         }
-        return chunks;
+    }
+
+    /** A chunk plus its start offset in the original source text. */
+    record Chunk(String text, int start) {}
+
+    /** Build chunks honoring the configured mode (smart sentence-aware vs legacy fixed-length). */
+    List<Chunk> buildChunks(String text) {
+        if (text == null || text.isEmpty()) return List.of();
+        if ("fixed".equalsIgnoreCase(chunkingMode)) {
+            List<Chunk> out = new ArrayList<>();
+            for (int i = 0; i < text.length(); i += FILE_CONTENT_CHUNK_SIZE) {
+                out.add(new Chunk(text.substring(i, Math.min(i + FILE_CONTENT_CHUNK_SIZE, text.length())), i));
+            }
+            return out;
+        }
+        return chunkSmart(text, chunkTargetSize, chunkOverlap);
+    }
+
+    /**
+     * Sentence-aware chunking with overlap. Packs whole sentences up to {@code targetSize}, and starts
+     * the next chunk a little earlier so adjacent chunks overlap by ~{@code overlapChars} (keeps a
+     * concept that straddles a boundary whole in at least one chunk). Each chunk carries its start
+     * offset in the original text for later Small-to-Big window expansion.
+     */
+    static List<Chunk> chunkSmart(String text, int targetSize, int overlapChars) {
+        List<int[]> sents = splitSentences(text);
+        List<Chunk> out = new ArrayList<>();
+        int n = sents.size();
+        int i = 0;
+        while (i < n) {
+            int start = sents.get(i)[0];
+            int end = sents.get(i)[1];
+            int j = i + 1;
+            while (j < n && sents.get(j)[1] - start <= targetSize) {
+                end = sents.get(j)[1];
+                j++;
+            }
+            out.add(new Chunk(text.substring(start, end), start));
+            if (j >= n) break;
+            // Step back so the next chunk overlaps the tail of this one. Re-include the last
+            // sentence (guaranteed overlap), then keep including earlier ones until the overlapped
+            // span reaches ~overlapChars — while always leaving at least one sentence of progress.
+            int next = j;
+            if (overlapChars > 0) {
+                next = j - 1;
+                while (next > i + 1 && end - sents.get(next - 1)[0] < overlapChars) {
+                    next--;
+                }
+            }
+            i = Math.max(i + 1, next);
+        }
+        return out;
+    }
+
+    /**
+     * Split text into contiguous sentence spans [start,end). Breaks on CJK/Latin sentence enders and
+     * newlines; a Latin '.' only ends a sentence when it is not inside a decimal number and is
+     * followed by whitespace/end. Trailing whitespace is attached to the preceding sentence.
+     */
+    static List<int[]> splitSentences(String text) {
+        List<int[]> sents = new ArrayList<>();
+        int n = text.length();
+        int start = 0;
+        for (int i = 0; i < n; i++) {
+            char c = text.charAt(i);
+            boolean ender = c == '。' || c == '！' || c == '？' || c == '!' || c == '?'
+                    || c == '；' || c == ';' || c == '\n';
+            if (!ender && c == '.') {
+                boolean prevDigit = i > 0 && Character.isDigit(text.charAt(i - 1));
+                boolean nextDigit = i + 1 < n && Character.isDigit(text.charAt(i + 1));
+                boolean nextSpaceOrEnd = i + 1 >= n || Character.isWhitespace(text.charAt(i + 1));
+                if (!(prevDigit && nextDigit) && nextSpaceOrEnd) ender = true;
+            }
+            if (ender) {
+                int end = i + 1;
+                while (end < n && Character.isWhitespace(text.charAt(end))) end++;
+                if (end > start) sents.add(new int[]{start, end});
+                start = end;
+                i = end - 1;
+            }
+        }
+        if (start < n) sents.add(new int[]{start, n});
+        return sents;
     }
 
     private static boolean blank(String s) { return s == null || s.isBlank(); }

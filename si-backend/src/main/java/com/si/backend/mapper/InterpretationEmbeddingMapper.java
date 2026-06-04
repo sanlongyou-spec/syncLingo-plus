@@ -55,6 +55,9 @@ public interface InterpretationEmbeddingMapper {
     @Update("ALTER TABLE interpretation_embedding ADD UNIQUE KEY uk_emb_source (source_type, source_id)")
     void addSourceUniqueIndexIfNotExists();
 
+    @Update("ALTER TABLE interpretation_embedding ADD COLUMN chunk_start INT DEFAULT NULL")
+    void addChunkStartColumnIfNotExists();
+
     // ── Inserts / Upserts ────────────────────────────────────────────────
 
     @Insert("""
@@ -75,10 +78,10 @@ public interface InterpretationEmbeddingMapper {
     @Insert("""
             INSERT INTO interpretation_embedding
                 (source_type, source_id, ref_id, session_id, meeting_id, session_title, session_date,
-                 speaker_name, chunk_text, translated_text, embedding, create_time)
+                 speaker_name, chunk_text, translated_text, chunk_start, embedding, create_time)
             VALUES
                 (#{sourceType}, #{sourceId}, #{refId}, #{sessionId}, #{meetingId}, #{sessionTitle}, #{sessionDate},
-                 #{speakerName}, #{chunkText}, #{translatedText}, #{embedding}, NOW())
+                 #{speakerName}, #{chunkText}, #{translatedText}, #{chunkStart}, #{embedding}, NOW())
             ON DUPLICATE KEY UPDATE
                 ref_id          = VALUES(ref_id),
                 session_id      = VALUES(session_id),
@@ -88,6 +91,7 @@ public interface InterpretationEmbeddingMapper {
                 speaker_name    = VALUES(speaker_name),
                 chunk_text      = VALUES(chunk_text),
                 translated_text = VALUES(translated_text),
+                chunk_start     = VALUES(chunk_start),
                 embedding       = VALUES(embedding)
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")

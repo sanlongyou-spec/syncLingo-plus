@@ -22,6 +22,8 @@ public class InterpretationEmbedding {
     private String speakerName;
     private String chunkText;
     private String translatedText;
+    /** Start offset of this chunk within the original source text (for Small-to-Big window expansion). */
+    private Integer chunkStart;
     private byte[] embedding;
     private LocalDateTime createTime;
 }

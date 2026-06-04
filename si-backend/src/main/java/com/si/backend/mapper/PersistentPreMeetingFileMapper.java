@@ -40,6 +40,9 @@ public interface PersistentPreMeetingFileMapper {
     @Select("SELECT id, meeting_id, file_name, file_type, file_data FROM pre_meeting_file_persistent WHERE id = #{id}")
     PersistentPreMeetingFile findByIdForDownload(Long id);
 
+    @Select("SELECT id, meeting_id, file_name, file_type, file_content, file_data, summary, create_time FROM pre_meeting_file_persistent WHERE id = #{id}")
+    PersistentPreMeetingFile findByIdFull(Long id);
+
     @Update("UPDATE pre_meeting_file_persistent SET summary = #{summary} WHERE id = #{id}")
     int updateSummary(@Param("id") Long id, @Param("summary") String summary);
 

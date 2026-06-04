@@ -117,6 +117,29 @@ openai:
   rag-rerank-top-k: ${OPENAI_RAG_RERANK_TOP_K:12}
   rag-helper-model: ${OPENAI_RAG_HELPER_MODEL:}
 
+# RAG chunking + retrieval (Phase 1: sentence-aware chunking + Small-to-Big window expansion)
+rag:
+  chunking:
+    mode: ${RAG_CHUNKING_MODE:smart}            # smart = sentence-aware + overlap; fixed = legacy fixed-length
+    target-size: ${RAG_CHUNKING_TARGET_SIZE:300} # target chunk size in chars
+    overlap: ${RAG_CHUNKING_OVERLAP:60}          # overlap between adjacent chunks (~1 sentence)
+  retrieval:
+    window-pad: ${RAG_RETRIEVAL_WINDOW_PAD:400}  # chars of original text on each side of a matched chunk
+  hybrid:                                          # Phase 2A: dense cosine + in-memory BM25, fused via RRF
+    enabled: ${RAG_HYBRID_ENABLED:true}
+    rrf-k: ${RAG_HYBRID_RRF_K:60}
+    bm25-k1: ${RAG_HYBRID_BM25_K1:1.2}
+    bm25-b: ${RAG_HYBRID_BM25_B:0.75}
+  contextual:                                       # Phase 2B: LLM-situated chunk before embedding (off by default)
+    enabled: ${RAG_CONTEXTUAL_ENABLED:false}
+    model: ${RAG_CONTEXTUAL_MODEL:anthropic/claude-haiku-4.5}
+  query-rewrite:                                     # P0-3: resolve pronouns/ellipsis from chat history
+    enabled: ${RAG_QUERY_REWRITE_ENABLED:true}
+    history-turns: ${RAG_QUERY_REWRITE_HISTORY_TURNS:5}
+  decompose:                                         # P1-4: split multi-hop / comparison questions
+    enabled: ${RAG_DECOMPOSE_ENABLED:true}
+    max: ${RAG_DECOMPOSE_MAX:3}
+
 cartesia:
   api-key: ${CARTESIA_API_KEY:}
   api-url: ${CARTESIA_API_URL:wss://api.cartesia.ai}

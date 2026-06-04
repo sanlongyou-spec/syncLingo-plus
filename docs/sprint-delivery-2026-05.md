@@ -959,6 +959,52 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十二、2026-06-04 导出/参会增强 + RAG 检索大改（Phase1/2 + P0/P1）
+
+### 12.1 Teams Bot 会前/导出增强
+- **AI 总结导出**：Word 追加的总结**继承原文正文字体/字号**（取最长段落作样板），标题居中加粗；新增 **导出 PDF = 用 LibreOffice 把那份 Word 转 PDF**（后端 `buildExportPdf`，`Dockerfile` 装 `libreoffice-writer`+`fonts-noto-cjk`）。
+- **参会情况导出 Word**：文件名只把「会议通知」→「参会情况」（地名等原位不动）；删除「SUSUNAN JADWAL RAPAT 会议议程」及其后全部内容；**姓名按拼音字母排序**（`Collator` zh-CN）。
+- **已上传文件可重选**：历史文件点击即载入内存（`/api/meetings/{id}/files/{fileId}/load` → `rehydratePersistedFile`），可重新生成总结。
+- **应到名单持久化**：上传会议安排时把解析出的应到名单存进 `meeting.expected_participants_json`；下次选中该会议、刷新即可重新核对（`/attendance` 支持 `meetingId` 路径）。
+- **会议选择统一**：AI 总结与 Teams Bot 共用同一个会议选择器；未选会议不显示任何信息；支持仅输入会议名新建会议（无应到→刷新只给 Teams 实到）。
+- 前端：AI 总结展示区自适应填满、容器加宽至 1360px、取消选中会议即清空文件/总结。
+
+### 12.2 C# Bot 问答
+- 参会人员离会后用**全量 roster 替换**，不再常驻。
+- 问答回答**字号统一**（Markdown 标题→加粗，避免 Adaptive Card 大小不一）。
+- 引用来源**只显示文件名标题**（去掉会议/日期/摘要片段）。
+
+### 12.3 RAG 检索改造（核心）
+- **引用去重**：按文档（`refId`）去重，同一文件多 chunk 不再重复引用。
+- **Phase 1 — 切块质量**：定长 500 → **句子感知切块 + 重叠**（`ContentEmbeddingService.chunkSmart`，目标 300/重叠 60，按句界断、避开小数）；新增 `chunk_start` 偏移列，检索时 **Small-to-Big 句窗扩展**（命中小块→从原文截 ±400 字窗口喂 LLM，同一文档只展开一次）。
+- **Phase 2A — Hybrid 检索**：dense 余弦 + **内存内 BM25**（`LexicalScorer`：CJK bigram + 拉丁词分词），**RRF 融合**（`HybridFusion`，k=60）。默认开、无需重建库、零基础设施。
+- **Phase 2B — Contextual Retrieval**：入库前可选 LLM「situate」前缀再嵌入（默认关，`rag.contextual.enabled`）。
+- **P0-1 噪声治理**：`TranscriptQuality.isLikelyNoise` 过滤 ASR 乱码转写，不入库。
+- **P0-2 回答 prompt 强化**：跟随提问语言、归纳而非复述、分点、标来源、拒答幻觉。
+- **P0-3 历史感知查询改写**：`rewriteQuery` 消解指代（接入 `chatCrossMeeting`）。
+- **P1-4 查询分解**：`decompose` 拆多跳/对比问题（接入 `buildUnifiedContextResult`）。
+- **P1-6 维度过滤增强**：发言人 + 时间（新增「最近N天」「绝对日期 YYYY年M月D日 / M月D日」），并修复发言人正则一处 bug。
+- 配置全在 `rag.*`（chunking/retrieval/hybrid/contextual/query-rewrite/decompose），可环境变量覆盖。
+- 评估集：新增 `docs/rag-eval-questions.md`（8 类题型 + 记分模板）。
+
+### 12.4 测试结果（2026-06-04）
+- 后端 `mvn -o test`：**BUILD SUCCESS，Tests run: 46, Failures: 0, Errors: 0**。新增单测：
+  - `ContentEmbeddingChunkingTest`（9）：句界平铺、小数不切、中印尼分句、偏移精确、重叠、终止性。
+  - `HybridRetrievalTest`（10）：三语分词、BM25 排序、**RRF 救回关键词强/向量弱的候选**。
+  - `TranscriptQualityTest`（6）：丢标点/单字噪声、保留中英印尼真实内容。
+  - `QuestionFilterTest`（9）：发言人 + 相对/绝对时间、非法日期忽略。
+- 前端 `tsc --noEmit`：**0 错误**；`npm run build`：成功。
+- **基线问答实测**（旧代码、改动未部署，`/api/pre-meeting/chat`）：A1 柴油 94% ✅、A2 销量 64,673 吨 ✅、A3 化肥 18 天 ✅、H1 拒答 2027 预算 ✅；**B1 把"背景"当"核心现象"答偏**、**B3"风险点"串入无关会议（自杀俱乐部）**——正是 P0-2/P1-6/P1-5 要解决的短板。
+
+**部署注意**
+- 后端需重建 Docker（自动加 `chunk_start`/`expected_participants_json` 列 + LibreOffice）。
+- Phase1 切块改动**需重建向量库**（`TRUNCATE interpretation_embedding` + `/api/admin/embeddings/rebuild-all`）才完全生效；Phase2A/P0-2/P0-3/P1-4/P1-6 重建后端即生效。
+- C# bot 改动需停 bot → `dotnet build` → 重启。
+
+**未实现（重量级，下批）**：P1-5 结构化抽取、P2-7 层级摘要、P2-8 Agentic 迭代检索。
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |
