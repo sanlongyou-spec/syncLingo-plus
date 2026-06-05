@@ -30,6 +30,7 @@ public class MeetingService {
     private final PersistentPreMeetingFileMapper fileMapper;
     private final PreMeetingService preMeetingService;
     private final ContentEmbeddingService contentEmbeddingService;
+    private final com.si.backend.mapper.InterpretationSessionMapper sessionMapper;
 
     @PostConstruct
     public void initTables() {
@@ -56,9 +57,17 @@ public class MeetingService {
     }
 
     public MeetingVo createMeeting(Long userId, String title, String scheduledTime, String note) {
+        String trimmedTitle = title == null ? "" : title.trim();
+        if (trimmedTitle.isBlank()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "会议名称不能为空");
+        }
+        // Disallow duplicate meeting names for the same user (schedule upload / manual name / auto-create).
+        if (meetingMapper.countByUserIdAndTitle(userId, trimmedTitle) > 0) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "已存在同名会议「" + trimmedTitle + "」，请换一个会议名称");
+        }
         Meeting meeting = new Meeting();
         meeting.setUserId(userId);
-        meeting.setTitle(title.trim());
+        meeting.setTitle(trimmedTitle);
         meeting.setNote(note);
         if (scheduledTime != null && !scheduledTime.isBlank()) {
             try {
@@ -153,8 +162,12 @@ public class MeetingService {
     public void deleteMeeting(Long meetingId) {
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
         meetingMapper.softDelete(meetingId);
+        // Cascade: soft-delete the meeting's interpretation sessions so they stop showing in the bot's
+        // "最近会议" list (which filters by session.deleted, not the parent meeting).
+        int sessions = sessionMapper.softDeleteByMeetingId(meetingId);
         contentEmbeddingService.deleteByMeetingId(meetingId);
-        log.info("[MeetingService] deleteMeeting done, meetingId={}", meetingId);
+        preMeetingService.deleteUsageByMeetingId(meetingId);   // drop the meeting's 会前 cost
+        log.info("[MeetingService] deleteMeeting done, meetingId={}, cascadedSessions={}", meetingId, sessions);
     }
 
     private Meeting requireMeeting(Long meetingId) {

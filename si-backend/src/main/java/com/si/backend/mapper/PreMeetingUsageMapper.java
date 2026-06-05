@@ -23,12 +23,19 @@ public interface PreMeetingUsageMapper {
             """)
     void createTableIfNotExists();
 
+    @Update("ALTER TABLE pre_meeting_usage_record ADD COLUMN meeting_id BIGINT DEFAULT NULL")
+    void addMeetingIdColumnIfNotExists();
+
     @Insert("""
-            INSERT INTO pre_meeting_usage_record (user_id, file_name, llm_input_tokens, llm_output_tokens, create_time)
-            VALUES (#{userId}, #{fileName}, #{llmInputTokens}, #{llmOutputTokens}, NOW())
+            INSERT INTO pre_meeting_usage_record (user_id, meeting_id, file_name, llm_input_tokens, llm_output_tokens, create_time)
+            VALUES (#{userId}, #{meetingId}, #{fileName}, #{llmInputTokens}, #{llmOutputTokens}, NOW())
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(PreMeetingUsageRecord record);
+
+    /** Remove 会前 usage of a meeting (called when the meeting is deleted, so its cost goes away). */
+    @Delete("DELETE FROM pre_meeting_usage_record WHERE meeting_id = #{meetingId}")
+    int deleteByMeetingId(@Param("meetingId") Long meetingId);
 
     @Select("""
             SELECT DATE(create_time) AS date,

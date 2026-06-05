@@ -1013,6 +1013,63 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十三、2026-06-04 第三批：总结排版可调 + Word 发 Teams + 删除级联修复
+
+### 13.1 AI 总结导出 Markdown 分级排版 + 格式控件
+- 导出 Word 时**按 Markdown 渲染**总结（`appendMarkdownSummary`）：`#/##/###` 标题→大字号加粗、`**加粗**`→粗体、`- / 1.`→项目符号/编号、正文常规。→ 同一总结内**标题与正文字号自动不同**。
+- 新增可调格式 `SummaryFormat(bodyFont, bodySize, headingSize)`，`0/空=继承原文`；Word/PDF 导出共用。
+- 前端 AI 总结上方加「导出格式」控件：正文字体 / 正文字号 / 标题字号。
+- 端点 `/export/{fileId}`、`/export/pdf/{fileId}` 接收 `bodyFont/bodySize/headingSize`。
+
+### 13.2 历史摘要一键生成 Word 并发送到 Teams（方案 A：链接式）
+- **后端**：`PreMeetingService.buildSummaryDocx(title, text, fmt)` 从纯摘要文本生成独立 Word（复用 Markdown 渲染）；端点 `POST /api/pre-meeting/summary-doc` 返回 Word。
+- **C# bot**（external 示例，未纳入本仓库 git）：`POST /api/meetings/summary-file`（multipart）收 Word→内存缓存 24h→用 `BotBaseUrl` 拼下载链接→发文本消息 `📄 标题 [⬇下载](链接)` 给所选账号 + 会议聊天；`GET /api/meetings/file/{token}` 提供下载。
+- **前端**：History 会议总结工具栏加「📄 生成 Word 并发送」，复用现有发送账号/会议聊天选择。
+- 取舍：链接式（点链接下载 Word），非直接文件附件（Plan B：FileConsentCard/Graph，二期）。
+
+### 13.3 会议删除级联 + 孤儿数据清理（修 bot「最近会议」仍显示已删数据）
+- **根因**：删除会议只软删 meeting，**未级联软删其 interpretation_session**；bot「最近会议」列的是 session、只看 session.deleted，故已删会议的会话仍显示。
+- **修复**：`MeetingService.deleteMeeting` 增加 `sessionMapper.softDeleteByMeetingId` 级联软删会话（+清向量）。
+- **一次性清理**（直接 DB 操作，无回滚）：删除孤儿数据——会话 65、转写 1569、向量 931，清空后 live 会话=0、embedding=0。
+- **embedding 生命周期结论**：删除走主路径（会话/会议/文件）会清向量；历史有泄漏（孤儿行）已清；且检索 `findByUserId` 按 `session/meeting 未删 + 本人` 过滤，**已删数据不会出现在 AI 问答**。
+
+### 13.4 测试结果（2026-06-04 第三批）
+- 后端 `mvn -o test`：**BUILD SUCCESS，56 测试全过**（无新增单测；新功能为导出/IO/编排，编译 + 既有套件覆盖）。
+- 前端 `tsc --noEmit` **0 错误**；`npm run build` 成功。
+- C# bot `dotnet build`：**无 CS 错误**（运行中 DLL 占用属正常，需停 bot 重新 build 部署）。
+- DB 清理已直接执行并核对（live 会话 0 / embedding 0）。
+
+**部署**：后端重建 Docker（新增 `/summary-doc`、删除级联）；bot 停→build→重启（新增收文件/发链接/下载端点，连同之前几处 bot 改动一次生效，BotBaseUrl 需对 Teams 可达）；前端硬刷新。
+
+---
+
+## 十四、2026-06-05 第四批：会议名唯一 + 成本按会议 + 数据清理
+
+### 14.1 禁止重复会议名
+- `MeetingService.createMeeting` 加唯一性校验：同一用户下已存在同名（未删除）会议则拒绝（空名也拒），覆盖所有建会议入口（上传会议安排 / 手动命名 / 上传文件自动建）。新增 `MeetingMapper.countByUserIdAndTitle`。
+- 前端 `createMeeting` 改为在错误码非 200 时抛出后端提示（BizException 走 HTTP 200 + 错误码，原先会拿到 null 崩溃），三个入口报错都能正确显示。
+
+### 14.2 成本按会议统计 + 删会议时清成本
+- **实时同传成本**本就按会议（记在 `interpretation_session.meeting_id`），且删会议已自动清（级联软删会话 + 成本按 `deleted=0` 过滤）。
+- **会前成本**（`pre_meeting_usage_record`）原先只有 user_id、不挂会议 → 新增 `meeting_id` 列；生成会前总结时带上当前会议（前端 `summarizePreMeetingFile` 传 `selectedMeetingId`）；`MeetingService.deleteMeeting` 调 `deleteUsageByMeetingId` 删该会议会前用量。
+- 说明：未绑会议的会前总结仍按用户计、不属任何会议（合理）。成本页"按会议聚合展示"为可选展示层，未做。
+
+### 14.3 数据清理（直接 DB 操作，无回滚）
+- bot「最近会议」仍显示已删会议的会话 → 根因是删会议未级联会话（已在 13.3 修），并清理:
+  - 孤儿会话 39 + 其转写 1537 + 向量 485；
+  - 余下 26 个 `meeting_id=NULL` 会话（8 匿名 + 18 `demo-cost-*`）+ 转写 32 + 向量 26；
+  - 孤儿向量 931 → 全清，最终 **live 会话 0 / embedding 0**。
+- 成本分析测试数据：`pre_meeting_usage_record` 122 + `voice_usage_record` 2231 → 清空（成本分析硬刷新后为 $0）。
+
+### 14.4 测试结果（2026-06-05）
+- 后端 `mvn -o test`：**BUILD SUCCESS，56 测试全过**。
+- 前端 `tsc --noEmit` **0 错误**；`npm run build` 成功。
+- DB 清理已执行并核对（会话/embedding/usage 均归零）。
+
+**部署**：后端重建 Docker（自动加 `meeting_id` 列 + 唯一名校验 + 删会议清成本）；前端硬刷新。DB 清理已即时生效。
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

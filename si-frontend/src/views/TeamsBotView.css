@@ -805,6 +805,29 @@
   color: #98a2b3;
 }
 
+.tb-summary-fmt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 16px 2px;
+  font-size: 0.74rem;
+  color: #64748b;
+}
+.tb-summary-fmt-label { font-weight: 600; color: #475569; }
+.tb-summary-fmt label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tb-summary-fmt select {
+  font-size: 0.74rem;
+  padding: 2px 4px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+}
+
 .tb-prep-summary-edit {
   flex: 1 1 auto;
   min-height: 160px;

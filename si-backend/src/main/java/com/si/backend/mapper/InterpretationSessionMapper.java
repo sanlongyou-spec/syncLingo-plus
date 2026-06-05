@@ -101,6 +101,10 @@ public interface InterpretationSessionMapper {
     @Update("UPDATE interpretation_session SET deleted = 1 WHERE session_id = #{sessionId} AND user_id = #{userId}")
     int softDelete(@Param("sessionId") String sessionId, @Param("userId") Long userId);
 
+    /** Cascade: soft-delete all sessions of a meeting (called when the meeting is deleted). */
+    @Update("UPDATE interpretation_session SET deleted = 1 WHERE meeting_id = #{meetingId}")
+    int softDeleteByMeetingId(@Param("meetingId") Long meetingId);
+
     @Select("SELECT s.*, (SELECT COUNT(*) FROM interpretation_result r WHERE r.session_id = s.session_id) AS result_count " +
             "FROM interpretation_session s " +
             "WHERE s.meeting_id = #{meetingId} AND COALESCE(s.deleted, 0) = 0 " +

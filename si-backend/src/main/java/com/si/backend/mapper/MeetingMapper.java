@@ -30,6 +30,10 @@ public interface MeetingMapper {
     @Select("SELECT * FROM meeting WHERE id = #{id} AND deleted = 0")
     Meeting findById(Long id);
 
+    /** Count non-deleted meetings of a user with the exact same title (for duplicate-name guard). */
+    @Select("SELECT COUNT(*) FROM meeting WHERE user_id = #{userId} AND title = #{title} AND deleted = 0")
+    int countByUserIdAndTitle(@Param("userId") Long userId, @Param("title") String title);
+
     @Select("SELECT * FROM meeting WHERE user_id = #{userId} AND deleted = 0 ORDER BY create_time DESC")
     List<Meeting> findByUserId(Long userId);
 

@@ -9,8 +9,10 @@ import {
   getMeetingSummary,
   getPublicInterpretationResults,
   getSpeakerSummaries,
+  generateSummaryDoc,
   regenerateMeetingSummary,
   regenerateSpeakerSummary,
+  sendSummaryFileToTeams,
   sendSummaryToMeetingChat,
   sendTeamsSummaryToUsers,
   updateActionItemStatus,
@@ -161,6 +163,7 @@ export default function HistoryView() {
   )
   const [summaryReqSaved, setSummaryReqSaved] = useState(false)
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [wordSendStatus, setWordSendStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [chatPushStatus, setChatPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [includeMeetingChat, setIncludeMeetingChat] = useState(
     () => localStorage.getItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT) === 'true'
@@ -339,6 +342,22 @@ export default function HistoryView() {
     } catch {
       setTeamsPushStatus('error')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
+    }
+  }
+
+  // Plan A: generate a Word from the summary text and send a Teams download link to accounts/chat.
+  const pushSummaryWord = async (title: string, text: string, recipients: string[], sendToChat: boolean) => {
+    setWordSendStatus('loading')
+    try {
+      const blob = await generateSummaryDoc(title || '会议总结', text)
+      const fileName = `${(title || '会议总结').replace(/[\\/:*?"<>|]/g, '_')}.docx`
+      const res = await sendSummaryFileToTeams(blob, fileName, { title, recipients, sendToChat })
+      if (!res.sent) throw new Error(res.error || '发送失败')
+      setWordSendStatus('done')
+      setTimeout(() => setWordSendStatus('idle'), 3000)
+    } catch {
+      setWordSendStatus('error')
+      setTimeout(() => setWordSendStatus('idle'), 3000)
     }
   }
 
@@ -925,6 +944,16 @@ export default function HistoryView() {
                               disabled={teamsPushStatus === 'loading'}
                             >
                               {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenSummaryRecipients.length} 人）`}
+                            </button>
+                          )}
+                          {(chosenSummaryRecipients.length > 0 || (includeMeetingChat && !!localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID))) && (
+                            <button
+                              className="history-summary-export-btn"
+                              title="生成 Word 并把下载链接发到所选账号 / 会议聊天"
+                              onClick={() => { void pushSummaryWord(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients, includeMeetingChat) }}
+                              disabled={wordSendStatus === 'loading'}
+                            >
+                              {wordSendStatus === 'done' ? 'Word 已发送 ✓' : wordSendStatus === 'error' ? '发送失败' : wordSendStatus === 'loading' ? '生成并发送中...' : '📄 生成 Word 并发送'}
                             </button>
                           )}
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>

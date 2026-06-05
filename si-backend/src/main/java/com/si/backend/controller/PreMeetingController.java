@@ -83,7 +83,7 @@ public class PreMeetingController {
         try {
             long userId = request.getUserId() != null ? request.getUserId() : 0L;
             PreMeetingSummaryVo result = preMeetingService.summarize(
-                    request.getFileId(), request.getRequirements(), userId);
+                    request.getFileId(), request.getRequirements(), userId, request.getMeetingId());
             return Result.ok(result);
         } catch (BizException e) {
             throw e;
@@ -115,6 +115,28 @@ public class PreMeetingController {
             log.error("[PreMeetingController] generateAttendance failed, fileId={}, meetingId={}",
                     request.getFileId(), request.getMeetingId(), e);
             throw BizException.of(ErrorCode.BAD_REQUEST, "生成实际参加情况失败：" + e.getMessage());
+        }
+    }
+
+    /** Build a standalone Word from a history summary/总结 text (for sending to Teams). */
+    @PostMapping("/summary-doc")
+    public ResponseEntity<byte[]> summaryDoc(@RequestBody Map<String, String> body) {
+        String title = body.getOrDefault("title", "会议总结");
+        String summary = body.getOrDefault("summary", "");
+        try {
+            byte[] docxBytes = preMeetingService.buildSummaryDocx(title, summary, parseFormat(body));
+            String fileName = (title == null || title.isBlank() ? "会议总结" : title) + ".docx";
+            String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+            headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded);
+            return ResponseEntity.ok().headers(headers).body(docxBytes);
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] summaryDoc failed", e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "生成总结 Word 失败：" + e.getMessage());
         }
     }
 
@@ -208,7 +230,7 @@ public class PreMeetingController {
             @RequestBody Map<String, String> body) {
         String summary = body.getOrDefault("summary", "");
         try {
-            byte[] docxBytes = preMeetingService.buildExportDocx(fileId, summary);
+            byte[] docxBytes = preMeetingService.buildExportDocx(fileId, summary, parseFormat(body));
             String fileName = preMeetingService.getFileName(fileId);
             String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
 
@@ -231,7 +253,7 @@ public class PreMeetingController {
             @RequestBody Map<String, String> body) {
         String summary = body.getOrDefault("summary", "");
         try {
-            byte[] pdfBytes = preMeetingService.buildExportPdf(fileId, summary);
+            byte[] pdfBytes = preMeetingService.buildExportPdf(fileId, summary, parseFormat(body));
             String fileName = preMeetingService.getFileName(fileId);
             int dot = fileName.lastIndexOf('.');
             String pdfName = (dot > 0 ? fileName.substring(0, dot) : fileName) + ".pdf";
@@ -246,6 +268,27 @@ public class PreMeetingController {
         } catch (Exception e) {
             log.error("[PreMeetingController] exportPdf failed, fileId={}", fileId, e);
             throw BizException.of(ErrorCode.BAD_REQUEST, "导出 PDF 失败：" + e.getMessage());
+        }
+    }
+
+    /** Build the summary format options from the request body (bodyFont / bodySize / headingSize). */
+    private PreMeetingService.SummaryFormat parseFormat(Map<String, String> body) {
+        if (body == null) return PreMeetingService.SummaryFormat.INHERIT;
+        String font = body.get("bodyFont");
+        int bodySize = parseIntOrZero(body.get("bodySize"));
+        int headingSize = parseIntOrZero(body.get("headingSize"));
+        if ((font == null || font.isBlank()) && bodySize <= 0 && headingSize <= 0) {
+            return PreMeetingService.SummaryFormat.INHERIT;
+        }
+        return new PreMeetingService.SummaryFormat(font, bodySize, headingSize);
+    }
+
+    private int parseIntOrZero(String s) {
+        if (s == null || s.isBlank()) return 0;
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 

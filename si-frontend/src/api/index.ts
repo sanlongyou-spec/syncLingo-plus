@@ -228,8 +228,9 @@ export const summarizePreMeetingFile = (
   fileId: string,
   requirements: string,
   userId?: number,
+  meetingId?: number | null,
 ): Promise<Result<PreMeetingSummaryResult>> =>
-  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, userId }, {
+  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, userId, meetingId }, {
     timeout: 300_000,
   }).then(r => ensureResultData(r.data, '生成总结失败'))
 
@@ -272,11 +273,24 @@ export const exportPreMeetingAttendanceDocx = (
 export const getPreMeetingUsage = (userId: number, days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
   client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { userId, days } }).then(r => r.data)
 
-export const exportPreMeetingDocx = (fileId: string, summary: string): Promise<Blob> =>
-  client.post<Blob>(`/api/pre-meeting/export/${fileId}`, { summary }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
+export interface SummaryExportFormat {
+  bodyFont?: string
+  bodySize?: number
+  headingSize?: number
+}
 
-export const exportPreMeetingPdf = (fileId: string, summary: string): Promise<Blob> =>
-  client.post<Blob>(`/api/pre-meeting/export/pdf/${fileId}`, { summary }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
+const formatBody = (summary: string, fmt?: SummaryExportFormat) => ({
+  summary,
+  ...(fmt?.bodyFont ? { bodyFont: fmt.bodyFont } : {}),
+  ...(fmt?.bodySize ? { bodySize: String(fmt.bodySize) } : {}),
+  ...(fmt?.headingSize ? { headingSize: String(fmt.headingSize) } : {}),
+})
+
+export const exportPreMeetingDocx = (fileId: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
+  client.post<Blob>(`/api/pre-meeting/export/${fileId}`, formatBody(summary, fmt), { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
+
+export const exportPreMeetingPdf = (fileId: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
+  client.post<Blob>(`/api/pre-meeting/export/pdf/${fileId}`, formatBody(summary, fmt), { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
 export const chatWithPreMeeting = (
   question: string,
@@ -298,6 +312,40 @@ export const chatWithPreMeeting = (
     userId: options?.userId || 1,
     days: options?.days || 0,
   }, { timeout: 120_000 }).then(r => r.data)
+
+// Generate a standalone Word from a history summary text (markdown-rendered, with title).
+export const generateSummaryDoc = (title: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
+  client.post<Blob>('/api/pre-meeting/summary-doc', { title, ...formatBody(summary, fmt) }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
+
+export interface SummaryFileSendResult {
+  sent: boolean
+  userSent: number
+  userFailed: number
+  chatThreadId: string | null
+  downloadUrl: string
+  error?: string | null
+}
+
+// Upload a generated Word to the bot, which sends a Teams message with a download link to the
+// chosen account(s) and/or the active meeting chat (Plan A).
+export const sendSummaryFileToTeams = (
+  blob: Blob,
+  fileName: string,
+  opts: { title?: string; recipients?: string[]; sendToChat?: boolean },
+): Promise<SummaryFileSendResult> => {
+  const form = new FormData()
+  form.append('file', blob, fileName)
+  form.append('fileName', fileName)
+  if (opts.title) form.append('title', opts.title)
+  ;(opts.recipients ?? []).forEach(r => form.append('recipients', r))
+  form.append('sendToChat', String(!!opts.sendToChat))
+  return client.post<SummaryFileSendResult>('/bot-api/api/meetings/summary-file', form)
+    .then(r => r.data)
+    .catch(error => {
+      const message = error?.response?.data?.error || error?.message || 'Word 发送失败'
+      throw new Error(message)
+    })
+}
 
 export const sendTeamsSummaryToUsers = (
   content: string,
@@ -342,7 +390,11 @@ export const createMeeting = (params: {
   scheduledTime?: string
   note?: string
 }): Promise<Result<Meeting>> =>
-  client.post<Result<Meeting>>('/api/meetings', params).then(r => r.data)
+  client.post<Result<Meeting>>('/api/meetings', params).then(r => {
+    // BizException (e.g. duplicate meeting name) returns HTTP 200 with an error code in the body.
+    if (r.data?.code !== 200) throw new Error(r.data?.message || '创建会议失败')
+    return r.data
+  })
 
 export const getMeetings = (userId: number): Promise<Result<Meeting[]>> =>
   client.get<Result<Meeting[]>>('/api/meetings', { params: { userId } }).then(r => r.data)

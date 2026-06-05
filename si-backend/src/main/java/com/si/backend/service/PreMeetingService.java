@@ -140,7 +140,25 @@ public class PreMeetingService {
     public void initTable() {
         log.info("[PreMeetingService] initTable start");
         usageMapper.createTableIfNotExists();
+        try {
+            usageMapper.addMeetingIdColumnIfNotExists();
+        } catch (org.springframework.dao.DataAccessException e) {
+            if (e.getMessage() == null || !e.getMessage().contains("Duplicate column")) {
+                log.warn("[PreMeetingService] addMeetingIdColumn failed: {}", e.getMessage());
+            }
+        }
         log.info("[PreMeetingService] initTable end");
+    }
+
+    /** Remove 会前 usage records of a meeting (called from meeting deletion to drop its 会前 cost). */
+    public void deleteUsageByMeetingId(Long meetingId) {
+        if (meetingId == null) return;
+        try {
+            int rows = usageMapper.deleteByMeetingId(meetingId);
+            log.info("[PreMeetingService] deleteUsageByMeetingId, meetingId={}, rows={}", meetingId, rows);
+        } catch (Exception e) {
+            log.warn("[PreMeetingService] deleteUsageByMeetingId failed, meetingId={}: {}", meetingId, e.getMessage());
+        }
     }
 
     public List<PreMeetingFileVo> upload(MultipartFile file) throws IOException {
@@ -226,6 +244,10 @@ public class PreMeetingService {
     }
 
     public PreMeetingSummaryVo summarize(String fileId, String requirements, long userId) throws IOException {
+        return summarize(fileId, requirements, userId, null);
+    }
+
+    public PreMeetingSummaryVo summarize(String fileId, String requirements, long userId, Long meetingId) throws IOException {
         PreMeetingDoc doc = store.get(fileId);
         if (doc == null) {
             throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已过期，请重新上传");
@@ -239,6 +261,7 @@ public class PreMeetingService {
         try {
             usageMapper.insert(PreMeetingUsageRecord.builder()
                     .userId(userId)
+                    .meetingId(meetingId)
                     .fileName(doc.fileName())
                     .llmInputTokens(inputTokens)
                     .llmOutputTokens(outputTokens)
@@ -873,6 +896,71 @@ public class PreMeetingService {
         return best;
     }
 
+    private static final Pattern MD_HEADING = Pattern.compile("^(#{1,6})\\s+(.*)$");
+    private static final Pattern MD_ULIST = Pattern.compile("^\\s*[-*+]\\s+(.*)$");
+    private static final Pattern MD_OLIST = Pattern.compile("^\\s*(\\d+)[.)]\\s+(.*)$");
+
+    /** Render the summary Markdown into the document: headings, bullet/numbered lists, inline **bold**. */
+    private void appendMarkdownSummary(XWPFDocument output, String summary,
+                                       String bodyFont, int bodySize, int headingSize) {
+        if (summary == null) return;
+        for (String raw : summary.split("\n", -1)) {
+            String line = raw.stripTrailing();
+            if (line.isBlank()) {
+                output.createParagraph();
+                continue;
+            }
+            Matcher h = MD_HEADING.matcher(line);
+            Matcher u = MD_ULIST.matcher(line);
+            Matcher o = MD_OLIST.matcher(line);
+            if (h.matches()) {
+                int level = h.group(1).length();
+                int size = Math.max(bodySize, headingSize - (level - 1));   // h1 largest, deeper = smaller
+                XWPFParagraph p = output.createParagraph();
+                renderInline(p, h.group(2).trim(), bodyFont, size, true);
+            } else if (u.matches()) {
+                XWPFParagraph p = output.createParagraph();
+                p.setIndentationLeft(360);
+                XWPFRun bullet = p.createRun();
+                applyFont(bullet, bodyFont, bodySize, false);
+                bullet.setText("• ");
+                renderInline(p, u.group(1).trim(), bodyFont, bodySize, false);
+            } else if (o.matches()) {
+                XWPFParagraph p = output.createParagraph();
+                p.setIndentationLeft(360);
+                XWPFRun num = p.createRun();
+                applyFont(num, bodyFont, bodySize, false);
+                num.setText(o.group(1) + ". ");
+                renderInline(p, o.group(2).trim(), bodyFont, bodySize, false);
+            } else {
+                XWPFParagraph p = output.createParagraph();
+                renderInline(p, line.trim(), bodyFont, bodySize, false);
+            }
+        }
+    }
+
+    /** Split a line on **bold** spans and emit runs; segments inside ** are bold. */
+    private void renderInline(XWPFParagraph p, String text, String font, int size, boolean baseBold) {
+        String[] parts = text.split("\\*\\*", -1);
+        for (int k = 0; k < parts.length; k++) {
+            if (parts[k].isEmpty()) continue;
+            boolean bold = baseBold || (k % 2 == 1);   // odd segments are between ** **
+            XWPFRun r = p.createRun();
+            applyFont(r, font, size, bold);
+            r.setText(parts[k]);
+        }
+    }
+
+    private void applyFont(XWPFRun r, String font, int size, boolean bold) {
+        if (notBlank(font)) r.setFontFamily(font);
+        if (size > 0) r.setFontSize(size);
+        r.setBold(bold);
+    }
+
+    private static boolean notBlank(String s) {
+        return s != null && !s.isBlank();
+    }
+
     private RunShell captureRunShell(XWPFRun source) {
         if (source == null) {
             return null;
@@ -1302,11 +1390,21 @@ public class PreMeetingService {
         }
     }
 
+    /** User-adjustable summary formatting (Option 1): body font/size + heading size. 0/blank = inherit. */
+    public record SummaryFormat(String bodyFont, int bodySize, int headingSize) {
+        public static final SummaryFormat INHERIT = new SummaryFormat(null, 0, 0);
+    }
+
     public byte[] buildExportDocx(String fileId, String summary) throws IOException {
+        return buildExportDocx(fileId, summary, SummaryFormat.INHERIT);
+    }
+
+    public byte[] buildExportDocx(String fileId, String summary, SummaryFormat fmt) throws IOException {
         PreMeetingDoc doc = store.get(fileId);
         if (doc == null) {
             throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已过期，请重新上传");
         }
+        if (fmt == null) fmt = SummaryFormat.INHERIT;
 
         ClassLoader orig = Thread.currentThread().getContextClassLoader();
         try {
@@ -1326,36 +1424,66 @@ public class PreMeetingService {
             }
 
             // Capture the original document's body text format (font/size/etc.) BEFORE appending,
-            // so the summary we add below matches the original content's look.
+            // so the summary we add below matches the original content's look unless overridden.
             RunShell bodyShell = captureRunShell(findBodySampleRun(output));
 
-            // Separator paragraph (centered, in the document's font)
+            // Resolve effective fonts/sizes: explicit format overrides > original body > defaults.
+            String bodyFont = notBlank(fmt.bodyFont()) ? fmt.bodyFont()
+                    : (bodyShell != null ? bodyShell.fontFamily() : null);
+            int bodySize = fmt.bodySize() > 0 ? fmt.bodySize()
+                    : (bodyShell != null && bodyShell.fontSize() > 0 ? bodyShell.fontSize() : 11);
+            int headingSize = fmt.headingSize() > 0 ? fmt.headingSize() : bodySize + 3;
+
+            // Separator paragraph (centered)
             XWPFParagraph sep = output.createParagraph();
             sep.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun sepRun = sep.createRun();
-            applyRunShell(bodyShell, sepRun);
-            sepRun.setBold(false);
+            applyFont(sepRun, bodyFont, bodySize, false);
             sepRun.setText("──────────────────────");
 
-            // AI summary heading — centered like a title, bold, in the document's font (sized up).
+            // "AI 会议摘要" main heading — centered, bold, heading size.
             XWPFParagraph heading = output.createParagraph();
             heading.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun headingRun = heading.createRun();
-            applyRunShell(bodyShell, headingRun);
-            headingRun.setBold(true);
-            int bodySize = bodyShell != null ? bodyShell.fontSize() : -1;
-            headingRun.setFontSize(bodySize > 0 ? bodySize + 2 : 14);
+            applyFont(headingRun, bodyFont, headingSize, true);
             headingRun.setText("AI 会议摘要");
 
-            // Summary body — split by line to preserve paragraph breaks. Each paragraph inherits
-            // the original document's body format so font/size match the rest of the document.
-            for (String line : summary.split("\n")) {
-                XWPFParagraph p = output.createParagraph();
-                XWPFRun r = p.createRun();
-                applyRunShell(bodyShell, r);
-                r.setBold(false);
-                r.setText(line);
+            // Summary body — render Markdown so headings/lists/bold get their own formatting and the
+            // heading vs content font sizes differ.
+            appendMarkdownSummary(output, summary, bodyFont, bodySize, headingSize);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            output.write(out);
+            output.close();
+            return out.toByteArray();
+        } finally {
+            Thread.currentThread().setContextClassLoader(orig);
+        }
+    }
+
+    /**
+     * Build a standalone Word doc from a history summary/总结 text (no original file): centered title
+     * + the summary rendered as Markdown (headings/lists/bold). Used to send a Word to Teams.
+     */
+    public byte[] buildSummaryDocx(String title, String summaryText, SummaryFormat fmt) throws IOException {
+        if (fmt == null) fmt = SummaryFormat.INHERIT;
+        ClassLoader orig = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(XWPFDocument.class.getClassLoader());
+            XWPFDocument output = new XWPFDocument();
+
+            String bodyFont = notBlank(fmt.bodyFont()) ? fmt.bodyFont() : null;
+            int bodySize = fmt.bodySize() > 0 ? fmt.bodySize() : 11;
+            int headingSize = fmt.headingSize() > 0 ? fmt.headingSize() : bodySize + 3;
+
+            if (notBlank(title)) {
+                XWPFParagraph t = output.createParagraph();
+                t.setAlignment(ParagraphAlignment.CENTER);
+                XWPFRun tr = t.createRun();
+                applyFont(tr, bodyFont, headingSize + 2, true);
+                tr.setText(title);
             }
+            appendMarkdownSummary(output, summaryText == null ? "" : summaryText, bodyFont, bodySize, headingSize);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             output.write(out);
@@ -1372,7 +1500,11 @@ public class PreMeetingService {
      * faithful render of the Word (centered titles, fonts, tables all preserved).
      */
     public byte[] buildExportPdf(String fileId, String summary) throws IOException {
-        byte[] docxBytes = buildExportDocx(fileId, summary);
+        return buildExportPdf(fileId, summary, SummaryFormat.INHERIT);
+    }
+
+    public byte[] buildExportPdf(String fileId, String summary, SummaryFormat fmt) throws IOException {
+        byte[] docxBytes = buildExportDocx(fileId, summary, fmt);
 
         Path tmpDir = Files.createTempDirectory("si-pdf-");
         try {

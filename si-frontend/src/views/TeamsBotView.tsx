@@ -122,6 +122,9 @@ export default function TeamsBotView() {
   const [fileUploadLoading, setFileUploadLoading] = useState(false)
   const [exportLoading, setExportLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  // 导出格式：0/'' = 继承原文。正文字体/字号 + 标题字号，标题与正文可不同。
+  const [summaryFmt, setSummaryFmt] = useState<{ bodyFont: string; bodySize: number; headingSize: number }>(
+    { bodyFont: '', bodySize: 0, headingSize: 0 })
   const [preMeetingToDbFileId, setPreMeetingToDbFileId] = useState<Record<string, number>>({})
   const [defaultReqDraft, setDefaultReqDraft] = useState(
     () => localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.PRE_MEETING_DEFAULT_REQ) ?? ''
@@ -332,7 +335,7 @@ export default function TeamsBotView() {
     setError('')
     const combined = [defaultReqDraft.trim(), extraReq.trim()].filter(Boolean).join('\n')
     try {
-      const res = await summarizePreMeetingFile(fileId, combined, userId)
+      const res = await summarizePreMeetingFile(fileId, combined, userId, selectedMeetingId)
       setSummaryMap(prev => ({ ...prev, [fileId]: res.data }))
       const dbFileId = preMeetingToDbFileId[fileId]
       const mid = selectedMeetingId
@@ -742,7 +745,7 @@ export default function TeamsBotView() {
                           setError('')
                           try {
                             const { exportPreMeetingDocx } = await import('../api')
-                            const blob = await exportPreMeetingDocx(selectedFileId, summaryResult.summary)
+                            const blob = await exportPreMeetingDocx(selectedFileId, summaryResult.summary, summaryFmt)
                             downloadBlob(blob, sanitizeFilename(summaryResult.fileName))
                           } catch (err) {
                             setError(err instanceof Error ? err.message : '导出失败')
@@ -760,7 +763,7 @@ export default function TeamsBotView() {
                           setError('')
                           try {
                             const { exportPreMeetingPdf } = await import('../api')
-                            const blob = await exportPreMeetingPdf(selectedFileId, summaryResult.summary)
+                            const blob = await exportPreMeetingPdf(selectedFileId, summaryResult.summary, summaryFmt)
                             const pdfName = sanitizeFilename(summaryResult.fileName).replace(/\.[^.]+$/, '') + '.pdf'
                             downloadBlob(blob, pdfName)
                           } catch (err) {
@@ -773,6 +776,32 @@ export default function TeamsBotView() {
                     </div>
                   </div>
                   <div className="tb-prep-summary-edit-hint">可手动修改总结，再点上方「导出 Word / PDF」导出修改后的版本</div>
+                  <div className="tb-summary-fmt">
+                    <span className="tb-summary-fmt-label">导出格式</span>
+                    <label>正文字体
+                      <select value={summaryFmt.bodyFont} onChange={e => setSummaryFmt(f => ({ ...f, bodyFont: e.target.value }))}>
+                        <option value="">继承原文</option>
+                        <option value="宋体">宋体</option>
+                        <option value="微软雅黑">微软雅黑</option>
+                        <option value="黑体">黑体</option>
+                        <option value="楷体">楷体</option>
+                        <option value="Times New Roman">Times New Roman</option>
+                        <option value="Arial">Arial</option>
+                      </select>
+                    </label>
+                    <label>正文字号
+                      <select value={summaryFmt.bodySize} onChange={e => setSummaryFmt(f => ({ ...f, bodySize: Number(e.target.value) }))}>
+                        <option value={0}>继承</option>
+                        {[9, 10, 11, 12, 14, 16].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </label>
+                    <label>标题字号
+                      <select value={summaryFmt.headingSize} onChange={e => setSummaryFmt(f => ({ ...f, headingSize: Number(e.target.value) }))}>
+                        <option value={0}>自动(正文+3)</option>
+                        {[12, 14, 16, 18, 20].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </label>
+                  </div>
                   <textarea
                     className="tb-prep-summary-edit"
                     value={summaryResult.summary}
