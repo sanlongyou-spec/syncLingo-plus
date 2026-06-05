@@ -46,4 +46,10 @@ public interface MeetingActionItemMapper {
 
     @Delete("DELETE FROM meeting_action_item WHERE id = #{id}")
     int deleteById(Long id);
+
+    @Delete("DELETE FROM meeting_action_item WHERE meeting_id = #{meetingId}")
+    int deleteByMeetingId(Long meetingId);
+
+    @Delete("DELETE FROM meeting_action_item WHERE session_id = #{sessionId}")
+    int deleteBySessionId(String sessionId);
 }

@@ -1270,6 +1270,92 @@
   flex: 1;
 }
 
+/* ── 会议链接（必填）+ 通知结果 ── */
+.tb-meeting-link {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed #e2e8f0;
+}
+.tb-meeting-link .tb-meeting-name-row .tb-meeting-input {
+  flex: 1;
+}
+.tb-required {
+  font-style: normal;
+  font-size: 0.7rem;
+  color: #dc2626;
+  background: #fef2f2;
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  margin-left: 0.3rem;
+}
+.tb-meeting-link-hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.74rem;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+.tb-notify-plan {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.tb-notify-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.tb-notify-row > strong {
+  font-size: 0.85rem;
+}
+.tb-notify-row--ok { background: #ecfdf5; color: #047857; }
+.tb-notify-row--skip { background: #f1f5f9; color: #64748b; }
+.tb-notify-row--warn { background: #fffbeb; color: #b45309; }
+.tb-notify-names {
+  color: #475569;
+  font-size: 0.74rem;
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+.tb-notify-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  margin: 0.1rem 0 0.2rem;
+}
+.tb-notify-table th,
+.tb-notify-table td {
+  text-align: left;
+  padding: 0.35rem 0.55rem;
+  border-bottom: 1px solid #eef2f7;
+  word-break: break-all;
+}
+.tb-notify-table th {
+  color: #94a3b8;
+  font-weight: 600;
+  background: #f8fafc;
+}
+.tb-notify-table td {
+  color: #334155;
+}
+.tb-bot-join-link {
+  flex: 1;
+  font-size: 0.82rem;
+  color: #047857;
+  background: #ecfdf5;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+}
+.tb-bot-join-link--missing {
+  color: #b45309;
+  background: #fffbeb;
+}
+
 /* ── Section 2: files layout ── */
 .tb-files-section .tb-card-desc {
   margin-bottom: 0.75rem;

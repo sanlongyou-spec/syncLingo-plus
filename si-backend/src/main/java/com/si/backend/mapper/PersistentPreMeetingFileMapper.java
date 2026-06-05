@@ -48,4 +48,7 @@ public interface PersistentPreMeetingFileMapper {
 
     @Delete("DELETE FROM pre_meeting_file_persistent WHERE id = #{id}")
     int deleteById(Long id);
+
+    @Delete("DELETE FROM pre_meeting_file_persistent WHERE meeting_id = #{meetingId}")
+    int deleteByMeetingId(Long meetingId);
 }

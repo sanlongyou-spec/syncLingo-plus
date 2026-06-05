@@ -230,6 +230,30 @@ export interface AsrHotword {
   lastUsedTime?: string
 }
 
+export interface SystemUserInfo {
+  id?: number
+  department?: string
+  personName?: string
+  positionTitle?: string
+  email?: string
+  microsoftId?: string
+  robinUid?: string
+  teamsVerified?: string
+  employmentStatus?: string
+  sourceSheet?: string
+  sourceRow?: number
+  createTime?: string
+  updateTime?: string
+}
+
+export interface SystemUserImportResult {
+  sheetName?: string
+  createdCount: number
+  updatedCount: number
+  skippedCount: number
+  totalCount: number
+}
+
 export interface HotwordSuggestion {
   phrase: string
   category: string
@@ -261,9 +285,26 @@ export interface Meeting {
   scheduledTime?: string | null
   note?: string | null
   attendanceJson?: string | null
+  meetingUrl?: string | null
   hasExpectedParticipants?: boolean
   createTime?: string
   files?: MeetingFile[]
+}
+
+// A matched Teams recipient: 会议安排原始名 / 系统账号名 / 邮箱.
+export interface MeetingNotificationRecipient {
+  scheduleName: string
+  accountName: string
+  email: string
+}
+
+// Result of matching the 会议安排 应到名单 to the user directory and sending the Teams notification.
+export interface MeetingNotificationPlan {
+  meetingName: string
+  meetingTime?: string | null
+  teamsRecipients: MeetingNotificationRecipient[]
+  nonTeamsSkipped: string[]
+  unmatched: string[]
 }
 
 export interface MeetingFile {

@@ -31,6 +31,8 @@ public class MeetingService {
     private final PreMeetingService preMeetingService;
     private final ContentEmbeddingService contentEmbeddingService;
     private final com.si.backend.mapper.InterpretationSessionMapper sessionMapper;
+    private final com.si.backend.mapper.MeetingActionItemMapper actionItemMapper;
+    private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
 
     @PostConstruct
     public void initTables() {
@@ -40,6 +42,7 @@ public class MeetingService {
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
         addFileColumnIfMissing("attendance_json", meetingMapper::addAttendanceJsonColumnIfNotExists);
         addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
+        addFileColumnIfMissing("meeting_url", meetingMapper::addMeetingUrlColumnIfNotExists);
         log.info("[MeetingService] initTables end");
     }
 
@@ -159,15 +162,39 @@ public class MeetingService {
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
     }
 
+    public void setMeetingUrl(Long meetingId, String url) {
+        requireMeeting(meetingId);
+        meetingMapper.updateMeetingUrl(meetingId, url);
+    }
+
     public void deleteMeeting(Long meetingId) {
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
+
+        // Collect the meeting's sessions BEFORE soft-deleting them, to clean their per-session data.
+        List<String> sessionIds = sessionMapper.findByMeetingId(meetingId).stream()
+                .map(com.si.backend.entity.InterpretationSession::getSessionId)
+                .filter(id -> id != null && !id.isBlank())
+                .toList();
+        for (String sessionId : sessionIds) {
+            speakerSummaryMapper.deleteBySessionId(sessionId);     // 发言人摘要
+            actionItemMapper.deleteBySessionId(sessionId);          // 行动项（按会话）
+            contentEmbeddingService.deleteBySessionId(sessionId);   // 会话级向量
+        }
+
+        // Soft-delete the meeting + its sessions so they stop showing in the bot's "最近会议" list
+        // (which filters by session.deleted, not the parent meeting).
         meetingMapper.softDelete(meetingId);
-        // Cascade: soft-delete the meeting's interpretation sessions so they stop showing in the bot's
-        // "最近会议" list (which filters by session.deleted, not the parent meeting).
         int sessions = sessionMapper.softDeleteByMeetingId(meetingId);
-        contentEmbeddingService.deleteByMeetingId(meetingId);
-        preMeetingService.deleteUsageByMeetingId(meetingId);   // drop the meeting's 会前 cost
-        log.info("[MeetingService] deleteMeeting done, meetingId={}, cascadedSessions={}", meetingId, sessions);
+
+        // Hard-delete every other piece of data tied to this meeting so nothing lingers in the DB.
+        meetingMapper.clearAssociatedData(meetingId);              // 应到名单 / 实到核对 / 会议链接
+        fileMapper.deleteByMeetingId(meetingId);                   // 上传的会议安排 / 会议文件(含二进制)
+        actionItemMapper.deleteByMeetingId(meetingId);             // 行动项（按会议）
+        contentEmbeddingService.deleteByMeetingId(meetingId);      // 会议级向量
+        preMeetingService.deleteUsageByMeetingId(meetingId);       // 会前成本
+
+        log.info("[MeetingService] deleteMeeting done, meetingId={}, cascadedSessions={}, cleanedSessionData={}",
+                meetingId, sessions, sessionIds.size());
     }
 
     private Meeting requireMeeting(Long meetingId) {
@@ -184,6 +211,7 @@ public class MeetingService {
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
                 .attendanceJson(m.getAttendanceJson())
+                .meetingUrl(m.getMeetingUrl())
                 .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
                         && !m.getExpectedParticipantsJson().isBlank())
                 .createTime(m.getCreateTime())

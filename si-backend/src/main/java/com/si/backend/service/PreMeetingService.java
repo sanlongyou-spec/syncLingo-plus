@@ -86,20 +86,23 @@ public class PreMeetingService {
     private static final String ATTENDANCE_STATUS_UNEXPECTED = "unexpected";
     private static final String ACTUAL_ATTENDANCE_HEADER = "Peserta Akt. 实际参会人员 ：";
     private static final String PARTICIPANT_TOTAL_FALLBACK_PREFIX = "Jumlah Peserta参会人数\t：\t";
-    private static final String ABSENT_PREFIX = "\t\t\t事假 ：";
-    private static final String ABSENT_COUNT_PREFIX = "Jlh. Absen 请假人数 ：";
+    private static final String ABSENT_PREFIX = "Tidak Hadir缺席\t\t：";
+    private static final String ABSENT_COUNT_TITLE = "Jumlah Tidak Hadir";
+    private static final String ABSENT_COUNT_PREFIX = "缺席人数\t\t\t\t\t：";
+    private static final String ABSENT_COUNT_UNIT = " orang 人";
     private static final String UNEXPECTED_PREFIX = "Tambahan 未在安排中（";
     private static final String NAME_SEPARATOR = "、";
 
     private static final Set<String> ATTENDANCE_SECTION_KEYWORDS = Set.of(
             "参会", "参加", "出席", "列席", "与会", "Peserta", "peserta");
     private static final Set<String> ATTENDANCE_STOP_KEYWORDS = Set.of(
-            "参会人数", "实际参会人数", "请假", "缺席", "事假", "Absen", "Jlh.", "会议议程", "Agenda");
+            "参会人数", "实际参会人数", "请假", "缺席", "事假", "Absen", "Jlh.",
+            "Tidak Hadir", "Jumlah Tidak Hadir", "会议议程", "Agenda");
     private static final Set<String> NAME_STOPWORDS = Set.of(
             "会议", "通知", "时间", "地点", "人员", "名单", "参会", "参加", "出席", "列席", "秘书",
             "主持", "记录", "团队", "部门", "单位", "职务", "姓名", "人数", "其他", "国内连线",
             "总部", "大区", "工业", "会议室", "Teams", "Meeting", "Password", "Agenda", "Notulen",
-            "Peserta", "Akt", "Orang", "Absen");
+            "Peserta", "Akt", "Orang", "Absen", "Tidak", "Hadir", "Jumlah");
 
     private final LlmIntegration llmIntegration;
     private final PreMeetingUsageMapper usageMapper;
@@ -196,6 +199,14 @@ public class PreMeetingService {
      * Extracts expected participant names and the meeting venue from a stored agenda file,
      * for feeding into the ASR hotword list.
      */
+    /** First date/time found in the 会议安排 text (for the meeting notification), or null. */
+    public String extractMeetingTime(String fileId) {
+        PreMeetingDoc doc = store.get(fileId);
+        if (doc == null) return null;
+        Matcher m = DATE_PATTERN.matcher(doc.text());
+        return m.find() ? m.group().trim() : null;
+    }
+
     public MeetingEntities extractMeetingEntities(String fileId) {
         PreMeetingDoc doc = store.get(fileId);
         if (doc == null) {
@@ -348,6 +359,38 @@ public class PreMeetingService {
         return buildAttendanceVo(expected, actualParticipants, null, null, meeting.getTitle());
     }
 
+    /**
+     * 应到名单 names saved on the meeting (parsed from a prior 会议安排 upload). Empty list if none saved
+     * or unparsable. Used for the meeting notification when the original file is no longer in memory.
+     */
+    public List<String> expectedParticipantNames(Long meetingId) {
+        com.si.backend.entity.Meeting meeting = meetingMapper.findById(meetingId);
+        if (meeting == null) return List.of();
+        String json = meeting.getExpectedParticipantsJson();
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            List<ExpectedParticipant> expected = objectMapper.readValue(json,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, ExpectedParticipant.class));
+            return expected.stream().map(ExpectedParticipant::name)
+                    .filter(n -> n != null && !n.isBlank()).toList();
+        } catch (Exception e) {
+            log.warn("[PreMeetingService] expectedParticipantNames parse failed, meetingId={}: {}",
+                    meetingId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    public String getMeetingTitle(Long meetingId) {
+        if (meetingId == null) {
+            return "实际参会名单";
+        }
+        com.si.backend.entity.Meeting meeting = meetingMapper.findById(meetingId);
+        if (meeting == null || meeting.getTitle() == null || meeting.getTitle().isBlank()) {
+            return "实际参会名单";
+        }
+        return meeting.getTitle();
+    }
+
     /** Core 应到 vs 实到 comparison, shared by the file-based and meeting-based attendance paths. */
     private PreMeetingAttendanceVo buildAttendanceVo(
             List<ExpectedParticipant> expectedParticipants,
@@ -421,6 +464,25 @@ public class PreMeetingService {
     public byte[] buildAttendanceExportDocx(
             String fileId,
             List<PreMeetingParticipantRequest> actualParticipants) throws IOException {
+        return buildAttendanceExportDocx(fileId, null, actualParticipants);
+    }
+
+    public byte[] buildAttendanceExportDocx(
+            String fileId,
+            Long meetingId,
+            List<PreMeetingParticipantRequest> actualParticipants) throws IOException {
+        if (fileId != null && !fileId.isBlank()) {
+            return buildAttendanceExportDocxFromFile(fileId, actualParticipants);
+        }
+        if (meetingId != null) {
+            return buildAttendanceExportDocxFromMeeting(meetingId, actualParticipants);
+        }
+        throw BizException.of(ErrorCode.BAD_REQUEST, "请选择会议安排文件或已保存应到名单的会议");
+    }
+
+    private byte[] buildAttendanceExportDocxFromFile(
+            String fileId,
+            List<PreMeetingParticipantRequest> actualParticipants) throws IOException {
         PreMeetingDoc doc = store.get(fileId);
         if (doc == null) {
             throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已过期，请重新上传");
@@ -455,6 +517,32 @@ public class PreMeetingService {
             output.close();
             log.info("[PreMeetingService] buildAttendanceExportDocx done, fileId={}, lineCount={}",
                     fileId, attendanceLines.size());
+            return out.toByteArray();
+        } finally {
+            Thread.currentThread().setContextClassLoader(orig);
+        }
+    }
+
+    private byte[] buildAttendanceExportDocxFromMeeting(
+            Long meetingId,
+            List<PreMeetingParticipantRequest> actualParticipants) throws IOException {
+        if (meetingId == null) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择已保存应到名单的会议");
+        }
+
+        log.info("[PreMeetingService] buildAttendanceExportDocxFromMeeting start, meetingId={}", meetingId);
+        PreMeetingAttendanceVo attendance = generateAttendanceFromMeeting(meetingId, actualParticipants);
+        List<String> attendanceLines = buildAttendanceSectionLines(attendance);
+
+        ClassLoader orig = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(XWPFDocument.class.getClassLoader());
+            XWPFDocument output = buildNewAttendanceDocument(attendance.getMeetingTitle(), attendanceLines);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            output.write(out);
+            output.close();
+            log.info("[PreMeetingService] buildAttendanceExportDocxFromMeeting done, meetingId={}, lineCount={}",
+                    meetingId, attendanceLines.size());
             return out.toByteArray();
         } finally {
             Thread.currentThread().setContextClassLoader(orig);
@@ -512,7 +600,8 @@ public class PreMeetingService {
         }
         lines.add(PARTICIPANT_TOTAL_FALLBACK_PREFIX + safeCount(attendance.getActualCount()) + " Orang人");
         lines.add(ABSENT_PREFIX + formatNameList(absentNames));
-        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + " Orang 人");
+        lines.add(ABSENT_COUNT_TITLE);
+        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + ABSENT_COUNT_UNIT);
         if (!unexpectedNames.isEmpty()) {
             lines.add(UNEXPECTED_PREFIX + unexpectedNames.size() + "）\t："
                     + String.join(NAME_SEPARATOR, unexpectedNames));
@@ -591,18 +680,37 @@ public class PreMeetingService {
     private XWPFDocument buildNewAttendanceDocument(
             PreMeetingDoc doc,
             List<String> attendanceLines) {
-        XWPFDocument output = new XWPFDocument();
         List<String> lines = new ArrayList<>(extractScheduleHeaderLines(doc));
         if (!lines.isEmpty()) {
             lines.add("");
         }
         lines.addAll(attendanceLines);
+        return buildAttendanceLinesDocument(lines);
+    }
+
+    private XWPFDocument buildNewAttendanceDocument(
+            String meetingTitle,
+            List<String> attendanceLines) {
+        List<String> lines = new ArrayList<>();
+        String title = safeString(meetingTitle).isBlank() ? "实际参会名单" : meetingTitle;
+        lines.add("【" + title + "】");
+        lines.add("");
+        lines.addAll(attendanceLines);
+        return buildAttendanceLinesDocument(lines);
+    }
+
+    private XWPFDocument buildAttendanceLinesDocument(List<String> lines) {
+        XWPFDocument output = new XWPFDocument();
         for (String line : lines) {
             XWPFParagraph paragraph = output.createParagraph();
             XWPFRun run = paragraph.createRun();
             run.setText(line);
             run.setFontSize(ATTENDANCE_EXPORT_FONT_SIZE);
-            if (line.startsWith("【") || line.contains("实际参会人员") || line.startsWith("Absen")) {
+            if (line.startsWith("【")
+                    || line.contains("实际参会人员")
+                    || line.startsWith("Tidak Hadir")
+                    || line.startsWith("Jumlah Tidak Hadir")
+                    || line.contains("缺席人数")) {
                 run.setBold(true);
             }
         }
@@ -718,7 +826,8 @@ public class PreMeetingService {
             PreMeetingAttendanceVo attendance) {
         List<String> lines = new ArrayList<>();
         lines.add(ABSENT_PREFIX + formatNameList(buildAbsentNames(attendance)));
-        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + " Orang 人");
+        lines.add(ABSENT_COUNT_TITLE);
+        lines.add(ABSENT_COUNT_PREFIX + safeCount(attendance.getAbsentCount()) + ABSENT_COUNT_UNIT);
 
         List<String> unexpectedNames = buildUnexpectedNames(attendance);
         if (!unexpectedNames.isEmpty()) {
@@ -900,9 +1009,14 @@ public class PreMeetingService {
     private static final Pattern MD_ULIST = Pattern.compile("^\\s*[-*+]\\s+(.*)$");
     private static final Pattern MD_OLIST = Pattern.compile("^\\s*(\\d+)[.)]\\s+(.*)$");
 
+    // ── AI 摘要固定排版：中文=仿宋/18，印尼语(拉丁)=Times New Roman/16（不再可选） ──
+    private static final String SUMMARY_CN_FONT = "仿宋";
+    private static final int SUMMARY_CN_SIZE = 18;
+    private static final String SUMMARY_LATIN_FONT = "Times New Roman";
+    private static final int SUMMARY_LATIN_SIZE = 16;
+
     /** Render the summary Markdown into the document: headings, bullet/numbered lists, inline **bold**. */
-    private void appendMarkdownSummary(XWPFDocument output, String summary,
-                                       String bodyFont, int bodySize, int headingSize) {
+    private void appendMarkdownSummary(XWPFDocument output, String summary) {
         if (summary == null) return;
         for (String raw : summary.split("\n", -1)) {
             String line = raw.stripTrailing();
@@ -914,41 +1028,70 @@ public class PreMeetingService {
             Matcher u = MD_ULIST.matcher(line);
             Matcher o = MD_OLIST.matcher(line);
             if (h.matches()) {
-                int level = h.group(1).length();
-                int size = Math.max(bodySize, headingSize - (level - 1));   // h1 largest, deeper = smaller
                 XWPFParagraph p = output.createParagraph();
-                renderInline(p, h.group(2).trim(), bodyFont, size, true);
+                renderInlineBilingual(p, h.group(2).trim(), true);   // 标题加粗
             } else if (u.matches()) {
                 XWPFParagraph p = output.createParagraph();
                 p.setIndentationLeft(360);
-                XWPFRun bullet = p.createRun();
-                applyFont(bullet, bodyFont, bodySize, false);
-                bullet.setText("• ");
-                renderInline(p, u.group(1).trim(), bodyFont, bodySize, false);
+                emitMarker(p, "• ");
+                renderInlineBilingual(p, u.group(1).trim(), false);
             } else if (o.matches()) {
                 XWPFParagraph p = output.createParagraph();
                 p.setIndentationLeft(360);
-                XWPFRun num = p.createRun();
-                applyFont(num, bodyFont, bodySize, false);
-                num.setText(o.group(1) + ". ");
-                renderInline(p, o.group(2).trim(), bodyFont, bodySize, false);
+                emitMarker(p, o.group(1) + ". ");
+                renderInlineBilingual(p, o.group(2).trim(), false);
             } else {
                 XWPFParagraph p = output.createParagraph();
-                renderInline(p, line.trim(), bodyFont, bodySize, false);
+                renderInlineBilingual(p, line.trim(), false);
             }
         }
     }
 
-    /** Split a line on **bold** spans and emit runs; segments inside ** are bold. */
-    private void renderInline(XWPFParagraph p, String text, String font, int size, boolean baseBold) {
+    /** List bullet/number marker — Latin font/size. */
+    private void emitMarker(XWPFParagraph p, String marker) {
+        XWPFRun r = p.createRun();
+        r.setFontFamily(SUMMARY_LATIN_FONT);
+        r.setFontSize(SUMMARY_LATIN_SIZE);
+        r.setText(marker);
+    }
+
+    /** Split a line on **bold** spans, then emit per-script runs (中文 vs 拉丁) with the fixed fonts. */
+    private void renderInlineBilingual(XWPFParagraph p, String text, boolean baseBold) {
+        if (text == null) return;
         String[] parts = text.split("\\*\\*", -1);
         for (int k = 0; k < parts.length; k++) {
             if (parts[k].isEmpty()) continue;
             boolean bold = baseBold || (k % 2 == 1);   // odd segments are between ** **
-            XWPFRun r = p.createRun();
-            applyFont(r, font, size, bold);
-            r.setText(parts[k]);
+            emitBilingual(p, parts[k], bold);
         }
+    }
+
+    /** Emit runs grouping consecutive Chinese / Latin chars: 中文→仿宋18, 其它→Times New Roman16. */
+    private void emitBilingual(XWPFParagraph p, String seg, boolean bold) {
+        int i = 0;
+        while (i < seg.length()) {
+            boolean cn = isChineseChar(seg.charAt(i));
+            int j = i + 1;
+            while (j < seg.length() && isChineseChar(seg.charAt(j)) == cn) j++;
+            XWPFRun r = p.createRun();
+            if (cn) {
+                r.setFontFamily(SUMMARY_CN_FONT);
+                r.setFontFamily(SUMMARY_CN_FONT, XWPFRun.FontCharRange.eastAsia);
+                r.setFontSize(SUMMARY_CN_SIZE);
+            } else {
+                r.setFontFamily(SUMMARY_LATIN_FONT);
+                r.setFontSize(SUMMARY_LATIN_SIZE);
+            }
+            r.setBold(bold);
+            r.setText(seg.substring(i, j));
+            i = j;
+        }
+    }
+
+    /** Han ideographs + CJK punctuation/full-width forms count as Chinese (so 逗号句号也用仿宋). */
+    private static boolean isChineseChar(char c) {
+        if (Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN) return true;
+        return (c >= '　' && c <= '〿') || (c >= '＀' && c <= '￯');
     }
 
     private void applyFont(XWPFRun r, String font, int size, boolean bold) {
@@ -1167,7 +1310,9 @@ public class PreMeetingService {
 
     private boolean isAttendanceBlockTerminalLine(String line) {
         return line.contains("请假人数")
-                || line.contains("Jlh. Absen");
+                || line.contains("缺席人数")
+                || line.contains("Jlh. Absen")
+                || (line.contains("Jumlah Tidak Hadir") && (line.contains(":") || line.contains("：")));
     }
 
     private boolean isParticipantTotalLine(String line) {
@@ -1177,8 +1322,11 @@ public class PreMeetingService {
 
     private boolean isTemplateAbsenceLine(String line) {
         return line.contains("事假")
-                || line.contains("请假人数")
-                || line.contains("Jlh. Absen");
+                || line.contains("请假")
+                || line.contains("缺席")
+                || line.contains("Jlh. Absen")
+                || line.contains("Tidak Hadir")
+                || line.contains("Jumlah Tidak Hadir");
     }
 
     private boolean isPostAttendanceSectionStart(String line) {
@@ -1432,7 +1580,6 @@ public class PreMeetingService {
                     : (bodyShell != null ? bodyShell.fontFamily() : null);
             int bodySize = fmt.bodySize() > 0 ? fmt.bodySize()
                     : (bodyShell != null && bodyShell.fontSize() > 0 ? bodyShell.fontSize() : 11);
-            int headingSize = fmt.headingSize() > 0 ? fmt.headingSize() : bodySize + 3;
 
             // Separator paragraph (centered)
             XWPFParagraph sep = output.createParagraph();
@@ -1441,16 +1588,18 @@ public class PreMeetingService {
             applyFont(sepRun, bodyFont, bodySize, false);
             sepRun.setText("──────────────────────");
 
-            // "AI 会议摘要" main heading — centered, bold, heading size.
+            // "chatgpt总结" main heading — centered, bold, 仿宋.
             XWPFParagraph heading = output.createParagraph();
             heading.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun headingRun = heading.createRun();
-            applyFont(headingRun, bodyFont, headingSize, true);
-            headingRun.setText("AI 会议摘要");
+            headingRun.setFontFamily(SUMMARY_CN_FONT);
+            headingRun.setFontFamily(SUMMARY_CN_FONT, XWPFRun.FontCharRange.eastAsia);
+            headingRun.setFontSize(SUMMARY_CN_SIZE);
+            headingRun.setBold(true);
+            headingRun.setText("chatgpt总结");
 
-            // Summary body — render Markdown so headings/lists/bold get their own formatting and the
-            // heading vs content font sizes differ.
-            appendMarkdownSummary(output, summary, bodyFont, bodySize, headingSize);
+            // Summary body — fixed bilingual fonts (中文仿宋18 / 印尼语 Times New Roman16).
+            appendMarkdownSummary(output, summary);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             output.write(out);
@@ -1472,18 +1621,12 @@ public class PreMeetingService {
             Thread.currentThread().setContextClassLoader(XWPFDocument.class.getClassLoader());
             XWPFDocument output = new XWPFDocument();
 
-            String bodyFont = notBlank(fmt.bodyFont()) ? fmt.bodyFont() : null;
-            int bodySize = fmt.bodySize() > 0 ? fmt.bodySize() : 11;
-            int headingSize = fmt.headingSize() > 0 ? fmt.headingSize() : bodySize + 3;
-
             if (notBlank(title)) {
                 XWPFParagraph t = output.createParagraph();
                 t.setAlignment(ParagraphAlignment.CENTER);
-                XWPFRun tr = t.createRun();
-                applyFont(tr, bodyFont, headingSize + 2, true);
-                tr.setText(title);
+                renderInlineBilingual(t, title, true);   // 仿宋18 / TNR16，加粗
             }
-            appendMarkdownSummary(output, summaryText == null ? "" : summaryText, bodyFont, bodySize, headingSize);
+            appendMarkdownSummary(output, summaryText == null ? "" : summaryText);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             output.write(out);
@@ -1504,8 +1647,80 @@ public class PreMeetingService {
     }
 
     public byte[] buildExportPdf(String fileId, String summary, SummaryFormat fmt) throws IOException {
-        byte[] docxBytes = buildExportDocx(fileId, summary, fmt);
+        return convertDocxToPdf(buildExportDocx(fileId, summary, fmt));
+    }
 
+    /** Build a standalone 会议总结 PDF (same 仿宋18/TNR16 format as the AI summary), title + body. */
+    public byte[] buildSummaryPdf(String title, String summaryText) throws IOException {
+        return convertDocxToPdf(buildSummaryDocx(title, summaryText, SummaryFormat.INHERIT));
+    }
+
+    /**
+     * Build a 发言摘要 PDF:
+     * <pre>
+     * {会议名}                                                    ← 标题（居中加粗）
+     * —— {发言人}（{去姓+总}）在{会议名}发言 GPT 总结（NNN#） ——      ← 小标题（居中）
+     * {正文}
+     * 日期：{dateText}
+     * 整理：GPT（XXX）
+     * </pre>
+     * Same 仿宋18 / Times New Roman16 fonts as the AI/会议总结.
+     */
+    public byte[] buildSpeakerSummaryPdf(String meetingName, String speakerName, int sequence,
+                                         String dateText, String body) throws IOException {
+        return convertDocxToPdf(buildSpeakerSummaryDocx(meetingName, speakerName, sequence, dateText, body));
+    }
+
+    public byte[] buildSpeakerSummaryDocx(String meetingName, String speakerName, int sequence,
+                                          String dateText, String body) throws IOException {
+        ClassLoader orig = Thread.currentThread().getContextClassLoader();
+        try {
+            Thread.currentThread().setContextClassLoader(XWPFDocument.class.getClassLoader());
+            XWPFDocument output = new XWPFDocument();
+
+            if (notBlank(meetingName)) {
+                XWPFParagraph t = output.createParagraph();
+                t.setAlignment(ParagraphAlignment.CENTER);
+                renderInlineBilingual(t, meetingName, true);   // 标题：会议名
+            }
+            String honorific = speakerHonorific(speakerName);
+            String subtitle = "—— " + (speakerName == null ? "" : speakerName)
+                    + (notBlank(honorific) ? "（" + honorific + "）" : "")
+                    + "在" + (meetingName == null ? "" : meetingName)
+                    + "发言 GPT 总结（" + String.format("%03d", Math.max(sequence, 0)) + "#） ——";
+            XWPFParagraph sub = output.createParagraph();
+            sub.setAlignment(ParagraphAlignment.CENTER);
+            renderInlineBilingual(sub, subtitle, false);
+
+            output.createParagraph();                          // 空行
+            appendMarkdownSummary(output, body == null ? "" : body);   // 发言总结正文
+            output.createParagraph();                          // 空行
+
+            XWPFParagraph dateP = output.createParagraph();
+            renderInlineBilingual(dateP, "日期：" + (dateText == null ? "" : dateText), false);
+            XWPFParagraph orgP = output.createParagraph();
+            renderInlineBilingual(orgP, "整理：GPT（XXX）", false);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            output.write(out);
+            output.close();
+            return out.toByteArray();
+        } finally {
+            Thread.currentThread().setContextClassLoader(orig);
+        }
+    }
+
+    /** 昵称：中文姓名去掉姓（首字）后 + 总，如「杨保才」→「保才总」；非中文名不生成昵称。 */
+    private static String speakerHonorific(String name) {
+        if (name == null) return "";
+        String n = name.trim();
+        if (n.isEmpty()) return "";
+        if (Character.UnicodeScript.of(n.charAt(0)) != Character.UnicodeScript.HAN) return "";
+        return (n.length() <= 1 ? n : n.substring(1)) + "总";
+    }
+
+    /** Convert a .docx byte[] to PDF via LibreOffice headless (faithful render of fonts/alignment). */
+    public byte[] convertDocxToPdf(byte[] docxBytes) throws IOException {
         Path tmpDir = Files.createTempDirectory("si-pdf-");
         try {
             Path docxPath = tmpDir.resolve("export.docx");

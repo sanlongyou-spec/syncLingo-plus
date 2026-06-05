@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   deleteInterpretationSession,
   deleteMeeting,
@@ -9,12 +9,11 @@ import {
   getMeetingSummary,
   getPublicInterpretationResults,
   getSpeakerSummaries,
-  generateSummaryDoc,
+  generateSummaryPdf,
+  generateSpeakerSummaryPdf,
   regenerateMeetingSummary,
   regenerateSpeakerSummary,
   sendSummaryFileToTeams,
-  sendSummaryToMeetingChat,
-  sendTeamsSummaryToUsers,
   updateActionItemStatus,
 } from '../api'
 import { ROUTES, STORAGE_KEYS, TEAMS_BOT_STORAGE_KEYS } from '../constants'
@@ -35,6 +34,16 @@ const DEFAULT_TITLE = '未命名会议'
 const SUMMARY_REQ_KEY = 'si_summary_requirements'
 
 type SpeakerActionStatus = 'idle' | 'loading' | 'done' | 'error'
+type TranscriptGroup = {
+  id: number
+  sourceText: string
+  speakerId?: string
+  speakerName?: string
+  translations: string[]
+}
+type SearchMatchKind = 'exact' | 'fuzzy'
+type TextSearchMatch = { kind: SearchMatchKind; start: number; end: number }
+type TranscriptSearchMatch = { groupIndex: number; kind: SearchMatchKind }
 
 const mergeParticipants = (participants: MeetingParticipant[]) => {
   const byAadId = new Map<string, MeetingParticipant>()
@@ -97,6 +106,146 @@ const escapeHtml = (text: string) =>
 const sanitizeFilename = (name: string) =>
   name.replace(/[\\/:*?"<>|]/g, '_').trim() || '记录'
 
+const normalizeSearchKeyword = (keyword: string) => keyword.trim().toLowerCase()
+
+const fuzzyDistanceThreshold = (keywordLength: number) => {
+  if (keywordLength <= 1) return 0
+  if (keywordLength <= 6) return 1
+  return Math.min(3, Math.ceil(keywordLength * 0.25))
+}
+
+const levenshteinDistanceWithin = (left: string, right: string, maxDistance: number) => {
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index)
+
+  for (let i = 1; i <= left.length; i++) {
+    const current = [i]
+    let rowMin = current[0]
+    for (let j = 1; j <= right.length; j++) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1
+      const value = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      )
+      current[j] = value
+      rowMin = Math.min(rowMin, value)
+    }
+    if (rowMin > maxDistance) return maxDistance + 1
+    previous = current
+  }
+
+  return previous[right.length]
+}
+
+const hasUsefulOverlap = (left: string, right: string) => {
+  const leftChars = new Set(left.replace(/\s+/g, '').split(''))
+  const rightChars = right.replace(/\s+/g, '').split('')
+  if (leftChars.size === 0 || rightChars.length === 0) return false
+  const overlap = rightChars.filter(char => leftChars.has(char)).length
+  return overlap >= Math.max(1, Math.ceil(rightChars.length * 0.35))
+}
+
+const findTextSearchMatch = (text: string | undefined | null, normalizedKeyword: string): TextSearchMatch | null => {
+  if (normalizedKeyword === '') return null
+  const value = text || ''
+  const lowerValue = value.toLowerCase()
+  const exactIndex = lowerValue.indexOf(normalizedKeyword)
+  if (exactIndex >= 0) {
+    return { kind: 'exact', start: exactIndex, end: exactIndex + normalizedKeyword.length }
+  }
+
+  const keywordLength = normalizedKeyword.length
+  const maxDistance = fuzzyDistanceThreshold(keywordLength)
+  if (maxDistance === 0 || lowerValue.length < Math.max(2, keywordLength - maxDistance)) {
+    return null
+  }
+
+  let bestMatch: TextSearchMatch | null = null
+  let bestDistance = maxDistance + 1
+  const minWindowLength = Math.max(2, keywordLength - maxDistance)
+  const maxWindowLength = Math.min(lowerValue.length, keywordLength + maxDistance)
+  const windowLengths = Array.from(
+    { length: maxWindowLength - minWindowLength + 1 },
+    (_, index) => minWindowLength + index,
+  ).sort((left, right) => {
+    const leftDelta = Math.abs(left - keywordLength)
+    const rightDelta = Math.abs(right - keywordLength)
+    return leftDelta === rightDelta ? right - left : leftDelta - rightDelta
+  })
+
+  for (const windowLength of windowLengths) {
+    for (let start = 0; start <= lowerValue.length - windowLength; start++) {
+      const segment = lowerValue.slice(start, start + windowLength)
+      if (!hasUsefulOverlap(segment, normalizedKeyword)) continue
+      const distance = levenshteinDistanceWithin(segment, normalizedKeyword, maxDistance)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        bestMatch = { kind: 'fuzzy', start, end: start + windowLength }
+        if (distance === 1) return bestMatch
+      }
+    }
+  }
+
+  return bestMatch
+}
+
+const groupHasKeyword = (group: TranscriptGroup, normalizedKeyword: string) => {
+  if (normalizedKeyword === '') return null
+  const matches = [
+    findTextSearchMatch(group.sourceText, normalizedKeyword),
+    findTextSearchMatch(group.speakerName, normalizedKeyword),
+    findTextSearchMatch(group.speakerId, normalizedKeyword),
+    ...group.translations.map(text => findTextSearchMatch(text, normalizedKeyword)),
+  ].filter((match): match is TextSearchMatch => match !== null)
+
+  if (matches.some(match => match.kind === 'exact')) return 'exact'
+  if (matches.some(match => match.kind === 'fuzzy')) return 'fuzzy'
+  return null
+}
+
+const renderHighlightedText = (text: string, keyword: string): ReactNode => {
+  const normalizedKeyword = normalizeSearchKeyword(keyword)
+  if (normalizedKeyword === '') return text
+
+  const fuzzyMatch = findTextSearchMatch(text, normalizedKeyword)
+  if (fuzzyMatch?.kind === 'fuzzy') {
+    return (
+      <>
+        {text.slice(0, fuzzyMatch.start)}
+        <mark className="history-transcript-highlight history-transcript-highlight--fuzzy">
+          {text.slice(fuzzyMatch.start, fuzzyMatch.end)}
+        </mark>
+        {text.slice(fuzzyMatch.end)}
+      </>
+    )
+  }
+
+  const lowerText = text.toLowerCase()
+  const nodes: ReactNode[] = []
+  let cursor = 0
+  let matchIndex = lowerText.indexOf(normalizedKeyword)
+
+  while (matchIndex >= 0) {
+    if (matchIndex > cursor) {
+      nodes.push(text.slice(cursor, matchIndex))
+    }
+    const endIndex = matchIndex + normalizedKeyword.length
+    nodes.push(
+      <mark className="history-transcript-highlight" key={`${matchIndex}-${endIndex}`}>
+        {text.slice(matchIndex, endIndex)}
+      </mark>,
+    )
+    cursor = endIndex
+    matchIndex = lowerText.indexOf(normalizedKeyword, cursor)
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor))
+  }
+  return nodes.length > 0 ? nodes : text
+}
+
 const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
   const body = rows.map(item => `
     <p>${escapeHtml(item.sourceText)}</p>
@@ -111,32 +260,16 @@ const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
   URL.revokeObjectURL(url)
 }
 
-const exportSummaryWord = (title: string, text: string) => {
-  const html = `<html><head><meta charset="utf-8"/></head>
-    <body style="font-family:Microsoft YaHei,Arial,sans-serif;line-height:1.9;font-size:12pt;margin:40px;">
-      <h1 style="font-size:16pt;">${escapeHtml(title)} — 会议总结</h1>
-      <pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(text)}</pre>
-    </body></html>`
-  const blob = new Blob(['﻿', html], { type: 'application/msword' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `${sanitizeFilename(title)}-会议总结.doc`; a.click()
-  URL.revokeObjectURL(url)
+// 把会议日期格式化为「2026 年 6 月 03日（周三）」用于发言摘要 PDF。
+const formatChineseDate = (src?: string | null): string => {
+  const parsed = src ? new Date(src.replace(' ', 'T')) : new Date()
+  const d = isNaN(parsed.getTime()) ? new Date() : parsed
+  const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()]
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${dd}日（${wk}）`
 }
 
-const exportSummaryPdf = (title: string, text: string) => {
-  const win = window.open('', '_blank')
-  if (!win) return
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
-    <title>${escapeHtml(title)} — 会议总结</title>
-    <style>body{font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.9;font-size:12pt;margin:40px;}
-    h1{font-size:16pt;}pre{white-space:pre-wrap;word-break:break-word;font-family:inherit;}
-    .btn{margin-top:24px;padding:8px 20px;cursor:pointer;}@media print{.btn{display:none;}}</style>
-    </head><body><h1>${escapeHtml(title)} — 会议总结</h1><pre>${escapeHtml(text)}</pre>
-    <button class="btn" onclick="window.print()">打印 / 另存为 PDF</button></body></html>`)
-  win.document.close(); win.focus()
-  setTimeout(() => win.print(), 400)
-}
+const pdfFileName = (base: string) => `${sanitizeFilename(base)}.pdf`
 
 export default function HistoryView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
@@ -154,6 +287,9 @@ export default function HistoryView() {
   // ── Transcript tab ──────────────────────────────────────
   const [results, setResults] = useState<InterpretationResultItem[]>([])
   const [resultsLoading, setResultsLoading] = useState(false)
+  const [transcriptKeyword, setTranscriptKeyword] = useState('')
+  const [activeTranscriptMatchIndex, setActiveTranscriptMatchIndex] = useState(0)
+  const transcriptGroupRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
   // ── Summary tab ─────────────────────────────────────────
   const [summaryText, setSummaryText] = useState<string | null>(null)
@@ -163,11 +299,6 @@ export default function HistoryView() {
   )
   const [summaryReqSaved, setSummaryReqSaved] = useState(false)
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [wordSendStatus, setWordSendStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [chatPushStatus, setChatPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [includeMeetingChat, setIncludeMeetingChat] = useState(
-    () => localStorage.getItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT) === 'true'
-  )
   const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
     () => readStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS)
   )
@@ -199,6 +330,47 @@ export default function HistoryView() {
     return mergeParticipants([...readStoredKnownParticipants(), ...participantsFromMeetings])
   }, [meetings])
 
+  const transcriptGroups = useMemo(() => {
+    const groups: TranscriptGroup[] = []
+    for (const item of results) {
+      const last = groups[groups.length - 1]
+      if (last && last.sourceText === item.sourceText && (last.speakerId === item.speakerId || !item.speakerId)) {
+        if (item.translatedText) last.translations.push(item.translatedText)
+      } else {
+        groups.push({
+          id: item.id,
+          sourceText: item.sourceText || '',
+          speakerId: item.speakerId,
+          speakerName: item.speakerName,
+          translations: item.translatedText ? [item.translatedText] : [],
+        })
+      }
+    }
+    return groups
+  }, [results])
+
+  const transcriptSearchTerm = useMemo(() => normalizeSearchKeyword(transcriptKeyword), [transcriptKeyword])
+  const transcriptMatches = useMemo<TranscriptSearchMatch[]>(
+    () => transcriptSearchTerm === ''
+      ? []
+      : transcriptGroups.reduce<TranscriptSearchMatch[]>((matches, group, index) => {
+          const matchKind = groupHasKeyword(group, transcriptSearchTerm)
+          if (matchKind) matches.push({ groupIndex: index, kind: matchKind })
+          return matches
+        }, []),
+    [transcriptGroups, transcriptSearchTerm],
+  )
+  const transcriptMatchIndexes = useMemo(
+    () => transcriptMatches.map(match => match.groupIndex),
+    [transcriptMatches],
+  )
+  const transcriptMatchByGroupIndex = useMemo(() => {
+    const map = new Map<number, SearchMatchKind>()
+    transcriptMatches.forEach(match => map.set(match.groupIndex, match.kind))
+    return map
+  }, [transcriptMatches])
+  const activeTranscriptMatchKind = transcriptMatches[activeTranscriptMatchIndex]?.kind ?? null
+
   useEffect(() => {
     if (allKnownParticipants.length === 0) return
     localStorage.setItem(
@@ -206,6 +378,21 @@ export default function HistoryView() {
       JSON.stringify(allKnownParticipants),
     )
   }, [allKnownParticipants])
+
+  useEffect(() => {
+    if (transcriptMatchIndexes.length === 0) {
+      setActiveTranscriptMatchIndex(0)
+      return
+    }
+    setActiveTranscriptMatchIndex(prev => Math.min(prev, transcriptMatchIndexes.length - 1))
+  }, [transcriptMatchIndexes.length])
+
+  useEffect(() => {
+    if (activeTab !== 'transcript' || transcriptMatchIndexes.length === 0) return
+    const groupIndex = transcriptMatchIndexes[activeTranscriptMatchIndex]
+    if (groupIndex == null) return
+    transcriptGroupRefs.current[groupIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [activeTab, activeTranscriptMatchIndex, transcriptMatchIndexes])
 
   // ── Load meetings ────────────────────────────────────────
   useEffect(() => {
@@ -225,6 +412,8 @@ export default function HistoryView() {
     if (selectedMeetingId === null) return
     setActiveTab('files')
     setResults([])
+    setTranscriptKeyword('')
+    setActiveTranscriptMatchIndex(0)
     setSummaryText(null)
     setSpeakerRecords([])
     setSessions([])
@@ -234,7 +423,6 @@ export default function HistoryView() {
     setSpeakerRegenStatus({})
     setSpeakerPushStatus({})
     setTeamsPushStatus('idle')
-    setChatPushStatus('idle')
     hasFetchedSummaryRef.current = false
 
     getMeetingSessions(selectedMeetingId)
@@ -307,6 +495,19 @@ export default function HistoryView() {
     } catch { /* ignore */ }
   }
 
+  const jumpTranscriptMatch = (step: number) => {
+    if (transcriptMatchIndexes.length === 0) return
+    setActiveTranscriptMatchIndex(prev => (
+      (prev + step + transcriptMatchIndexes.length) % transcriptMatchIndexes.length
+    ))
+  }
+
+  const handleTranscriptSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    jumpTranscriptMatch(1)
+  }
+
   const refetchSummary = async () => {
     if (!selectedSessionId) return
     setSummaryLoading(true)
@@ -318,46 +519,19 @@ export default function HistoryView() {
     finally { setSummaryLoading(false) }
   }
 
-  const pushSummaryToChat = async (text: string) => {
-    setChatPushStatus('loading')
-    try {
-      const res = await sendSummaryToMeetingChat(text)
-      if (!res.sent) throw new Error('发送失败')
-      setChatPushStatus('done')
-      setTimeout(() => setChatPushStatus('idle'), 3000)
-    } catch {
-      setChatPushStatus('error')
-      setTimeout(() => setChatPushStatus('idle'), 3000)
-    }
-  }
-
-  const pushSummaryToTeams = async (text: string, recipients: string[]) => {
-    if (recipients.length === 0) return
+  // 会议总结：生成 PDF（仿宋18/TNR16，同 AI 总结），发到所选 Teams 账号（下载链接）。
+  const pushSummaryPdf = async (title: string, text: string, recipients: string[]) => {
+    if (recipients.length === 0) { setTeamsPushStatus('error'); setTimeout(() => setTeamsPushStatus('idle'), 3000); return }
     setTeamsPushStatus('loading')
     try {
-      const res = await sendTeamsSummaryToUsers(text, recipients)
-      if (!res.sent) throw new Error(res.failures[0]?.error || '没有 Teams 用户收到摘要')
+      const blob = await generateSummaryPdf(title || '会议总结', text)
+      const res = await sendSummaryFileToTeams(blob, pdfFileName(title || '会议总结'), { title, recipients })
+      if (!res.sent) throw new Error(res.error || '发送失败')
       setTeamsPushStatus('done')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
     } catch {
       setTeamsPushStatus('error')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
-    }
-  }
-
-  // Plan A: generate a Word from the summary text and send a Teams download link to accounts/chat.
-  const pushSummaryWord = async (title: string, text: string, recipients: string[], sendToChat: boolean) => {
-    setWordSendStatus('loading')
-    try {
-      const blob = await generateSummaryDoc(title || '会议总结', text)
-      const fileName = `${(title || '会议总结').replace(/[\\/:*?"<>|]/g, '_')}.docx`
-      const res = await sendSummaryFileToTeams(blob, fileName, { title, recipients, sendToChat })
-      if (!res.sent) throw new Error(res.error || '发送失败')
-      setWordSendStatus('done')
-      setTimeout(() => setWordSendStatus('idle'), 3000)
-    } catch {
-      setWordSendStatus('error')
-      setTimeout(() => setWordSendStatus('idle'), 3000)
     }
   }
 
@@ -417,20 +591,28 @@ export default function HistoryView() {
     }
   }
 
+  // 发言摘要：生成 PDF（会议名/发言人小标题/正文/日期/整理），发到所选 Teams 账号。
   const pushSpeakerSummaryToTeams = async (
     record: SpeakerSummaryRecord,
     recipients: string[],
     statusKey: string,
+    sequence: number,
   ) => {
     if (recipients.length === 0) return
     setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'loading' }))
     try {
-      const titlePart = record.title ? `【${record.title}】` : ''
-      const res = await sendTeamsSummaryToUsers(
-        `${record.speakerName}${titlePart} 发言摘要：\n\n${record.summary}`,
+      const meetingName = selectedMeeting?.title || '会议'
+      const speakerName = record.speakerName || '发言人'
+      const dateText = formatChineseDate(
+        selectedMeeting?.scheduledTime || selectedMeeting?.createTime || record.createTime)
+      const blob = await generateSpeakerSummaryPdf({
+        meetingName, speakerName, sequence, dateText, body: record.summary || '',
+      })
+      const res = await sendSummaryFileToTeams(blob, pdfFileName(`${speakerName}-发言摘要`), {
+        title: `${meetingName}-${speakerName}发言摘要`,
         recipients,
-      )
-      if (!res.sent) throw new Error(res.failures[0]?.error || '没有 Teams 用户收到摘要')
+      })
+      if (!res.sent) throw new Error(res.error || '发送失败')
       setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'done' }))
       setTimeout(() => {
         setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
@@ -685,7 +867,43 @@ export default function HistoryView() {
                   {selectedSessionId && resultsLoading && <div className="history-summary-loading"><span className="history-summary-spinner" />加载中...</div>}
                   {selectedSessionId && !resultsLoading && (
                     <>
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
+                      <div className="history-transcript-toolbar">
+                        <label className="history-transcript-search">
+                          <span>寻找关键词</span>
+                          <input
+                            value={transcriptKeyword}
+                            onChange={e => setTranscriptKeyword(e.target.value)}
+                            onKeyDown={handleTranscriptSearchKeyDown}
+                            placeholder="输入任务、人名或文本"
+                          />
+                        </label>
+                        <div className="history-transcript-search-actions">
+                          <span className={transcriptKeyword.trim() && transcriptMatchIndexes.length === 0 ? 'history-transcript-search-count history-transcript-search-count--empty' : 'history-transcript-search-count'}>
+                            {transcriptKeyword.trim()
+                              ? transcriptMatchIndexes.length > 0
+                                ? `${activeTranscriptMatchIndex + 1} / ${transcriptMatchIndexes.length}${activeTranscriptMatchKind === 'fuzzy' ? ' · 模糊' : ''}`
+                                : '无匹配'
+                              : '未搜索'}
+                          </span>
+                          <button
+                            type="button"
+                            className="history-transcript-nav-btn"
+                            disabled={transcriptMatchIndexes.length === 0}
+                            onClick={() => jumpTranscriptMatch(-1)}
+                          >上一个</button>
+                          <button
+                            type="button"
+                            className="history-transcript-nav-btn"
+                            disabled={transcriptMatchIndexes.length === 0}
+                            onClick={() => jumpTranscriptMatch(1)}
+                          >下一个</button>
+                          <button
+                            type="button"
+                            className="history-transcript-nav-btn"
+                            disabled={!transcriptKeyword.trim()}
+                            onClick={() => { setTranscriptKeyword(''); setActiveTranscriptMatchIndex(0) }}
+                          >清空</button>
+                        </div>
                         <button
                           className="history-summary-export-btn"
                           onClick={() => downloadWord(selectedMeeting.title || '同传记录', results)}
@@ -695,32 +913,29 @@ export default function HistoryView() {
                       <div className="si-tri-transcript-dock history-transcripts">
                         <div className="si-tri-transcript-dock-inner">
                           {results.length === 0 && <div className="si-tri-empty">暂无文本记录</div>}
-                          {(() => {
-                            type Group = { id: number; sourceText: string; speakerId?: string; speakerName?: string; translations: string[] }
-                            const groups: Group[] = []
-                            for (const item of results) {
-                              const last = groups[groups.length - 1]
-                              if (last && last.sourceText === item.sourceText && (last.speakerId === item.speakerId || !item.speakerId)) {
-                                if (item.translatedText) last.translations.push(item.translatedText)
-                              } else {
-                                groups.push({ id: item.id, sourceText: item.sourceText || '', speakerId: item.speakerId, speakerName: item.speakerName, translations: item.translatedText ? [item.translatedText] : [] })
-                              }
-                            }
-                            return groups.map(g => {
+                          {transcriptGroups.map((g, groupIndex) => {
                               const speaker = g.speakerName || g.speakerId || null
+                              const matchKind = transcriptMatchByGroupIndex.get(groupIndex) ?? null
+                              const isMatched = matchKind !== null
+                              const isActiveMatch = transcriptMatchIndexes[activeTranscriptMatchIndex] === groupIndex
                               return (
-                                <div key={g.id} className="si-tri-block">
+                                <div
+                                  key={g.id}
+                                  ref={node => { transcriptGroupRefs.current[groupIndex] = node }}
+                                  className={`si-tri-block${isMatched ? ' history-transcript-block--matched' : ''}${matchKind === 'fuzzy' ? ' history-transcript-block--fuzzy' : ''}${isActiveMatch ? ' history-transcript-block--active' : ''}`}
+                                >
                                   <div className="si-tri-share-line">
-                                    {speaker ? <span className="si-tri-line-lang-badge">{speaker}</span> : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>}
-                                    {g.sourceText}
+                                    {speaker
+                                      ? <span className="si-tri-line-lang-badge">{renderHighlightedText(speaker, transcriptKeyword)}</span>
+                                      : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>}
+                                    {renderHighlightedText(g.sourceText, transcriptKeyword)}
                                   </div>
                                   {g.translations.map((t, ti) => (
-                                    <div key={ti} className="si-tri-share-line si-tri-share-line--translated">{t}</div>
+                                    <div key={ti} className="si-tri-share-line si-tri-share-line--translated">{renderHighlightedText(t, transcriptKeyword)}</div>
                                   ))}
                                 </div>
                               )
-                            })
-                          })()}
+                            })}
                         </div>
                       </div>
                     </>
@@ -817,10 +1032,10 @@ export default function HistoryView() {
                               </button>
                               <button
                                 className="history-summary-export-btn"
-                                onClick={() => { void pushSpeakerSummaryToTeams(rec, chosenRecipients, statusKey) }}
+                                onClick={() => { void pushSpeakerSummaryToTeams(rec, chosenRecipients, statusKey, idx + 1) }}
                                 disabled={pushStatus === 'loading' || chosenRecipients.length === 0}
                               >
-                                {pushStatus === 'done' ? '已发送 ✓' : pushStatus === 'error' ? '发送失败' : pushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenRecipients.length} 人）`}
+                                {pushStatus === 'done' ? '已发送 ✓' : pushStatus === 'error' ? '发送失败' : pushStatus === 'loading' ? '发送中...' : `发送到 Teams · PDF（${chosenRecipients.length} 人）`}
                               </button>
                             </div>
                           </div>
@@ -867,17 +1082,6 @@ export default function HistoryView() {
                       />
                     </div>
                     <div className="history-summary-send-settings">
-                      <label className="history-summary-chat-toggle">
-                        <input
-                          type="checkbox"
-                          checked={includeMeetingChat}
-                          onChange={e => {
-                            setIncludeMeetingChat(e.target.checked)
-                            localStorage.setItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT, String(e.target.checked))
-                          }}
-                        />
-                        <span>发送到会议聊天</span>
-                      </label>
                       {validP.length === 0 ? (
                         <div className="history-summary-send-hint">
                           暂无可选账号。请先在 Teams Bot 页面刷新参会人员或生成参会情况。
@@ -920,46 +1124,18 @@ export default function HistoryView() {
                     {selectedSessionId && !summaryLoading && displayed !== null && displayed !== '' && (
                       <>
                         <div className="history-summary-toolbar">
-                          <div className="history-summary-toolbar-actions">
-                            <button className="history-summary-export-btn"
-                              onClick={() => exportSummaryWord(selectedMeeting.title || '同传记录', displayed)}
-                            >导出 Word</button>
-                            <button className="history-summary-export-btn"
-                              onClick={() => exportSummaryPdf(selectedMeeting.title || '同传记录', displayed)}
-                            >导出 PDF</button>
-                          </div>
-                          {includeMeetingChat && !!localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID) && (
-                            <button
-                              className="history-summary-export-btn"
-                              onClick={() => { void pushSummaryToChat(displayed) }}
-                              disabled={chatPushStatus === 'loading'}
-                            >
-                              {chatPushStatus === 'done' ? '已发送到聊天 ✓' : chatPushStatus === 'error' ? '发送失败' : chatPushStatus === 'loading' ? '发送中...' : '发送到会议聊天'}
-                            </button>
-                          )}
-                          {chosenSummaryRecipients.length > 0 && (
-                            <button
-                              className="history-summary-export-btn"
-                              onClick={() => { void pushSummaryToTeams(displayed, chosenSummaryRecipients) }}
-                              disabled={teamsPushStatus === 'loading'}
-                            >
-                              {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenSummaryRecipients.length} 人）`}
-                            </button>
-                          )}
-                          {(chosenSummaryRecipients.length > 0 || (includeMeetingChat && !!localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID))) && (
-                            <button
-                              className="history-summary-export-btn"
-                              title="生成 Word 并把下载链接发到所选账号 / 会议聊天"
-                              onClick={() => { void pushSummaryWord(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients, includeMeetingChat) }}
-                              disabled={wordSendStatus === 'loading'}
-                            >
-                              {wordSendStatus === 'done' ? 'Word 已发送 ✓' : wordSendStatus === 'error' ? '发送失败' : wordSendStatus === 'loading' ? '生成并发送中...' : '📄 生成 Word 并发送'}
-                            </button>
-                          )}
+                          <button
+                            className="history-summary-export-btn"
+                            title="生成 PDF（仿宋18/印尼语 Times New Roman16，同 AI 总结）并发到所选 Teams 账号"
+                            onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients) }}
+                            disabled={teamsPushStatus === 'loading' || chosenSummaryRecipients.length === 0}
+                          >
+                            {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams · PDF（${chosenSummaryRecipients.length} 人）`}
+                          </button>
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
                         <div className="history-summary-body">
-                          <div className="history-summary-edit-hint">可手动修改下方内容，再点上方「发送」按钮发送修改后的版本</div>
+                          <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams · PDF」发送修改后的版本</div>
                           <textarea
                             className="history-summary-edit"
                             value={displayed}

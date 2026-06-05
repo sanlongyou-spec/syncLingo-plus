@@ -190,6 +190,12 @@ bot:
   api:
     url: ${BOT_API_URL:http://localhost:3978}
 
+# 会议通知(根据会议安排名单匹配用户→发 Teams 卡片)
+notification:
+  teams-domain: ${NOTIFICATION_TEAMS_DOMAIN:jlg.co.id}   # 邮箱以此结尾 = Teams 用户
+  test-mode: ${NOTIFICATION_TEST_MODE:false}             # true=只发给 test-recipient；false=发给全部匹配的 Teams 用户
+  test-recipient: ${NOTIFICATION_TEST_RECIPIENT:yousanlong@jlg.co.id}
+
 teams:
   bot:
     default-user-id: ${TEAMS_BOT_DEFAULT_USER_ID:0}

@@ -140,6 +140,50 @@ public class PreMeetingController {
         }
     }
 
+    /** Build a 会议总结 PDF (same 仿宋18/TNR16 format as the AI summary) for sending to Teams. */
+    @PostMapping("/summary-pdf")
+    public ResponseEntity<byte[]> summaryPdf(@RequestBody Map<String, String> body) {
+        String title = body.getOrDefault("title", "会议总结");
+        String summary = body.getOrDefault("summary", "");
+        try {
+            byte[] pdfBytes = preMeetingService.buildSummaryPdf(title, summary);
+            return pdfResponse(pdfBytes, (title == null || title.isBlank() ? "会议总结" : title) + ".pdf");
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] summaryPdf failed", e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "生成总结 PDF 失败：" + e.getMessage());
+        }
+    }
+
+    /** Build a 发言摘要 PDF (会议名 / 发言人小标题 / 正文 / 日期 / 整理) for sending to Teams. */
+    @PostMapping("/speaker-summary-pdf")
+    public ResponseEntity<byte[]> speakerSummaryPdf(@RequestBody Map<String, String> body) {
+        String meetingName = body.getOrDefault("meetingName", "会议");
+        String speakerName = body.getOrDefault("speakerName", "");
+        String dateText = body.getOrDefault("dateText", "");
+        String content = body.getOrDefault("body", "");
+        int sequence = parseIntOrZero(body.get("sequence"));
+        try {
+            byte[] pdfBytes = preMeetingService.buildSpeakerSummaryPdf(meetingName, speakerName, sequence, dateText, content);
+            String fileName = (speakerName == null || speakerName.isBlank() ? "发言摘要" : speakerName + "-发言摘要") + ".pdf";
+            return pdfResponse(pdfBytes, fileName);
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[PreMeetingController] speakerSummaryPdf failed", e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "生成发言摘要 PDF 失败：" + e.getMessage());
+        }
+    }
+
+    private ResponseEntity<byte[]> pdfResponse(byte[] pdfBytes, String fileName) {
+        String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_PDF);
+        headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded);
+        return ResponseEntity.ok().headers(headers).body(pdfBytes);
+    }
+
     /** Save the 应到 list parsed from a freshly-uploaded 会议安排 onto the meeting (survives sessions). */
     @PostMapping("/attendance/save-expected")
     public Result<Integer> saveExpectedParticipants(@RequestBody Map<String, Object> body) {
@@ -161,29 +205,35 @@ public class PreMeetingController {
 
     @PostMapping("/attendance/export")
     public ResponseEntity<byte[]> exportAttendance(@RequestBody PreMeetingAttendanceRequest request) {
-        if (request == null || request.getFileId() == null || request.getFileId().isBlank()) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择会议安排文件");
+        boolean hasFile = request != null && request.getFileId() != null && !request.getFileId().isBlank();
+        boolean hasMeeting = request != null && request.getMeetingId() != null;
+        if (!hasFile && !hasMeeting) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择会议安排文件或已保存应到名单的会议");
         }
         try {
             int actualCount = request.getActualParticipants() == null ? 0 : request.getActualParticipants().size();
-            log.info("[PreMeetingController] exportAttendance start, fileId={}, actualCount={}",
-                    request.getFileId(), actualCount);
+            log.info("[PreMeetingController] exportAttendance start, fileId={}, meetingId={}, actualCount={}",
+                    request.getFileId(), request.getMeetingId(), actualCount);
             byte[] docxBytes = preMeetingService.buildAttendanceExportDocx(
-                    request.getFileId(), request.getActualParticipants());
-            String fileName = buildAttendanceExportFileName(preMeetingService.getFileName(request.getFileId()));
+                    request.getFileId(), request.getMeetingId(), request.getActualParticipants());
+            String sourceName = hasFile
+                    ? preMeetingService.getFileName(request.getFileId())
+                    : preMeetingService.getMeetingTitle(request.getMeetingId());
+            String fileName = buildAttendanceExportFileName(sourceName);
             String encoded = URLEncoder.encode(fileName, StandardCharsets.UTF_8).replace("+", "%20");
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType(
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
             headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded);
-            log.info("[PreMeetingController] exportAttendance done, fileId={}, bytes={}",
-                    request.getFileId(), docxBytes.length);
+            log.info("[PreMeetingController] exportAttendance done, fileId={}, meetingId={}, bytes={}",
+                    request.getFileId(), request.getMeetingId(), docxBytes.length);
             return ResponseEntity.ok().headers(headers).body(docxBytes);
         } catch (BizException e) {
             throw e;
         } catch (Exception e) {
-            log.error("[PreMeetingController] exportAttendance failed, fileId={}", request.getFileId(), e);
+            log.error("[PreMeetingController] exportAttendance failed, fileId={}, meetingId={}",
+                    request.getFileId(), request.getMeetingId(), e);
             throw BizException.of(ErrorCode.BAD_REQUEST, "导出实际参加情况失败：" + e.getMessage());
         }
     }
@@ -293,6 +343,9 @@ public class PreMeetingController {
     }
 
     private String buildAttendanceExportFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            fileName = "实际参会名单";
+        }
         int dot = fileName.lastIndexOf('.');
         String baseName = dot > 0 ? fileName.substring(0, dot) : fileName;
         // Keep the original name (incl. date, title and place names) intact, only swap

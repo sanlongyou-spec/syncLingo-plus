@@ -1,23 +1,28 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import {
   confirmHotwordsFromSession,
   createAsrHotword,
   createAsrHotwordsBatch,
   createHotwordsFromTerminology,
+  createSystemUser,
   createTerminology,
   deleteAsrHotword,
+  deleteSystemUser,
   deleteTerminology,
   getAsrHotwords,
+  getSystemUsers,
   getTerminologies,
   getUserInterpretationSessions,
+  importSystemUsers,
   previewHotwordsFromSession,
   updateAsrHotword,
   updateAsrHotwordEnabled,
+  updateSystemUser,
   updateTerminology,
   updateTerminologyEnabled,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
-import type { AsrHotword, HotwordSuggestion, InterpretationStatus, Terminology } from '../types'
+import type { AsrHotword, HotwordSuggestion, InterpretationStatus, SystemUserInfo, Terminology } from '../types'
 import './InterpretationView.css'
 import './TerminologyView.css'
 
@@ -41,8 +46,19 @@ const EMPTY_HOTWORD_FORM: AsrHotword = {
   enabled: true,
 }
 
+const EMPTY_USER_FORM: SystemUserInfo = {
+  department: '',
+  personName: '',
+  positionTitle: '',
+  email: '',
+  microsoftId: '',
+  robinUid: '',
+  teamsVerified: '',
+  employmentStatus: '',
+}
+
 type Filter = 'all' | 'enabled' | 'disabled'
-type Tab = 'terminology' | 'hotwords'
+type Tab = 'terminology' | 'hotwords' | 'users'
 type ExtractStep = 'pick' | 'preview'
 
 function groupBy<T>(items: T[], key: (item: T) => string): [string, T[]][] {
@@ -64,18 +80,23 @@ export default function TerminologyView() {
   const [activeTab, setActiveTab] = useState<Tab>('terminology')
   const [terms, setTerms] = useState<Terminology[]>([])
   const [hotwords, setHotwords] = useState<AsrHotword[]>([])
+  const [users, setUsers] = useState<SystemUserInfo[]>([])
   const [keyword, setKeyword] = useState('')
   const [enabledFilter, setEnabledFilter] = useState<Filter>('all')
   const [languageFilter, setLanguageFilter] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [termForm, setTermForm] = useState<Terminology>(EMPTY_TERM_FORM)
   const [hotwordForm, setHotwordForm] = useState<AsrHotword>(EMPTY_HOTWORD_FORM)
+  const [userForm, setUserForm] = useState<SystemUserInfo>(EMPTY_USER_FORM)
   const [bulkHotwords, setBulkHotwords] = useState('')
   const [editingTermId, setEditingTermId] = useState<number | null>(null)
   const [editingHotwordId, setEditingHotwordId] = useState<number | null>(null)
+  const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [userImporting, setUserImporting] = useState(false)
+  const [userImportMessage, setUserImportMessage] = useState('')
 
   const [collapsedTermGroups, setCollapsedTermGroups] = useState<Set<string>>(new Set())
   const [collapsedHwGroups, setCollapsedHwGroups] = useState<Set<string>>(new Set())
@@ -110,9 +131,12 @@ export default function TerminologyView() {
       if (activeTab === 'terminology') {
         const res = await getTerminologies(userId, keyword, enabledParam)
         setTerms(res.data || [])
-      } else {
+      } else if (activeTab === 'hotwords') {
         const res = await getAsrHotwords(userId, keyword, enabledParam, languageFilter, categoryFilter)
         setHotwords(res.data || [])
+      } else {
+        const res = await getSystemUsers(keyword)
+        setUsers(res.data || [])
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
@@ -247,6 +271,51 @@ export default function TerminologyView() {
     }
   }
 
+  const submitUser = async (event: FormEvent) => {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      if (!userForm.personName?.trim()) throw new Error('请填写姓名')
+      if (!userForm.email?.trim()) throw new Error('请填写邮箱')
+      if (editingUserId) {
+        await updateSystemUser(editingUserId, userForm)
+      } else {
+        await createSystemUser(userForm)
+      }
+      setEditingUserId(null)
+      setUserForm(EMPTY_USER_FORM)
+      await loadItems()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存用户信息失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const importUserExcel = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setUserImporting(true)
+    setUserImportMessage('')
+    setError('')
+    try {
+      const res = await importSystemUsers(file)
+      const data = res.data
+      setUserImportMessage(
+        data
+          ? `已导入 ${data.totalCount} 条，新增 ${data.createdCount} 条，更新 ${data.updatedCount} 条，跳过 ${data.skippedCount} 条`
+          : '导入完成'
+      )
+      await loadItems()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导入用户信息失败')
+    } finally {
+      setUserImporting(false)
+    }
+  }
+
   const submitBulkHotwords = async () => {
     const rows = bulkHotwords.split(/\r?\n/).map(v => v.trim()).filter(Boolean)
     if (rows.length === 0) return
@@ -271,6 +340,11 @@ export default function TerminologyView() {
     setHotwordForm({ ...EMPTY_HOTWORD_FORM, ...item, enabled: item.enabled !== false, weight: item.weight ?? 1 })
   }
 
+  const editUser = (item: SystemUserInfo) => {
+    setEditingUserId(item.id || null)
+    setUserForm({ ...EMPTY_USER_FORM, ...item })
+  }
+
   const removeTerm = async (item: Terminology) => {
     if (!item.id || !window.confirm('删除这个术语？')) return
     await deleteTerminology(userId, item.id)
@@ -280,6 +354,12 @@ export default function TerminologyView() {
   const removeHotword = async (item: AsrHotword) => {
     if (!item.id || !window.confirm('删除这个热词？')) return
     await deleteAsrHotword(userId, item.id)
+    await loadItems()
+  }
+
+  const removeUser = async (item: SystemUserInfo) => {
+    if (!item.id || !window.confirm('删除这个用户信息？')) return
+    await deleteSystemUser(item.id)
     await loadItems()
   }
 
@@ -308,8 +388,8 @@ export default function TerminologyView() {
     <div className="si-root">
       <header className="si-topbar">
         <div className="si-topbar-left">
-          <h1 className="si-brand">语言资产</h1>
-          <span className="si-brand-sub">术语和 ASR 热词按当前用户隔离</span>
+          <h1 className="si-brand">配置</h1>
+          <span className="si-brand-sub">术语、ASR 热词和系统用户信息</span>
         </div>
         <div className="si-topbar-right">
           <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.HOME }}>返回同传</button>
@@ -319,6 +399,7 @@ export default function TerminologyView() {
       <div className="asset-tabs">
         <button className={activeTab === 'terminology' ? 'is-active' : ''} onClick={() => setActiveTab('terminology')}>术语</button>
         <button className={activeTab === 'hotwords' ? 'is-active' : ''} onClick={() => setActiveTab('hotwords')}>ASR 热词</button>
+        <button className={activeTab === 'users' ? 'is-active' : ''} onClick={() => setActiveTab('users')}>用户信息</button>
       </div>
 
       <main className="terminology-main">
@@ -371,13 +452,46 @@ export default function TerminologyView() {
           </section>
         )}
 
+        {activeTab === 'users' && (
+          <section className="terminology-editor">
+            <h2>{editingUserId ? '编辑用户信息' : '新增用户信息'}</h2>
+            <form onSubmit={submitUser}>
+              <label>姓名<input value={userForm.personName || ''} onChange={e => setUserForm(p => ({ ...p, personName: e.target.value }))} /></label>
+              <label>邮箱<input type="email" value={userForm.email || ''} onChange={e => setUserForm(p => ({ ...p, email: e.target.value }))} /></label>
+              <label>部门<input value={userForm.department || ''} onChange={e => setUserForm(p => ({ ...p, department: e.target.value }))} /></label>
+              <label>职位<input value={userForm.positionTitle || ''} onChange={e => setUserForm(p => ({ ...p, positionTitle: e.target.value }))} /></label>
+              <label>Microsoft ID<input value={userForm.microsoftId || ''} onChange={e => setUserForm(p => ({ ...p, microsoftId: e.target.value }))} /></label>
+              <label>Robin UID<input value={userForm.robinUid || ''} onChange={e => setUserForm(p => ({ ...p, robinUid: e.target.value }))} /></label>
+              <label>Teams 验证<input value={userForm.teamsVerified || ''} onChange={e => setUserForm(p => ({ ...p, teamsVerified: e.target.value }))} /></label>
+              <label>在职状态<input value={userForm.employmentStatus || ''} onChange={e => setUserForm(p => ({ ...p, employmentStatus: e.target.value }))} /></label>
+              <div className="terminology-editor-actions">
+                <button type="submit" disabled={saving}>{saving ? '保存中...' : '保存'}</button>
+                {editingUserId && <button type="button" onClick={() => { setEditingUserId(null); setUserForm(EMPTY_USER_FORM) }}>取消</button>}
+              </div>
+            </form>
+            <div className="user-import-panel">
+              <label className="user-import-button">
+                <input type="file" accept=".xlsx,.xls" disabled={userImporting} onChange={importUserExcel} />
+                {userImporting ? '导入中...' : '上传用户表格'}
+              </label>
+              {userImportMessage && <div className="user-import-message">{userImportMessage}</div>}
+            </div>
+          </section>
+        )}
+
         {/* ── 右侧列表面板 ── */}
         <section className="terminology-table-panel">
           <form className="terminology-toolbar" onSubmit={e => { e.preventDefault(); void loadItems() }}>
-            <input value={keyword} onChange={e => setKeyword(e.target.value)} placeholder={activeTab === 'terminology' ? '搜索术语或分类' : '搜索热词或分类'} />
-            <select value={enabledFilter} onChange={e => setEnabledFilter(e.target.value as Filter)}>
-              <option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option>
-            </select>
+            <input
+              value={keyword}
+              onChange={e => setKeyword(e.target.value)}
+              placeholder={activeTab === 'terminology' ? '搜索术语或分类' : activeTab === 'hotwords' ? '搜索热词或分类' : '搜索姓名、邮箱、部门或职位'}
+            />
+            {activeTab !== 'users' && (
+              <select value={enabledFilter} onChange={e => setEnabledFilter(e.target.value as Filter)}>
+                <option value="all">全部</option><option value="enabled">启用</option><option value="disabled">停用</option>
+              </select>
+            )}
             {activeTab === 'hotwords' && (
               <>
                 <select value={languageFilter} onChange={e => setLanguageFilter(e.target.value)}>
@@ -461,6 +575,36 @@ export default function TerminologyView() {
                         </tr>
                       ))}
                     </>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {activeTab === 'users' && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>姓名</th><th>邮箱</th><th>部门</th><th>职位</th><th>Microsoft ID</th><th>Robin UID</th><th>Teams 验证</th><th>在职状态</th><th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading && <tr><td colSpan={9}>加载中...</td></tr>}
+                  {!loading && users.length === 0 && <tr><td colSpan={9}>暂无用户信息</td></tr>}
+                  {!loading && users.map(item => (
+                    <tr key={item.id}>
+                      <td>{item.personName || '-'}</td>
+                      <td>{item.email || '-'}</td>
+                      <td>{item.department || '-'}</td>
+                      <td>{item.positionTitle || '-'}</td>
+                      <td>{item.microsoftId || '-'}</td>
+                      <td>{item.robinUid || '-'}</td>
+                      <td>{item.teamsVerified || '-'}</td>
+                      <td>{item.employmentStatus || '-'}</td>
+                      <td>
+                        <button onClick={() => editUser(item)}>编辑</button>
+                        <button onClick={() => { void removeUser(item) }}>删除</button>
+                      </td>
+                    </tr>
                   ))}
                 </tbody>
               </table>

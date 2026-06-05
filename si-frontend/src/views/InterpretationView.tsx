@@ -877,7 +877,7 @@ export default function InterpretationView() {
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TERMINOLOGY }}>
             <span className="si-side-action-icon">T</span>
-            <span>术语表</span>
+            <span>配置</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
             <span className="si-side-action-icon">H</span>

@@ -1070,6 +1070,47 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十五、会议通知 / 姓名匹配 / PDF 导出 / 删除级联（2026-06-05 追加）
+
+### 15.1 用户信息表（按国籍分 sheet 导入）
+- 新增 `system_user_info` 表与 `SystemUserInfo*`（Controller/Service/Facade/Mapper/Entity/VO/DTO）。
+- 导入 Excel 时**按 sheet 分国籍**（sheet 名 = 国籍：中国人/华人/印尼人），每行写入 `nationality`；`findAllImportSheets` 遍历所有含 email+personName 表头的 sheet。
+- 迁移：`addNationalityColumnIfNotExists`（`ALTER TABLE … ADD COLUMN nationality`）。
+
+### 15.2 会议通知 + 姓名匹配（自动发卡片）
+- **匹配策略** `NameMatchService`：三类国籍都带中文名 → 以 CJK 中文名为顺序无关的锚点精确匹配；同名再用拉丁词重叠度（严格最高者胜，平局判 AMBIGUOUS）消歧。（7 测试）
+- **编排** `MeetingNotificationService`：会议安排名单 → 匹配用户表 → 取邮箱 → `@jlg.co.id` 判定 Teams 用户 → 自动发会议通知。`classify` 拆分为 已通知(Teams)/非Teams跳过/未匹配。（3 测试）
+- **会议链接必填**：`POST /api/meetings/{id}/meeting-link {meetingUrl, fileId?}` 设链接 → 匹配 → 自动通知；返回 `NotificationPlan`。名单优先取刚上传的会议安排，否则**兜底取会议持久化的应到名单**（`expectedParticipantNames`），已存在会议也能通知。
+- **C# Bot** `POST /api/meetings/notification`：收 `{meetingName, meetingTime, meetingUrl, recipients[]}`，用现有主动推送（Markdown：会议名加粗 + 时间 + 「点击加入会议」链接）发给每位收件人。
+- **收件人三列展示**：`NotificationPlan.teamsRecipients` 改为 `Recipient{scheduleName, accountName, email}`，前端表格显示 姓名/Teams 账号名/邮箱。
+- 配置：`notification.test-mode`（默认 `false`=发全部匹配 Teams 用户；`true`=只发 `test-recipient`）、`teams-domain`、`bot.api.url`。
+
+### 15.3 Teams Bot 页改造
+- 删除「加入会议」按钮与链接输入框；选中会议自动带出已存链接。
+- 「刷新」智能加入：先查 `GET /participants`（不在会议时返回 `callId=null`）→ 不在则用已存链接自动加入再刷新，已在则直接刷新。
+
+### 15.4 AI/会议总结 固定排版
+- AI 总结追加到报告 & 独立会议总结：标题固定「chatgpt总结」，正文**中文仿宋 18 / 印尼语 Times New Roman 16**（按字符脚本分流，CJK run 同时设 eastAsia 字体）；移除前端字体/字号下拉。
+
+### 15.5 历史记录 — 改为 PDF 发送（单按钮）
+- **会议总结** Tab：删掉 导出 Word/PDF、发送到会议聊天、生成 Word 并发送 → **只保留「发送到 Teams · PDF」**。PDF 用 `buildSummaryPdf`（仿宋18/TNR16）经 LibreOffice 生成，走 Plan-A 下载链接发送。
+- **发言摘要** Tab：发送改为 PDF，版式：会议名(标题) → 「—— {发言人}（{去姓+总}）在{会议名}发言 GPT 总结（001#） ——」→ 正文 → 日期（YYYY 年 M 月 DD日（周X）） → 整理：GPT（XXX）。序号按列表顺序，整理人留 (XXX) 占位待人工改。
+- 后端新增 `POST /api/pre-meeting/summary-pdf`、`/speaker-summary-pdf`；抽出可复用 `convertDocxToPdf`。
+
+### 15.6 删除会议 — 全量级联清理
+- `MeetingService.deleteMeeting` 现按会话清理 发言人摘要/行动项/会话级向量，软删会议+会话后，**硬删并清空所有关联数据**：应到名单/实到核对/会议链接字段、上传文件(含二进制)、行动项、会议级向量、会前成本。
+- 新增 mapper：`PersistentPreMeetingFileMapper.deleteByMeetingId`、`MeetingActionItemMapper.deleteByMeetingId/deleteBySessionId`、`SpeakerSummaryRecordMapper.deleteBySessionId`、`MeetingMapper.clearAssociatedData`。
+- **存量清理**（直接 DB）：清掉已删会议残留的 83 个孤儿文件 blob、8 份应到名单、2 个会议链接 → 复查残留 0。
+
+### 15.7 测试结果（2026-06-05）
+- 后端 `mvn -o test`：**BUILD SUCCESS，66 测试全过**（新增 `NameMatchServiceTest` 7 + `MeetingNotificationClassifyTest` 3）。
+- 前端 `tsc --noEmit` **0 错误**；`npm run build` 成功。
+- 数据库存量孤儿清理已执行并复查（残留 0）。
+
+**部署**：后端重建 Docker（自动迁移 `nationality`/`meeting_url` 列；删会议级联生效）；需 **重新导入用户表**（各国籍 sheet）；C# Bot 停→`dotnet build`→重启；PDF 依赖容器内 **LibreOffice + 仿宋/Times New Roman 字体**；前端硬刷新。`test-mode=false` 时「保存并通知」会真实发给全部匹配 Teams 用户。
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

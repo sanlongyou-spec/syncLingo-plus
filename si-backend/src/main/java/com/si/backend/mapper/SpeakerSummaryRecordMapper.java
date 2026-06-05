@@ -46,4 +46,7 @@ public interface SpeakerSummaryRecordMapper {
 
     @Select("SELECT * FROM speaker_summary WHERE session_id = #{sessionId} ORDER BY create_time ASC")
     List<SpeakerSummaryRecord> findBySessionId(String sessionId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM speaker_summary WHERE session_id = #{sessionId}")
+    int deleteBySessionId(String sessionId);
 }

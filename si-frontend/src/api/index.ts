@@ -12,6 +12,8 @@ import type {
   SessionSpeakerIdentity,
   Terminology,
   AsrHotword,
+  SystemUserInfo,
+  SystemUserImportResult,
   HotwordSuggestion,
   UserLanguagePreference,
   MeetingSummaryVo,
@@ -26,6 +28,7 @@ import type {
   MeetingParticipantsResponse,
   Meeting,
   MeetingFile,
+  MeetingNotificationPlan,
   SpeakerSummaryResult,
   SpeakerSummaryRecord,
   MeetingActionItem,
@@ -198,6 +201,25 @@ export const previewHotwordsFromSession = (sessionId: string, userId: number): P
 export const confirmHotwordsFromSession = (userId: number, hotwords: HotwordSuggestion[]): Promise<Result<AsrHotword[]>> =>
   client.post<Result<AsrHotword[]>>('/api/asr-hotwords/extract-confirm', hotwords, { params: { userId } }).then(r => r.data)
 
+export const getSystemUsers = (keyword = ''): Promise<Result<SystemUserInfo[]>> =>
+  client.get<Result<SystemUserInfo[]>>('/api/system-users', { params: { keyword } }).then(r => r.data)
+
+export const createSystemUser = (params: SystemUserInfo): Promise<Result<SystemUserInfo>> =>
+  client.post<Result<SystemUserInfo>>('/api/system-users', params).then(r => r.data)
+
+export const updateSystemUser = (id: number, params: SystemUserInfo): Promise<Result<SystemUserInfo>> =>
+  client.put<Result<SystemUserInfo>>(`/api/system-users/${id}`, params).then(r => r.data)
+
+export const deleteSystemUser = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/system-users/${id}`).then(r => r.data)
+
+export const importSystemUsers = (file: File): Promise<Result<SystemUserImportResult>> => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<Result<SystemUserImportResult>>('/api/system-users/import', form, {
+    headers: { 'Content-Type': undefined },
+  }).then(r => r.data)
+}
 
 export const getUserLanguagePreference = (userId: number): Promise<Result<UserLanguagePreference>> =>
   client.get<Result<UserLanguagePreference>>('/api/language-preferences', { params: { userId } }).then(r => r.data)
@@ -257,14 +279,16 @@ export const generateAttendanceFromMeeting = (
 export const saveExpectedParticipants = (fileId: string, meetingId: number): Promise<Result<number>> =>
   client.post<Result<number>>('/api/pre-meeting/attendance/save-expected', { fileId, meetingId }).then(r => r.data)
 
+export interface ExportPreMeetingAttendanceDocxParams {
+  fileId?: string | null
+  meetingId?: number | null
+  actualParticipants: MeetingParticipant[]
+}
+
 export const exportPreMeetingAttendanceDocx = (
-  fileId: string,
-  actualParticipants: MeetingParticipant[],
+  params: ExportPreMeetingAttendanceDocxParams,
 ): Promise<Blob> =>
-  client.post<Blob>('/api/pre-meeting/attendance/export', {
-    fileId,
-    actualParticipants,
-  }, { responseType: 'blob', timeout: 60_000 })
+  client.post<Blob>('/api/pre-meeting/attendance/export', params, { responseType: 'blob', timeout: 60_000 })
     .then(r => r.data)
     .catch(async error => {
       throw new Error(await getApiErrorMessage(error, '导出实际参会名单失败'))
@@ -316,6 +340,26 @@ export const chatWithPreMeeting = (
 // Generate a standalone Word from a history summary text (markdown-rendered, with title).
 export const generateSummaryDoc = (title: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
   client.post<Blob>('/api/pre-meeting/summary-doc', { title, ...formatBody(summary, fmt) }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
+
+// Generate a 会议总结 PDF (仿宋18/TNR16, same as the AI summary) from a history summary text.
+export const generateSummaryPdf = (title: string, summary: string): Promise<Blob> =>
+  client.post<Blob>('/api/pre-meeting/summary-pdf', { title, summary }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
+
+// Generate a 发言摘要 PDF: 会议名(标题) / 发言人小标题 / 正文 / 日期 / 整理.
+export const generateSpeakerSummaryPdf = (params: {
+  meetingName: string
+  speakerName: string
+  sequence: number
+  dateText: string
+  body: string
+}): Promise<Blob> =>
+  client.post<Blob>('/api/pre-meeting/speaker-summary-pdf', {
+    meetingName: params.meetingName,
+    speakerName: params.speakerName,
+    sequence: String(params.sequence),
+    dateText: params.dateText,
+    body: params.body,
+  }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
 export interface SummaryFileSendResult {
   sent: boolean
@@ -450,6 +494,21 @@ export const saveMeetingFileSummary = (meetingId: number, fileId: number, summar
 
 export const saveMeetingAttendance = (meetingId: number, attendanceJson: string): Promise<Result<void>> =>
   client.put<Result<void>>(`/api/meetings/${meetingId}/attendance`, { attendanceJson }).then(r => r.data)
+
+// Set the meeting's join link (required after 会议安排 upload). Backend matches the 应到名单 to the user
+// directory, finds Teams accounts (jlg.co.id) and auto-sends the meeting notification card.
+export const setMeetingLink = (
+  meetingId: number,
+  meetingUrl: string,
+  fileId?: string,
+): Promise<MeetingNotificationPlan> =>
+  client.post<Result<MeetingNotificationPlan>>(`/api/meetings/${meetingId}/meeting-link`, {
+    meetingUrl,
+    ...(fileId ? { fileId } : {}),
+  }).then(r => {
+    if (r.data?.code !== 200) throw new Error(r.data?.message || '设置会议链接失败')
+    return r.data.data
+  })
 
 export const deleteMeeting = (meetingId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}`).then(r => r.data)

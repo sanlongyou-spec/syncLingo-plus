@@ -15,6 +15,8 @@ public class MeetingVo {
     private String scheduledTime;
     private String note;
     private String attendanceJson;
+    /** Teams meeting join URL (used by the bot to join; set after 会议安排 upload). */
+    private String meetingUrl;
     /** Whether a 应到 (expected participants) list has been saved for this meeting from a 会议安排. */
     private boolean hasExpectedParticipants;
     private LocalDateTime createTime;

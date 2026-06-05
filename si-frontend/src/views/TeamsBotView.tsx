@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   addMeetingHotwords,
   createMeeting,
@@ -11,6 +11,7 @@ import {
   getMeetings,
   joinMeeting,
   loadMeetingFileForSummary,
+  setMeetingLink,
   saveMeetingAttendance,
   saveMeetingFileSummary,
   summarizePreMeetingFile,
@@ -22,6 +23,7 @@ import { ROUTES, STORAGE_KEYS, TEAMS_BOT_STORAGE_KEYS } from '../constants'
 import type {
   Meeting,
   MeetingFile,
+  MeetingNotificationPlan,
   MeetingParticipant,
   PreMeetingAttendanceResult,
   PreMeetingFile,
@@ -122,9 +124,6 @@ export default function TeamsBotView() {
   const [fileUploadLoading, setFileUploadLoading] = useState(false)
   const [exportLoading, setExportLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
-  // 导出格式：0/'' = 继承原文。正文字体/字号 + 标题字号，标题与正文可不同。
-  const [summaryFmt, setSummaryFmt] = useState<{ bodyFont: string; bodySize: number; headingSize: number }>(
-    { bodyFont: '', bodySize: 0, headingSize: 0 })
   const [preMeetingToDbFileId, setPreMeetingToDbFileId] = useState<Record<string, number>>({})
   const [defaultReqDraft, setDefaultReqDraft] = useState(
     () => localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.PRE_MEETING_DEFAULT_REQ) ?? ''
@@ -133,8 +132,12 @@ export default function TeamsBotView() {
   const [extraReq, setExtraReq] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // 会议链接（一个会议一个链接，必填）— 保存后机器人加入会议直接用它，无需再次粘贴。
+  const [meetingUrl, setMeetingUrl] = useState('')          // link draft for the selected meeting
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [notificationPlan, setNotificationPlan] = useState<MeetingNotificationPlan | null>(null)
+
   // ── Section 3: Teams Bot ─────────────────────────────
-  const [meetingUrl, setMeetingUrl] = useState('')
   const [joinStatus, setJoinStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
   const [activeCallId, setActiveCallId] = useState<string | null>(null)
   const [meetingTitle, setMeetingTitle] = useState<string | null>(null)
@@ -159,6 +162,7 @@ export default function TeamsBotView() {
           setMeetingFiles(m.files || [])
           setMeetingName(m.title || '')
           setMeetingHasExpected(!!m.hasExpectedParticipants)
+          setMeetingUrl(m.meetingUrl || '')
         }
       }
     }).catch(() => {})
@@ -173,6 +177,8 @@ export default function TeamsBotView() {
     setMeetingFiles(m?.files || [])
     setMeetingName(m?.title || '')
     setMeetingHasExpected(!!m?.hasExpectedParticipants)
+    setMeetingUrl(m?.meetingUrl || '')
+    setNotificationPlan(null)
     // A previously-selected meeting has no in-memory 会议安排; clear it. The attendance comparison
     // still works if the meeting has a saved 应到 list (meetingHasExpected); otherwise refresh
     // just shows the Teams 实到 list.
@@ -204,7 +210,8 @@ export default function TeamsBotView() {
       setMeetingName(title)
       setPrepFiles([]); setSummaryMap({}); setSelectedFileId(''); setPreMeetingToDbFileId({})
       setParticipants([]); setAttendanceResult(null)
-      setSuccess('会议已创建')
+      setMeetingUrl(''); setNotificationPlan(null)
+      setSuccess('会议已创建，请填写会议链接以通知参会人')
     } catch (e) {
       setError(e instanceof Error ? e.message : '新建会议失败')
     }
@@ -240,9 +247,12 @@ export default function TeamsBotView() {
         console.warn('[TeamsBotView] saveExpectedParticipants failed:', err)
       }
       setMeetingHasExpected(savedExpected)
+      setMeetingUrl(''); setNotificationPlan(null)   // fresh meeting — link required before notifying
       setMeetings(prev => [{ ...newMeeting, hasExpectedParticipants: savedExpected },
         ...prev.filter(m => m.id !== newMeeting.id)])
-      setSuccess(savedExpected ? '会议已创建，会议安排与应到名单已保存' : '会议已创建，会议安排已上传')
+      setSuccess(savedExpected
+        ? '会议已创建，会议安排与应到名单已保存，请填写会议链接以通知参会人'
+        : '会议已创建，会议安排已上传，请填写会议链接以通知参会人')
     } catch (e) {
       setError(e instanceof Error ? e.message : '上传会议安排失败')
     } finally {
@@ -370,56 +380,26 @@ export default function TeamsBotView() {
     } catch { /* silent */ }
   }
 
-  const fetchParticipants = useCallback(async () => {
-    setParticipantsLoading(true)
-    try {
-      const data = await getMeetingParticipants()
-      setParticipants(data.participants)
-      persistKnownParticipants(data.participants, userId)
-      if (data.callId) setActiveCallId(data.callId)
-      if (data.threadId) {
-        localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, data.threadId)
-        localStorage.setItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT, 'true')
-      }
-      if (data.meetingTitle) {
-        setMeetingTitle(data.meetingTitle)
-        await syncCurrentSessionTitle(data.meetingTitle)
-      }
-    } catch (e) {
-      // Background/auto fetch (on mount and after join) — stay silent; the manual
-      // 「刷新」(handleRefreshParticipants) surfaces errors instead.
-      console.warn('[TeamsBotView] auto fetchParticipants failed:', e)
-    } finally {
-      setParticipantsLoading(false)
-    }
-  }, [])
-
   // No auto-fetch on entry — participants/attendance load only when the user clicks 「刷新」
   // (or shortly after the bot joins a meeting, below).
 
-  const handleJoinMeeting = async () => {
+  // Save the meeting's join link (required, one per meeting); the backend matches the 应到名单 to the
+  // user directory, finds Teams accounts and auto-sends the meeting notification card.
+  const handleSaveMeetingLink = async () => {
+    if (!selectedMeetingId) { setError('请先选择或新建会议'); return }
     const url = meetingUrl.trim()
-    if (!url) { setError('请粘贴 Teams 会议链接'); return }
-    setJoinStatus('joining')
+    if (!url) { setError('请填写会议链接'); return }
+    setLinkSaving(true)
     setError('')
     try {
-      const data = await joinMeeting(url)
-      setActiveCallId(data.callId)
-      if (data.threadId) {
-        localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, data.threadId)
-        localStorage.setItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT, 'true')
-      }
-      if (data.meetingTitle) {
-        setMeetingTitle(data.meetingTitle)
-        await syncCurrentSessionTitle(data.meetingTitle)
-      }
-      setJoinStatus('joined')
-      setSuccess('机器人已加入会议，正在获取参会人员…')
-      setMeetingUrl('')
-      setTimeout(fetchParticipants, 3000)
+      const plan = await setMeetingLink(selectedMeetingId, url, scheduleFile?.fileId)
+      setNotificationPlan(plan)
+      setMeetings(prev => prev.map(m => m.id === selectedMeetingId ? { ...m, meetingUrl: url } : m))
+      setSuccess(`会议链接已保存，已通知 ${plan.teamsRecipients.length} 位 Teams 用户`)
     } catch (e) {
-      setJoinStatus('error')
-      setError(e instanceof Error ? e.message : '加入会议失败')
+      setError(e instanceof Error ? e.message : '保存会议链接失败')
+    } finally {
+      setLinkSaving(false)
     }
   }
 
@@ -433,7 +413,27 @@ export default function TeamsBotView() {
     setError('')
     setSuccess('')
     try {
-      const data = await getMeetingParticipants()
+      // 机器人不在会议中（participants 返回 callId=null）→ 用该会议已保存的链接自动加入后再刷新；
+      // 已在会议中则直接刷新。
+      let data = await getMeetingParticipants()
+      if (!data.callId) {
+        const url = meetingUrl.trim()
+        if (!url) { setError('请先在上方「会议链接」中设置会议链接'); return }
+        setJoinStatus('joining')
+        const jd = await joinMeeting(url)
+        setActiveCallId(jd.callId)
+        if (jd.threadId) {
+          localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, jd.threadId)
+          localStorage.setItem(STORAGE_KEYS.MEETING_SUMMARY_INCLUDE_CHAT, 'true')
+        }
+        if (jd.meetingTitle) {
+          setMeetingTitle(jd.meetingTitle)
+          await syncCurrentSessionTitle(jd.meetingTitle)
+        }
+        setJoinStatus('joined')
+        await new Promise(res => setTimeout(res, 3000))   // 等机器人入会、参会人列表就绪
+        data = await getMeetingParticipants()
+      }
       setParticipants(data.participants)
       persistKnownParticipants(data.participants, userId)
       if (data.callId) setActiveCallId(data.callId)
@@ -474,6 +474,7 @@ export default function TeamsBotView() {
         setSuccess('已刷新并核对（未选关联会议，结果未保存到历史记录）')
       }
     } catch (e) {
+      if (joinStatus === 'joining') setJoinStatus('error')
       setError(e instanceof Error ? e.message : '刷新参会人员失败')
     } finally {
       setParticipantsLoading(false)
@@ -482,11 +483,21 @@ export default function TeamsBotView() {
   }
 
   const handleExportAttendance = async () => {
-    if (!scheduleFile || !attendanceResult) { setError('请先生成实际参加情况'); return }
+    if (!attendanceResult) { setError('请先生成实际参加情况'); return }
+    const exportFileId = scheduleFile?.fileId ?? null
+    const exportMeetingId = exportFileId ? null : selectedMeetingId
+    if (!exportFileId && !exportMeetingId) {
+      setError('请先上传会议安排，或选择已保存应到名单的会议')
+      return
+    }
     setAttendanceExportLoading(true)
     setError('')
     try {
-      const blob = await exportPreMeetingAttendanceDocx(scheduleFile.fileId, participants)
+      const blob = await exportPreMeetingAttendanceDocx({
+        fileId: exportFileId,
+        meetingId: exportMeetingId,
+        actualParticipants: participants,
+      })
       const title = attendanceResult.meetingTitle || attendanceResult.fileName || '实际参会名单'
       downloadBlob(blob, `${sanitizeFilename(title)}_实际参会名单.docx`)
       setSuccess('实际参会名单 Word 已导出')
@@ -582,6 +593,75 @@ export default function TeamsBotView() {
               </button>
             </div>
           </div>
+
+          {/* 会议链接（一个会议一个链接，必填）— 保存后自动通知应到名单中的 Teams 用户 */}
+          {selectedMeetingId && (
+            <div className="tb-meeting-link">
+              <span className="tb-new-meeting-label">会议链接 <em className="tb-required">必填</em></span>
+              <div className="tb-meeting-name-row">
+                <input
+                  className="tb-meeting-input"
+                  placeholder="https://teams.microsoft.com/l/meetup-join/..."
+                  value={meetingUrl}
+                  onChange={e => setMeetingUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && void handleSaveMeetingLink()}
+                />
+                <button
+                  className={`tb-btn tb-btn--primary ${linkSaving ? 'tb-btn--loading' : ''}`}
+                  disabled={linkSaving || !meetingUrl.trim()}
+                  onClick={() => void handleSaveMeetingLink()}
+                >
+                  {linkSaving ? '保存中…' : '保存并通知'}
+                </button>
+              </div>
+              <p className="tb-meeting-link-hint">
+                保存后机器人加入会议直接用此链接；系统会自动匹配应到名单并向 Teams 用户发送会议通知卡片。
+              </p>
+              {notificationPlan && (
+                <div className="tb-notify-plan">
+                  <div className="tb-notify-row tb-notify-row--ok">
+                    <span>已通知（Teams）</span>
+                    <strong>{notificationPlan.teamsRecipients.length}</strong>
+                  </div>
+                  {notificationPlan.teamsRecipients.length > 0 && (
+                    <table className="tb-notify-table">
+                      <thead>
+                        <tr><th>姓名</th><th>Teams 账号名</th><th>邮箱</th></tr>
+                      </thead>
+                      <tbody>
+                        {notificationPlan.teamsRecipients.map((r, i) => (
+                          <tr key={i}>
+                            <td>{r.scheduleName}</td>
+                            <td>{r.accountName}</td>
+                            <td>{r.email}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {notificationPlan.nonTeamsSkipped.length > 0 && (
+                    <div className="tb-notify-row tb-notify-row--skip">
+                      <span>非 Teams 跳过</span>
+                      <strong>{notificationPlan.nonTeamsSkipped.length}</strong>
+                      <span className="tb-notify-names">{notificationPlan.nonTeamsSkipped.join('、')}</span>
+                    </div>
+                  )}
+                  {notificationPlan.unmatched.length > 0 && (
+                    <div className="tb-notify-row tb-notify-row--warn">
+                      <span>未匹配到用户</span>
+                      <strong>{notificationPlan.unmatched.length}</strong>
+                      <span className="tb-notify-names">{notificationPlan.unmatched.join('、')}</span>
+                    </div>
+                  )}
+                  {notificationPlan.teamsRecipients.length === 0
+                    && notificationPlan.nonTeamsSkipped.length === 0
+                    && notificationPlan.unmatched.length === 0 && (
+                    <p className="tb-meeting-link-hint">未读取到应到名单：该会议没有可匹配的参会名单（请上传带名单的会议安排）。</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* ── Section 2: 会议文件 + AI 总结 ── */}
@@ -745,7 +825,7 @@ export default function TeamsBotView() {
                           setError('')
                           try {
                             const { exportPreMeetingDocx } = await import('../api')
-                            const blob = await exportPreMeetingDocx(selectedFileId, summaryResult.summary, summaryFmt)
+                            const blob = await exportPreMeetingDocx(selectedFileId, summaryResult.summary)
                             downloadBlob(blob, sanitizeFilename(summaryResult.fileName))
                           } catch (err) {
                             setError(err instanceof Error ? err.message : '导出失败')
@@ -763,7 +843,7 @@ export default function TeamsBotView() {
                           setError('')
                           try {
                             const { exportPreMeetingPdf } = await import('../api')
-                            const blob = await exportPreMeetingPdf(selectedFileId, summaryResult.summary, summaryFmt)
+                            const blob = await exportPreMeetingPdf(selectedFileId, summaryResult.summary)
                             const pdfName = sanitizeFilename(summaryResult.fileName).replace(/\.[^.]+$/, '') + '.pdf'
                             downloadBlob(blob, pdfName)
                           } catch (err) {
@@ -775,33 +855,7 @@ export default function TeamsBotView() {
                       >{pdfLoading ? '导出中…' : '导出 PDF'}</button>
                     </div>
                   </div>
-                  <div className="tb-prep-summary-edit-hint">可手动修改总结，再点上方「导出 Word / PDF」导出修改后的版本</div>
-                  <div className="tb-summary-fmt">
-                    <span className="tb-summary-fmt-label">导出格式</span>
-                    <label>正文字体
-                      <select value={summaryFmt.bodyFont} onChange={e => setSummaryFmt(f => ({ ...f, bodyFont: e.target.value }))}>
-                        <option value="">继承原文</option>
-                        <option value="宋体">宋体</option>
-                        <option value="微软雅黑">微软雅黑</option>
-                        <option value="黑体">黑体</option>
-                        <option value="楷体">楷体</option>
-                        <option value="Times New Roman">Times New Roman</option>
-                        <option value="Arial">Arial</option>
-                      </select>
-                    </label>
-                    <label>正文字号
-                      <select value={summaryFmt.bodySize} onChange={e => setSummaryFmt(f => ({ ...f, bodySize: Number(e.target.value) }))}>
-                        <option value={0}>继承</option>
-                        {[9, 10, 11, 12, 14, 16].map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </label>
-                    <label>标题字号
-                      <select value={summaryFmt.headingSize} onChange={e => setSummaryFmt(f => ({ ...f, headingSize: Number(e.target.value) }))}>
-                        <option value={0}>自动(正文+3)</option>
-                        {[12, 14, 16, 18, 20].map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </label>
-                  </div>
+                  <div className="tb-prep-summary-edit-hint">可手动修改总结，再点上方「导出 Word / PDF」。导出排版固定：标题「chatgpt总结」，中文仿宋18、印尼语 Times New Roman 16</div>
                   <textarea
                     className="tb-prep-summary-edit"
                     value={summaryResult.summary}
@@ -828,30 +882,15 @@ export default function TeamsBotView() {
           )}
 
           {selectedMeetingId && (<>
-          {/* 加入会议 */}
-          <div className="tb-bot-join-row">
-            <input
-              className="tb-input"
-              placeholder="https://teams.microsoft.com/l/meetup-join/..."
-              value={meetingUrl}
-              onChange={e => setMeetingUrl(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && void handleJoinMeeting()}
-              disabled={!!activeCallId}
-            />
-            <button
-              className={`tb-btn tb-btn--primary ${joinStatus === 'joining' ? 'tb-btn--loading' : ''}`}
-              onClick={() => void handleJoinMeeting()}
-              disabled={joinStatus === 'joining' || !!activeCallId}
-            >
-              {joinStatus === 'joining' ? '加入中…' : '加入会议'}
-            </button>
-          </div>
           <p className={`tb-status ${activeCallId ? 'tb-status--ok' : 'tb-status--idle'}`}>{botStatus}</p>
+          {!meetingUrl.trim() && (
+            <p className="tb-bot-join-link tb-bot-join-link--missing">请先在上方「会议链接」中设置会议链接，点「刷新」时机器人会自动加入</p>
+          )}
           {meetingTitle && (
             <p className="tb-meeting-title"><span>会议名称</span><strong>{meetingTitle}</strong></p>
           )}
 
-          {/* 实际参加情况：一个「刷新」= 拉取 Teams 实到并核对应到/未到 */}
+          {/* 实际参加情况：点「刷新」= 机器人不在会议则先自动加入，再拉取 Teams 实到并核对应到/未到 */}
           <div className="tb-card-header" style={{ marginTop: 20 }}>
             <h3 className="tb-card-subtitle">实际参加情况</h3>
             <div className="tb-attendance-actions">
@@ -859,7 +898,7 @@ export default function TeamsBotView() {
                 className={`tb-btn tb-btn--primary tb-btn--sm ${(participantsLoading || attendanceLoading) ? 'tb-btn--loading' : ''}`}
                 disabled={participantsLoading || attendanceLoading}
                 onClick={() => void handleRefreshParticipants()}
-                title={scheduleFile ? '从 Teams 拉取实到人员并核对应到/未到' : '从 Teams 拉取实到人员（上传会议安排后还会核对应到/未到）'}
+                title={scheduleFile ? '机器人不在会议则先自动加入，再拉取 Teams 实到并核对应到/未到' : '机器人不在会议则先自动加入，再拉取 Teams 实到人员'}
               >
                 {(participantsLoading || attendanceLoading) ? '刷新中…' : '刷新'}
               </button>
