@@ -1430,6 +1430,36 @@ start-all.bat  :: 重新编译 Bot 并启动所有服务
 
 ---
 
+### 2026-06-05 历史记录 PDF 改为 SharePoint 存储后发送 Teams 链接
+
+- 新完成：
+  - 历史记录“发送到 Teams · PDF”链路改为：前端生成 PDF Blob -> `POST /bot-api/api/meetings/summary-file` -> C# Bot 通过 Microsoft Graph 上传到固定 SharePoint 文档库目录 -> Bot 私聊发送 SharePoint PDF 链接。
+  - C# Bot 新增 `SummaryFileStorage` 配置和 `SharePointFileStorageService`，支持 `SiteId` 或 `SiteUrl` 解析站点、`DriveId` 或 `DriveName` 定位文档库、`FolderPath` 指定 `syncLingo/会议总结` 目录。
+  - 文件名上传前会清理非法字符并追加 UTC 时间戳，避免同名覆盖。
+  - 旧的 Bot 内存缓存下载链路不再作为主链路使用：`MeetingSummaryController.SendSummaryFile` 不再 `memoryCache.Set(...)`，也不再通过 `BotBaseUrl/api/meetings/file/{token}` 拼临时下载地址。
+  - Teams 消息改为 Markdown 文本：标题、简短说明、SharePoint PDF 打开链接、syncLingo 自动生成说明。
+  - 前端 History 页面按钮提示改为“上传到 Teams/SharePoint 后把下载链接发到所选 Teams 账号”，API 封装保持 multipart 上传不变。
+- 新配置：
+  - `appsettings.json` 增加：
+    - `SummaryFileStorage:Mode = SharePoint`
+    - `SummaryFileStorage:SiteId` 或 `SummaryFileStorage:SiteUrl`
+    - `SummaryFileStorage:DriveId` 或 `SummaryFileStorage:DriveName`
+    - `SummaryFileStorage:FolderPath = syncLingo/会议总结`
+    - `SummaryFileStorage:LinkType = view`
+    - `SummaryFileStorage:LinkScope = organization`
+- 权限要求：
+  - 第一版验证建议为 Azure AD 应用授予并管理员同意 `Sites.ReadWrite.All`、`Files.ReadWrite.All`。
+  - 链路稳定后可以评估收紧为 `Sites.Selected`，只允许写指定 SharePoint 站点。
+- 验证：
+  - C# Bot 使用独立输出目录构建通过：`dotnet build -c Debug -v quiet -o D:\data\syncLingo-plus\.tmp-build\callingbot-sharepoint-link-test`。
+  - 前端构建通过：`npm run build`。
+- 下一步：
+  - 填入真实 `SiteUrl` 或 `SiteId`，必要时填 `DriveId`。
+  - 重启 C# Bot 后，用本地 PDF 调 `/bot-api/api/meetings/summary-file`，确认 SharePoint 目录出现 PDF。
+  - 验证 Teams 用户收到链接，且非发送人账号也能打开。
+
+---
+
 ## 13. 后续更新模板
 
 ```markdown

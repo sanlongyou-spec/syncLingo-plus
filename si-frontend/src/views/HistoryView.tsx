@@ -519,7 +519,7 @@ export default function HistoryView() {
     finally { setSummaryLoading(false) }
   }
 
-  // 会议总结：生成 PDF（仿宋18/TNR16，同 AI 总结），发到所选 Teams 账号（下载链接）。
+  // 会议总结：生成 PDF（仿宋18/TNR16，同 AI 总结），上传到 SharePoint 后把链接发到所选 Teams 账号。
   const pushSummaryPdf = async (title: string, text: string, recipients: string[]) => {
     if (recipients.length === 0) { setTeamsPushStatus('error'); setTimeout(() => setTeamsPushStatus('idle'), 3000); return }
     setTeamsPushStatus('loading')
@@ -591,7 +591,7 @@ export default function HistoryView() {
     }
   }
 
-  // 发言摘要：生成 PDF（会议名/发言人小标题/正文/日期/整理），发到所选 Teams 账号。
+  // 发言摘要：生成 PDF（会议名/发言人小标题/正文/日期/整理），上传到 SharePoint 后把链接发到所选 Teams 账号。
   const pushSpeakerSummaryToTeams = async (
     record: SpeakerSummaryRecord,
     recipients: string[],
@@ -1045,7 +1045,7 @@ export default function HistoryView() {
                             onChange={e => setSpeakerRecords(prev => prev.map((r, i) => i === idx ? { ...r, summary: e.target.value } : r))}
                             spellCheck={false}
                           />
-                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」发送修改后的版本</div>
+                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」上传到 Teams/SharePoint 并发送链接</div>
                         </div>
                       )
                     })}
@@ -1126,7 +1126,7 @@ export default function HistoryView() {
                         <div className="history-summary-toolbar">
                           <button
                             className="history-summary-export-btn"
-                            title="生成 PDF（仿宋18/印尼语 Times New Roman16，同 AI 总结）并发到所选 Teams 账号"
+                            title="生成 PDF，上传到 Teams/SharePoint 后把下载链接发到所选 Teams 账号"
                             onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients) }}
                             disabled={teamsPushStatus === 'loading' || chosenSummaryRecipients.length === 0}
                           >
@@ -1135,7 +1135,7 @@ export default function HistoryView() {
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
                         <div className="history-summary-body">
-                          <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams · PDF」发送修改后的版本</div>
+                          <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams · PDF」上传到 Teams/SharePoint 并发送链接</div>
                           <textarea
                             className="history-summary-edit"
                             value={displayed}

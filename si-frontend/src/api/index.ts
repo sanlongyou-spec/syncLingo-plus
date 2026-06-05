@@ -370,8 +370,8 @@ export interface SummaryFileSendResult {
   error?: string | null
 }
 
-// Upload a generated Word to the bot, which sends a Teams message with a download link to the
-// chosen account(s) and/or the active meeting chat (Plan A).
+// Upload a generated PDF to the bot; the bot stores it in Teams/SharePoint and sends the
+// SharePoint link to the chosen account(s) and/or the active meeting chat.
 export const sendSummaryFileToTeams = (
   blob: Blob,
   fileName: string,
