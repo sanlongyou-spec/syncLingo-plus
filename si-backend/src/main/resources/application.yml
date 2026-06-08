@@ -176,12 +176,20 @@ app:
   admin:
     api-secret: ${ADMIN_API_SECRET:}
   cost:
+    # 费率默认值按各家官网（2026-06）：可用环境变量按实际套餐/单价覆盖。
     rates:
+      # Azure 语音转文本（实时/标准）≈ $1/音频小时
       asr-per-hour-usd: ${COST_ASR_PER_HOUR_USD:1.00}
+      # Azure Translator 标准 S1 ≈ $10 / 百万字符
       trans-per-million-chars-usd: ${COST_TRANS_PER_MILLION_CHARS_USD:10.00}
-      tts-per-million-chars-usd: ${COST_TTS_PER_MILLION_CHARS_USD:1.50}
-      llm-in-per-million-tokens-usd: ${COST_LLM_IN_PER_MILLION_TOKENS_USD:0.25}
-      llm-out-per-million-tokens-usd: ${COST_LLM_OUT_PER_MILLION_TOKENS_USD:1.25}
+      # Cartesia Sonic：1 credit/字符，折合 ≈ $35 / 百万字符（克隆音色 1.5×≈$52，按实际套餐调）
+      tts-per-million-chars-usd: ${COST_TTS_PER_MILLION_CHARS_USD:35.00}
+      # 实时压缩用 Claude Haiku 4.5：输入 $1 / 百万 tokens，输出 $5 / 百万 tokens
+      llm-in-per-million-tokens-usd: ${COST_LLM_IN_PER_MILLION_TOKENS_USD:1.00}
+      llm-out-per-million-tokens-usd: ${COST_LLM_OUT_PER_MILLION_TOKENS_USD:5.00}
+      # 会议总结/文档用 DeepSeek V4 Pro：输入 $1.74 / 百万 tokens，输出 $3.48 / 百万 tokens
+      summary-llm-in-per-million-tokens-usd: ${COST_SUMMARY_LLM_IN_PER_MILLION_TOKENS_USD:1.74}
+      summary-llm-out-per-million-tokens-usd: ${COST_SUMMARY_LLM_OUT_PER_MILLION_TOKENS_USD:3.48}
     budget:
       monthly-usd: ${COST_BUDGET_MONTHLY_USD:0.0}
       session-usd: ${COST_BUDGET_SESSION_USD:0.0}

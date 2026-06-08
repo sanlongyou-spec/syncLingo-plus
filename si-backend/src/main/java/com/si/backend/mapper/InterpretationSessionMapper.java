@@ -24,6 +24,12 @@ public interface InterpretationSessionMapper {
     @Update("ALTER TABLE interpretation_session ADD COLUMN llm_output_tokens BIGINT DEFAULT 0")
     void addLlmOutputTokensColumnIfNotExists();
 
+    @Update("ALTER TABLE interpretation_session ADD COLUMN llm_summary_input_tokens BIGINT DEFAULT 0")
+    void addLlmSummaryInputTokensColumnIfNotExists();
+
+    @Update("ALTER TABLE interpretation_session ADD COLUMN llm_summary_output_tokens BIGINT DEFAULT 0")
+    void addLlmSummaryOutputTokensColumnIfNotExists();
+
     @Update("ALTER TABLE interpretation_session ADD COLUMN title VARCHAR(128) DEFAULT '未命名同传' AFTER voice_id")
     void addTitleColumnIfNotExists();
 
@@ -67,6 +73,9 @@ public interface InterpretationSessionMapper {
 
     @Update("UPDATE interpretation_session SET llm_input_tokens = COALESCE(llm_input_tokens, 0) + #{inputDelta}, llm_output_tokens = COALESCE(llm_output_tokens, 0) + #{outputDelta} WHERE session_id = #{sessionId}")
     int addLlmTokens(@Param("sessionId") String sessionId, @Param("inputDelta") long inputDelta, @Param("outputDelta") long outputDelta);
+
+    @Update("UPDATE interpretation_session SET llm_summary_input_tokens = COALESCE(llm_summary_input_tokens, 0) + #{inputDelta}, llm_summary_output_tokens = COALESCE(llm_summary_output_tokens, 0) + #{outputDelta} WHERE session_id = #{sessionId}")
+    int addSummaryLlmTokens(@Param("sessionId") String sessionId, @Param("inputDelta") long inputDelta, @Param("outputDelta") long outputDelta);
 
     @Select("SELECT * FROM interpretation_session WHERE user_id = #{userId} AND COALESCE(deleted, 0) = 0 ORDER BY create_time DESC")
     java.util.List<InterpretationSession> findByUserId(Long userId);
@@ -118,7 +127,9 @@ public interface InterpretationSessionMapper {
                    SUM(COALESCE(translate_chars, 0))  AS totalTransChars,
                    SUM(COALESCE(tts_chars, 0))        AS totalTtsChars,
                    SUM(COALESCE(llm_input_tokens, 0)) AS totalLlmIn,
-                   SUM(COALESCE(llm_output_tokens, 0)) AS totalLlmOut
+                   SUM(COALESCE(llm_output_tokens, 0)) AS totalLlmOut,
+                   SUM(COALESCE(llm_summary_input_tokens, 0)) AS totalSummaryLlmIn,
+                   SUM(COALESCE(llm_summary_output_tokens, 0)) AS totalSummaryLlmOut
             FROM interpretation_session
             WHERE user_id = #{userId} AND COALESCE(deleted, 0) = 0 AND start_time IS NOT NULL
             GROUP BY DATE_FORMAT(start_time, '%Y-%m')
@@ -132,6 +143,8 @@ public interface InterpretationSessionMapper {
                    COALESCE(SUM(COALESCE(tts_chars, 0)), 0)        AS totalTtsChars,
                    COALESCE(SUM(COALESCE(llm_input_tokens, 0)), 0) AS totalLlmIn,
                    COALESCE(SUM(COALESCE(llm_output_tokens, 0)), 0) AS totalLlmOut,
+                   COALESCE(SUM(COALESCE(llm_summary_input_tokens, 0)), 0) AS totalSummaryLlmIn,
+                   COALESCE(SUM(COALESCE(llm_summary_output_tokens, 0)), 0) AS totalSummaryLlmOut,
                    COUNT(*)                                         AS sessionCount
             FROM interpretation_session
             WHERE user_id = #{userId}

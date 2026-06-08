@@ -1020,13 +1020,15 @@ public class TeamsBotQueryService {
             double ttsRate  = costRatesProperties.getRates().getTtsPerMillionCharsUsd();
             double llmIn    = costRatesProperties.getRates().getLlmInPerMillionTokensUsd();
             double llmOut   = costRatesProperties.getRates().getLlmOutPerMillionTokensUsd();
+            double sumIn    = costRatesProperties.getRates().getSummaryLlmInPerMillionTokensUsd();
+            double sumOut   = costRatesProperties.getRates().getSummaryLlmOutPerMillionTokensUsd();
 
             StringBuilder sb = new StringBuilder();
             sb.append("[成本数据 - ").append(yearMonth).append("]\n");
 
             if (current != null && !current.isEmpty()) {
                 long sessions  = toLong(current.get("sessionCount"));
-                double cost    = calcMonthlyCost(current, asrRate, transRate, ttsRate, llmIn, llmOut);
+                double cost    = calcMonthlyCost(current, asrRate, transRate, ttsRate, llmIn, llmOut, sumIn, sumOut);
                 sb.append("当月（").append(yearMonth).append("）：")
                   .append(sessions).append(" 次会话，估计费用 $")
                   .append(String.format("%.4f", cost)).append("\n");
@@ -1039,7 +1041,7 @@ public class TeamsBotQueryService {
                     if (shown++ >= 3) break;
                     String month = String.valueOf(row.get("month"));
                     long sessions = toLong(row.get("sessionCount"));
-                    double cost   = calcMonthlyCost(row, asrRate, transRate, ttsRate, llmIn, llmOut);
+                    double cost   = calcMonthlyCost(row, asrRate, transRate, ttsRate, llmIn, llmOut, sumIn, sumOut);
                     sb.append("  ").append(month).append("：").append(sessions)
                       .append(" 次会话，估计费用 $")
                       .append(String.format("%.4f", cost)).append("\n");
@@ -1058,12 +1060,15 @@ public class TeamsBotQueryService {
     }
 
     private double calcMonthlyCost(Map<String, Object> row,
-            double asrRate, double transRate, double ttsRate, double llmIn, double llmOut) {
+            double asrRate, double transRate, double ttsRate, double llmIn, double llmOut,
+            double sumIn, double sumOut) {
         return toLong(row.get("totalAsrMs")) / 3_600_000.0 * asrRate
                 + toLong(row.get("totalTransChars")) / 1_000_000.0 * transRate
                 + toLong(row.get("totalTtsChars"))   / 1_000_000.0 * ttsRate
                 + toLong(row.get("totalLlmIn"))      / 1_000_000.0 * llmIn
-                + toLong(row.get("totalLlmOut"))     / 1_000_000.0 * llmOut;
+                + toLong(row.get("totalLlmOut"))     / 1_000_000.0 * llmOut
+                + toLong(row.get("totalSummaryLlmIn"))  / 1_000_000.0 * sumIn
+                + toLong(row.get("totalSummaryLlmOut")) / 1_000_000.0 * sumOut;
     }
 
     private long toLong(Object val) {

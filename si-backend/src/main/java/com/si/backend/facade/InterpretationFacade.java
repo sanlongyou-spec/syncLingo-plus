@@ -237,6 +237,8 @@ public class InterpretationFacade {
                 .ttsChars(session.getTtsChars())
                 .llmInputTokens(session.getLlmInputTokens())
                 .llmOutputTokens(session.getLlmOutputTokens())
+                .llmSummaryInputTokens(session.getLlmSummaryInputTokens())
+                .llmSummaryOutputTokens(session.getLlmSummaryOutputTokens())
                 .meetingSummary(session.getMeetingSummary())
                 .build();
     }

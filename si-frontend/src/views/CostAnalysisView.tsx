@@ -10,17 +10,22 @@ function calcCost(s: InterpretationStatus, rates: CostRates): Cost {
   const asr   = (s.asrAudioMs     ?? 0) * rates.asrPerMs
   const trans  = (s.translateChars ?? 0) * rates.transPerChar
   const tts    = (s.ttsChars       ?? 0) * rates.ttsPerChar
+  // LLM 拆两档：实时压缩(Haiku) + 会议总结/文档(DeepSeek)，各按各自单价计费
   const llm    = (s.llmInputTokens ?? 0) * rates.llmInPerToken
               + (s.llmOutputTokens ?? 0) * rates.llmOutPerToken
+              + (s.llmSummaryInputTokens ?? 0) * rates.summaryLlmInPerToken
+              + (s.llmSummaryOutputTokens ?? 0) * rates.summaryLlmOutPerToken
   return { asr, trans, tts, llm, total: asr + trans + tts + llm }
 }
 
 const DEFAULT_RATES: CostRates = {
   asrPerMs: 1.00 / 3_600_000,
   transPerChar: 10.00 / 1_000_000,
-  ttsPerChar: 1.50 / 1_000_000,
-  llmInPerToken: 0.25 / 1_000_000,
-  llmOutPerToken: 1.25 / 1_000_000,
+  ttsPerChar: 35.00 / 1_000_000,
+  llmInPerToken: 1.00 / 1_000_000,
+  llmOutPerToken: 5.00 / 1_000_000,
+  summaryLlmInPerToken: 1.74 / 1_000_000,
+  summaryLlmOutPerToken: 3.48 / 1_000_000,
   monthlyBudgetUsd: 0,
   sessionBudgetUsd: 0,
 }
@@ -208,11 +213,12 @@ export default function CostAnalysisView() {
       asrMs += s.asrAudioMs ?? 0
       transChars += s.translateChars ?? 0
       ttsChars += s.ttsChars ?? 0
-      llmIn += s.llmInputTokens ?? 0
-      llmOut += s.llmOutputTokens ?? 0
+      llmIn += (s.llmInputTokens ?? 0) + (s.llmSummaryInputTokens ?? 0)
+      llmOut += (s.llmOutputTokens ?? 0) + (s.llmSummaryOutputTokens ?? 0)
     }
     for (const p of filteredPreMeeting) {
-      const pmLlm = (p.llmInputTokens ?? 0) * rates.llmInPerToken + (p.llmOutputTokens ?? 0) * rates.llmOutPerToken
+      // 会前准备用 DeepSeek(文档总结模型) → 按总结档单价
+      const pmLlm = (p.llmInputTokens ?? 0) * rates.summaryLlmInPerToken + (p.llmOutputTokens ?? 0) * rates.summaryLlmOutPerToken
       llm += pmLlm
       llmIn += p.llmInputTokens ?? 0
       llmOut += p.llmOutputTokens ?? 0
@@ -233,7 +239,7 @@ export default function CostAnalysisView() {
     }
     for (const p of filteredPreMeeting) {
       if (!map[p.date]) map[p.date] = { asr: 0, trans: 0, tts: 0, llm: 0 }
-      map[p.date].llm += (p.llmInputTokens ?? 0) * rates.llmInPerToken + (p.llmOutputTokens ?? 0) * rates.llmOutPerToken
+      map[p.date].llm += (p.llmInputTokens ?? 0) * rates.summaryLlmInPerToken + (p.llmOutputTokens ?? 0) * rates.summaryLlmOutPerToken
     }
     const cutoff = cutoffDate(range)
     const days: { label: string; asr: number; trans: number; tts: number; llm: number }[] = []
@@ -267,10 +273,11 @@ export default function CostAnalysisView() {
   const monthlyBudget = rates.monthlyBudgetUsd
 
   const exportMonthlyCSV = () => {
-    const header = 'Month,Sessions,ASR(ms),Trans(chars),TTS(chars),LLM-in,LLM-out,Cost(USD)'
+    const header = 'Month,Sessions,ASR(ms),Trans(chars),TTS(chars),LLM-in(Haiku),LLM-out(Haiku),Summary-in(DeepSeek),Summary-out(DeepSeek),Cost(USD)'
     const rows = monthly.map(m =>
       [m.month, m.sessionCount, m.totalAsrMs, m.totalTransChars, m.totalTtsChars,
-       m.totalLlmIn, m.totalLlmOut, m.estimatedCostUsd.toFixed(6)].join(',')
+       m.totalLlmIn, m.totalLlmOut, m.totalSummaryLlmIn ?? 0, m.totalSummaryLlmOut ?? 0,
+       m.estimatedCostUsd.toFixed(6)].join(',')
     )
     const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
@@ -489,7 +496,7 @@ export default function CostAnalysisView() {
                             <td className="ca-td-num">{fmtMs(m.totalAsrMs)}</td>
                             <td className="ca-td-num">{m.totalTransChars.toLocaleString()}</td>
                             <td className="ca-td-num">{m.totalTtsChars.toLocaleString()}</td>
-                            <td className="ca-td-num">{(m.totalLlmIn + m.totalLlmOut).toLocaleString()}</td>
+                            <td className="ca-td-num">{(m.totalLlmIn + m.totalLlmOut + (m.totalSummaryLlmIn ?? 0) + (m.totalSummaryLlmOut ?? 0)).toLocaleString()}</td>
                             <td className="ca-td-num ca-td-total">{fmtUsd(m.estimatedCostUsd)}</td>
                           </tr>
                         ))}
@@ -501,7 +508,9 @@ export default function CostAnalysisView() {
             )}
 
             <div className="ca-disclaimer">
-              单价参考各服务商公开定价，实际账单以服务商结算为准。
+              单价按各服务商官网公开定价（2026-06）：ASR Azure ≈$1/音频小时 · 翻译 Azure ≈$10/百万字符 ·
+              TTS Cartesia Sonic ≈$35/百万字符（克隆音色更高）· LLM 实时压缩 Claude Haiku 4.5 $1/$5 每百万 tokens ·
+              会议总结/文档 DeepSeek V4 Pro $1.74/$3.48 每百万 tokens。LLM tokens 按文本长度估算，实际账单以各服务商结算为准。
             </div>
           </>
         )}

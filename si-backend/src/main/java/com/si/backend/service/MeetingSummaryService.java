@@ -115,7 +115,7 @@ public class MeetingSummaryService {
 
         try {
             String summary = summarizeMeetingUntilAccepted(meetingText, customRequirements, sessionId);
-            sessionService.addLlmTokens(sessionId, estimateTokens(meetingText), estimateTokens(summary));
+            sessionService.addSummaryLlmTokens(sessionId, estimateTokens(meetingText), estimateTokens(summary));
             sessionService.saveMeetingSummary(sessionId, summary);
             if (session != null && session.getId() != null) {
                 contentEmbeddingService.asyncEmbedMeetingSummary(sessionId, session.getId(), summary);

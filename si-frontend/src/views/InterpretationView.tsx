@@ -183,7 +183,8 @@ export default function InterpretationView() {
 
     getUserLanguagePreference(userId)
       .then(res => {
-        setEnabledLanguages(res.data?.enabledLanguages?.length ? res.data.enabledLanguages : [LANGUAGE.ZH_CN, LANGUAGE.ID_ID])
+        // 中文/印尼语必选：无论用户偏好如何，恒含 zh/id。
+        setEnabledLanguages(Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...(res.data?.enabledLanguages ?? [])])))
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getUserLanguagePreference failed:', err))
 
@@ -875,10 +876,6 @@ export default function InterpretationView() {
             <IconLightbulb />
             <span>音色克隆</span>
           </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TERMINOLOGY }}>
-            <span className="si-side-action-icon">T</span>
-            <span>配置</span>
-          </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
             <span className="si-side-action-icon">H</span>
             <span>历史记录</span>
@@ -889,7 +886,11 @@ export default function InterpretationView() {
           </button>
           <button className="si-side-action" onClick={copyShareLink}>
             <span className="si-side-action-icon">S</span>
-            <span>复制分享链接</span>
+            <span>分享链接</span>
+          </button>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TERMINOLOGY }}>
+            <span className="si-side-action-icon">T</span>
+            <span>设置</span>
           </button>
         </div>
       </aside>
@@ -1013,23 +1014,29 @@ export default function InterpretationView() {
                     ))}
                   </select>
                   <div className="si-language-checkboxes">
-                    {LANGUAGE_OPTIONS.map(opt => (
-                      <label key={opt.value} className="si-language-checkbox-item">
-                        <input
-                          type="checkbox"
-                          checked={enabledLanguages.includes(opt.value)}
-                          onChange={e => {
-                            const next = e.target.checked
-                              ? [...enabledLanguages, opt.value]
-                              : enabledLanguages.filter(l => l !== opt.value)
-                            setEnabledLanguages(next)
-                            void saveUserLanguagePreference(userId, { defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: next })
-                              .catch(err => console.warn('[InterpretationView] saveUserLanguagePreference failed:', err))
-                          }}
-                        />
-                        <span>{opt.label}</span>
-                      </label>
-                    ))}
+                    {LANGUAGE_OPTIONS.map(opt => {
+                      // 中文、印尼语是开会必选语种：恒为勾选且不可取消；仅英语可选。
+                      const required = opt.value === LANGUAGE.ZH_CN || opt.value === LANGUAGE.ID_ID
+                      return (
+                        <label key={opt.value} className="si-language-checkbox-item">
+                          <input
+                            type="checkbox"
+                            checked={required || enabledLanguages.includes(opt.value)}
+                            onChange={e => {
+                              if (required) return
+                              const next = e.target.checked
+                                ? [...enabledLanguages, opt.value]
+                                : enabledLanguages.filter(l => l !== opt.value)
+                              const ensured = Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...next]))
+                              setEnabledLanguages(ensured)
+                              void saveUserLanguagePreference(userId, { defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: ensured })
+                                .catch(err => console.warn('[InterpretationView] saveUserLanguagePreference failed:', err))
+                            }}
+                          />
+                          <span>{opt.label}</span>
+                        </label>
+                      )
+                    })}
                   </div>
                 </div>
               )}

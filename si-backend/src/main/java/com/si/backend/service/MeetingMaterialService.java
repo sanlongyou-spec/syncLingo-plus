@@ -100,7 +100,7 @@ public class MeetingMaterialService {
                     material.getExecutiveNames()
             );
             materialMapper.updateSummary(sessionId, summary);
-            sessionService.addLlmTokens(sessionId, estimateTokens(material.getAgendaText())
+            sessionService.addSummaryLlmTokens(sessionId, estimateTokens(material.getAgendaText())
                     + estimateTokens(material.getReportText())
                     + estimateTokens(meetingText), estimateTokens(summary));
             MeetingMaterial saved = materialMapper.findBySessionId(sessionId);

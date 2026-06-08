@@ -36,6 +36,8 @@ public class CostController {
                 "ttsPerChar",        r.getTtsPerMillionCharsUsd() / 1_000_000.0,
                 "llmInPerToken",     r.getLlmInPerMillionTokensUsd() / 1_000_000.0,
                 "llmOutPerToken",    r.getLlmOutPerMillionTokensUsd() / 1_000_000.0,
+                "summaryLlmInPerToken",  r.getSummaryLlmInPerMillionTokensUsd() / 1_000_000.0,
+                "summaryLlmOutPerToken", r.getSummaryLlmOutPerMillionTokensUsd() / 1_000_000.0,
                 "monthlyBudgetUsd",  b.getMonthlyUsd(),
                 "sessionBudgetUsd",  b.getSessionUsd()
         ));
@@ -64,7 +66,9 @@ public class CostController {
         double tts   = (session.getTtsChars()        != null ? session.getTtsChars()        : 0L) * r.getTtsPerMillionCharsUsd() / 1_000_000.0;
         double llm   = (session.getLlmInputTokens()  != null ? session.getLlmInputTokens()  : 0L) * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
                      + (session.getLlmOutputTokens() != null ? session.getLlmOutputTokens() : 0L) * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
-        return asr + trans + tts + llm;
+        double summaryLlm = (session.getLlmSummaryInputTokens()  != null ? session.getLlmSummaryInputTokens()  : 0L) * r.getSummaryLlmInPerMillionTokensUsd() / 1_000_000.0
+                          + (session.getLlmSummaryOutputTokens() != null ? session.getLlmSummaryOutputTokens() : 0L) * r.getSummaryLlmOutPerMillionTokensUsd() / 1_000_000.0;
+        return asr + trans + tts + llm + summaryLlm;
     }
 
     private double calcCostFromRow(Map<String, Object> row, CostRatesProperties.Rates r) {
@@ -73,12 +77,16 @@ public class CostController {
         long ttsChars  = toLong(row.get("totalTtsChars"));
         long llmIn     = toLong(row.get("totalLlmIn"));
         long llmOut    = toLong(row.get("totalLlmOut"));
+        long sumIn     = toLong(row.get("totalSummaryLlmIn"));
+        long sumOut    = toLong(row.get("totalSummaryLlmOut"));
         double asr   = asrMs     * r.getAsrPerHourUsd() / 3_600_000.0;
         double trans = transChars * r.getTransPerMillionCharsUsd() / 1_000_000.0;
         double tts   = ttsChars  * r.getTtsPerMillionCharsUsd() / 1_000_000.0;
         double llm   = llmIn     * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
                      + llmOut    * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
-        return asr + trans + tts + llm;
+        double summaryLlm = sumIn  * r.getSummaryLlmInPerMillionTokensUsd() / 1_000_000.0
+                          + sumOut * r.getSummaryLlmOutPerMillionTokensUsd() / 1_000_000.0;
+        return asr + trans + tts + llm + summaryLlm;
     }
 
     private long toLong(Object val) {

@@ -22,12 +22,16 @@ public class CostRatesProperties {
         private double asrPerHourUsd = 1.00;
         /** Azure Translator: price per million characters */
         private double transPerMillionCharsUsd = 10.00;
-        /** Cartesia TTS: price per million characters */
-        private double ttsPerMillionCharsUsd = 1.50;
-        /** LLM input tokens: price per million tokens */
-        private double llmInPerMillionTokensUsd = 0.25;
-        /** LLM output tokens: price per million tokens */
-        private double llmOutPerMillionTokensUsd = 1.25;
+        /** Cartesia TTS: price per million characters (Sonic ~$35/M; cloned voice ~$52/M) */
+        private double ttsPerMillionCharsUsd = 35.00;
+        /** Realtime compression LLM (Claude Haiku 4.5) input: price per million tokens */
+        private double llmInPerMillionTokensUsd = 1.00;
+        /** Realtime compression LLM (Claude Haiku 4.5) output: price per million tokens */
+        private double llmOutPerMillionTokensUsd = 5.00;
+        /** Summary/document LLM (DeepSeek V4 Pro) input: price per million tokens */
+        private double summaryLlmInPerMillionTokensUsd = 1.74;
+        /** Summary/document LLM (DeepSeek V4 Pro) output: price per million tokens */
+        private double summaryLlmOutPerMillionTokensUsd = 3.48;
     }
 
     @Data

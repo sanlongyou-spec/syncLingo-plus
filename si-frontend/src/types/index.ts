@@ -54,6 +54,8 @@ export interface InterpretationStatus {
   ttsChars?: number
   llmInputTokens?: number
   llmOutputTokens?: number
+  llmSummaryInputTokens?: number
+  llmSummaryOutputTokens?: number
   meetingSummary?: string
 }
 
@@ -376,6 +378,8 @@ export interface CostRates {
   ttsPerChar: number
   llmInPerToken: number
   llmOutPerToken: number
+  summaryLlmInPerToken: number
+  summaryLlmOutPerToken: number
   monthlyBudgetUsd: number
   sessionBudgetUsd: number
 }
@@ -388,5 +392,7 @@ export interface MonthlyCostSummary {
   totalTtsChars: number
   totalLlmIn: number
   totalLlmOut: number
+  totalSummaryLlmIn?: number
+  totalSummaryLlmOut?: number
   estimatedCostUsd: number
 }

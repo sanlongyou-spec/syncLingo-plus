@@ -25,5 +25,7 @@ public class InterpretationSessionVo {
     private Long ttsChars;
     private Long llmInputTokens;
     private Long llmOutputTokens;
+    private Long llmSummaryInputTokens;
+    private Long llmSummaryOutputTokens;
     private String meetingSummary;
 }

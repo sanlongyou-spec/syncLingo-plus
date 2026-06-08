@@ -41,6 +41,8 @@ public class InterpretationSessionService {
         addColumnIfMissing("tts_chars", sessionMapper::addTtsCharsColumnIfNotExists);
         addColumnIfMissing("llm_input_tokens", sessionMapper::addLlmInputTokensColumnIfNotExists);
         addColumnIfMissing("llm_output_tokens", sessionMapper::addLlmOutputTokensColumnIfNotExists);
+        addColumnIfMissing("llm_summary_input_tokens", sessionMapper::addLlmSummaryInputTokensColumnIfNotExists);
+        addColumnIfMissing("llm_summary_output_tokens", sessionMapper::addLlmSummaryOutputTokensColumnIfNotExists);
         addColumnIfMissing("title", sessionMapper::addTitleColumnIfNotExists);
         addColumnIfMissing("deleted", sessionMapper::addDeletedColumnIfNotExists);
         addColumnIfMissing("hotword_ids", sessionMapper::addHotwordIdsColumnIfNotExists);
@@ -106,6 +108,8 @@ public class InterpretationSessionService {
         session.setTtsChars(0L);
         session.setLlmInputTokens(0L);
         session.setLlmOutputTokens(0L);
+        session.setLlmSummaryInputTokens(0L);
+        session.setLlmSummaryOutputTokens(0L);
 
         sessionMapper.insert(session);
         activeSessions.put(sessionId, session);
@@ -179,11 +183,15 @@ public class InterpretationSessionService {
         long tts   = s.getTtsChars() != null ? s.getTtsChars() : 0L;
         long llmIn = s.getLlmInputTokens() != null ? s.getLlmInputTokens() : 0L;
         long llmOut = s.getLlmOutputTokens() != null ? s.getLlmOutputTokens() : 0L;
+        long sumIn = s.getLlmSummaryInputTokens() != null ? s.getLlmSummaryInputTokens() : 0L;
+        long sumOut = s.getLlmSummaryOutputTokens() != null ? s.getLlmSummaryOutputTokens() : 0L;
         return asrMs  * r.getAsrPerHourUsd() / 3_600_000.0
              + tc     * r.getTransPerMillionCharsUsd() / 1_000_000.0
              + tts    * r.getTtsPerMillionCharsUsd() / 1_000_000.0
              + llmIn  * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
-             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
+             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0
+             + sumIn  * r.getSummaryLlmInPerMillionTokensUsd() / 1_000_000.0
+             + sumOut * r.getSummaryLlmOutPerMillionTokensUsd() / 1_000_000.0;
     }
 
     private double calcCostFromUsageMap(Map<String, Object> row, CostRatesProperties.Rates r) {
@@ -192,11 +200,15 @@ public class InterpretationSessionService {
         long tts    = toLong(row.get("totalTtsChars"));
         long llmIn  = toLong(row.get("totalLlmIn"));
         long llmOut = toLong(row.get("totalLlmOut"));
+        long sumIn  = toLong(row.get("totalSummaryLlmIn"));
+        long sumOut = toLong(row.get("totalSummaryLlmOut"));
         return asrMs  * r.getAsrPerHourUsd() / 3_600_000.0
              + tc     * r.getTransPerMillionCharsUsd() / 1_000_000.0
              + tts    * r.getTtsPerMillionCharsUsd() / 1_000_000.0
              + llmIn  * r.getLlmInPerMillionTokensUsd() / 1_000_000.0
-             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0;
+             + llmOut * r.getLlmOutPerMillionTokensUsd() / 1_000_000.0
+             + sumIn  * r.getSummaryLlmInPerMillionTokensUsd() / 1_000_000.0
+             + sumOut * r.getSummaryLlmOutPerMillionTokensUsd() / 1_000_000.0;
     }
 
     private long toLong(Object val) {
@@ -363,6 +375,18 @@ public class InterpretationSessionService {
         if (session != null) {
             session.setLlmInputTokens((session.getLlmInputTokens() != null ? session.getLlmInputTokens() : 0) + Math.max(inputDelta, 0));
             session.setLlmOutputTokens((session.getLlmOutputTokens() != null ? session.getLlmOutputTokens() : 0) + Math.max(outputDelta, 0));
+        }
+    }
+
+    /** Summary/document LLM tokens (DeepSeek) — billed separately from realtime compression (Haiku). */
+    public void addSummaryLlmTokens(String sessionId, long inputDelta, long outputDelta) {
+        log.debug("[InterpretationSessionService] addSummaryLlmTokens, sessionId={}, inputDelta={}, outputDelta={}",
+                sessionId, inputDelta, outputDelta);
+        sessionMapper.addSummaryLlmTokens(sessionId, Math.max(inputDelta, 0), Math.max(outputDelta, 0));
+        InterpretationSession session = activeSessions.get(sessionId);
+        if (session != null) {
+            session.setLlmSummaryInputTokens((session.getLlmSummaryInputTokens() != null ? session.getLlmSummaryInputTokens() : 0) + Math.max(inputDelta, 0));
+            session.setLlmSummaryOutputTokens((session.getLlmSummaryOutputTokens() != null ? session.getLlmSummaryOutputTokens() : 0) + Math.max(outputDelta, 0));
         }
     }
 
