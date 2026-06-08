@@ -161,8 +161,8 @@ cartesia:
     sample-rate: 24000
     container: raw
   pool:
-    max-total-per-voice: 20
-    min-idle-per-voice: 2
+    max-total-per-voice: 4    # 全局共用池：TTS 并发上限（贴合 Cartesia 账户 5 并发，留 1 余量）
+    min-idle-per-voice: 0     # 不常驻空闲连接（连接合成完即关，避免空占并发额度）
     max-wait-millis: 5000
 
 

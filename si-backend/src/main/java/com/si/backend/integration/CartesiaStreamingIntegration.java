@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class CartesiaStreamingIntegration {
 
+    /** 全局共用连接池的 key（音色每句指定，连接不绑音色，所以只需一个池）。 */
+    private static final String SHARED_POOL_KEY = "__cartesia_shared__";
+
     private final CartesiaProperties properties;
     private final ObjectMapper objectMapper;
     private final Map<String, GenericObjectPool<CartesiaWsClient>> voicePools = new ConcurrentHashMap<>();
@@ -59,7 +62,7 @@ public class CartesiaStreamingIntegration {
         log.info("[CartesiaStreamingIntegration] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}",
                 voiceId, text != null ? text.length() : 0, sampleRate, speed);
 
-        GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool(voiceId);
+        GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool();
 
         CartesiaWsClient borrowedClient = null;
         try {
@@ -123,7 +126,7 @@ public class CartesiaStreamingIntegration {
      */
     public void prewarmPool(String voiceId, int count) {
         log.info("[CartesiaStreamingIntegration] prewarmPool start, voiceId={}, count={}", voiceId, count);
-        GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool(voiceId);
+        GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool();
         int warmed = 0;
         for (int i = 0; i < count; i++) {
             CartesiaWsClient client = null;
@@ -141,22 +144,23 @@ public class CartesiaStreamingIntegration {
     }
 
     /**
-     * 按音色 ID 获取或创建连接池。
+     * 获取/创建<b>全局共用</b>的连接池。
+     * <p>音色不绑定连接：每次合成时按 {@link CartesiaWsClient#setVoiceId} 即时指定，请求体里带 voice。
+     * 所以无需按音色分池——单个共用池的上限就是<b>全局 TTS 并发上限</b>，正好贴合 Cartesia 账户额度，
+     * 避免"音色越多、连接越多"撑爆并发。
      */
-    private GenericObjectPool<CartesiaWsClient> getOrCreatePool(String voiceId) {
-        return voicePools.computeIfAbsent(voiceId, id -> {
-            log.info("[CartesiaStreamingIntegration] creating new pool, voiceId={}", id);
-
+    private GenericObjectPool<CartesiaWsClient> getOrCreatePool() {
+        return voicePools.computeIfAbsent(SHARED_POOL_KEY, id -> {
             GenericObjectPoolConfig<CartesiaWsClient> config = new GenericObjectPoolConfig<>();
-            config.setMaxTotal(properties.getPool().getMaxTotalPerVoice());
+            config.setMaxTotal(properties.getPool().getMaxTotalPerVoice());   // 现为全局并发上限
             config.setMinIdle(properties.getPool().getMinIdlePerVoice());
             config.setMaxWait(java.time.Duration.ofMillis(properties.getPool().getMaxWaitMillis()));
 
             CartesiaPooledObjectFactory factory = new CartesiaPooledObjectFactory(properties, objectMapper);
             GenericObjectPool<CartesiaWsClient> pool = new GenericObjectPool<>(factory, config);
 
-            log.info("[CartesiaStreamingIntegration] pool created, voiceId={}, maxTotal={}, minIdle={}",
-                    id, config.getMaxTotal(), config.getMinIdle());
+            log.info("[CartesiaStreamingIntegration] shared TTS pool created, maxTotal={}, minIdle={}",
+                    config.getMaxTotal(), config.getMinIdle());
             return pool;
         });
     }
@@ -222,6 +226,13 @@ public class CartesiaStreamingIntegration {
         private okhttp3.WebSocket webSocket;
         private volatile boolean open = false;
 
+        // 当前在途生成的回调与待发负载（连接池保证一个 client 同时只服务一次合成，故单组即可）。
+        private volatile java.util.function.Consumer<byte[]> curOnChunk;
+        private volatile Runnable curOnComplete;
+        private volatile java.util.function.Consumer<String> curOnError;
+        private volatile String pendingPayload;
+        private volatile boolean generationActive = false;
+
         public CartesiaWsClient(CartesiaProperties properties, ObjectMapper objectMapper) {
             this.properties = properties;
             this.objectMapper = objectMapper;
@@ -231,6 +242,11 @@ public class CartesiaStreamingIntegration {
             this.voiceId = voiceId;
         }
 
+        /**
+         * 流式合成。<b>复用长连接</b>（Cartesia 官方推荐：一条连接用多个 context 连续多次生成）：
+         * 连接已开就直接在老连接上发新请求（新 context_id）；否则新建连接并在 onOpen 时发送。
+         * 合成完成<b>不关连接</b>，留给下次复用，省掉每句的 TCP/TLS/WS 握手延迟。
+         */
         public void streamSynthesize(
                 String text,
                 int sampleRate,
@@ -239,7 +255,32 @@ public class CartesiaStreamingIntegration {
                 Runnable onComplete,
                 java.util.function.Consumer<String> onError
         ) {
-            // 仅持锁期间交换 WebSocket 引用，避免锁持有期间执行 I/O
+            this.curOnChunk = onChunk;
+            this.curOnComplete = onComplete;
+            this.curOnError = onError;
+            this.generationActive = true;
+
+            String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
+            String contextId = java.util.UUID.randomUUID().toString();
+            String payload = toJson(buildTtsRequest(text, sampleRate, speed, currentVoiceId, contextId));
+
+            okhttp3.WebSocket ws = this.webSocket;
+            boolean reused = open && ws != null && safeSend(ws, payload);
+            if (!reused) {
+                openAndSend(payload);
+            }
+        }
+
+        private boolean safeSend(okhttp3.WebSocket ws, String payload) {
+            try {
+                return ws.send(payload);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /** 新建（或重建）连接，onOpen 后发送待发负载。 */
+        private void openAndSend(String payload) {
             okhttp3.WebSocket oldWebSocket;
             synchronized (this) {
                 oldWebSocket = this.webSocket;
@@ -247,10 +288,13 @@ public class CartesiaStreamingIntegration {
                 this.open = false;
             }
             if (oldWebSocket != null) {
-                oldWebSocket.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_REUSE);
+                try {
+                    oldWebSocket.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_REUSE);
+                } catch (Exception ignored) {
+                    // 忽略旧连接关闭异常
+                }
             }
-
-            String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
+            this.pendingPayload = payload;
 
             okhttp3.Request request = new okhttp3.Request.Builder()
                     .url(properties.getApiUrl() + "/tts/websocket")
@@ -259,69 +303,26 @@ public class CartesiaStreamingIntegration {
                     .build();
 
             okhttp3.WebSocket newWebSocket = WS_HTTP_CLIENT.newWebSocket(request, new okhttp3.WebSocketListener() {
-
                 @Override
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
                     open = true;
-                    log.info("[CartesiaWsClient] WebSocket opened, voiceId={}", currentVoiceId);
-
-                    String contextId = java.util.UUID.randomUUID().toString();
-                    Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
-                    ttsMsg.put(Constants.CARTESIA_FIELD_TYPE, Constants.CARTESIA_MSG_TYPE_TTS_REQUEST);
-                    ttsMsg.put(Constants.CARTESIA_FIELD_MODEL_ID, properties.getTts().getModelId());
-                    ttsMsg.put(Constants.CARTESIA_FIELD_TRANSCRIPT, text);
-                    ttsMsg.put(Constants.CARTESIA_FIELD_VOICE, java.util.Map.of("id", currentVoiceId));
-                    ttsMsg.put(Constants.CARTESIA_FIELD_OUTPUT_FORMAT, java.util.Map.of(
-                            Constants.CARTESIA_FIELD_CONTAINER, Constants.CARTESIA_CONTAINER,
-                            Constants.CARTESIA_FIELD_ENCODING, Constants.CARTESIA_ENCODING_PCM_S16LE,
-                            Constants.CARTESIA_FIELD_SAMPLE_RATE, sampleRate
-                    ));
-                    ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
-                    ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
-                    ttsMsg.put(Constants.CARTESIA_FIELD_CONTINUE, false);
-                    ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, Constants.CARTESIA_CUSTOM_BUFFER_DELAY_MS);
-                    ws.send(toJson(ttsMsg));
+                    String p = pendingPayload;
+                    pendingPayload = null;
+                    if (p != null) {
+                        ws.send(p);
+                    }
                 }
 
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, String msg) {
-                    try {
-                        JsonNode node = objectMapper.readTree(msg);
-                        String type = node.path(Constants.CARTESIA_FIELD_TYPE).asText();
-                        switch (type) {
-                            case Constants.CARTESIA_MSG_TYPE_CHUNK -> {
-                                String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
-                                if (!audioData.isBlank()) {
-                                    byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
-                                    log.info("[CartesiaWsClient] chunk received, contextId={}, bytes={}",
-                                            node.path(Constants.CARTESIA_FIELD_CONTEXT_ID).asText(), pcm.length);
-                                    onChunk.accept(pcm);
-                                }
-                            }
-                            case Constants.CARTESIA_MSG_TYPE_DONE -> {
-                                log.info("[CartesiaWsClient] TTS synthesis done");
-                                onComplete.run();
-                                ws.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_DONE);
-                            }
-                            case Constants.CARTESIA_MSG_TYPE_FLUSH_DONE -> log.debug("[CartesiaWsClient] flush done");
-                            case Constants.CARTESIA_MSG_TYPE_ERROR -> {
-                                String errMsg = node.path(Constants.CARTESIA_FIELD_MESSAGE).asText(Constants.TTS_ERROR_UNKNOWN);
-                                log.error("[CartesiaWsClient] TTS error: {}", errMsg);
-                                onError.accept(errMsg);
-                                ws.close(Constants.CARTESIA_CLOSE_SERVER_ERROR, Constants.CARTESIA_CLOSE_REASON_REUSE);
-                            }
-                            default -> log.warn("[CartesiaWsClient] unknown message type={}", type);
-                        }
-                    } catch (Exception e) {
-                        log.warn("[CartesiaWsClient] failed to parse message: {}", e.getMessage());
-                    }
+                    handleTextMessage(ws, msg);
                 }
 
                 // 二进制帧：Cartesia 部分版本直接发原始 PCM 而非 base64 JSON
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
-                    log.info("[CartesiaWsClient] binary frame received, bytes={}", bytes.size());
-                    onChunk.accept(bytes.toByteArray());
+                    java.util.function.Consumer<byte[]> cb = curOnChunk;
+                    if (cb != null) cb.accept(bytes.toByteArray());
                 }
 
                 @Override
@@ -329,22 +330,91 @@ public class CartesiaStreamingIntegration {
                     open = false;
                     String errMsg = t != null ? t.getMessage() : Constants.TTS_ERROR_UNKNOWN;
                     log.error("[CartesiaWsClient] WebSocket failure, error={}", errMsg, t);
-                    onError.accept(errMsg);
+                    completeOnce(false, errMsg);
                 }
 
                 @Override
                 public void onClosed(okhttp3.WebSocket ws, int code, String reason) {
                     open = false;
-                    if (code == Constants.CARTESIA_CLOSE_NORMAL) {
-                        log.info("[CartesiaWsClient] WebSocket closed, code={}, reason={}", code, reason);
-                    } else {
-                        log.warn("[CartesiaWsClient] WebSocket closed, code={}, reason={}", code, reason);
-                    }
+                    // 若连接在生成途中被关（如服务端超时），也要兜底回调，避免借出的连接永不归还。
+                    completeOnce(false, "WebSocket closed: " + reason);
                 }
             });
             synchronized (this) {
                 this.webSocket = newWebSocket;
             }
+        }
+
+        /** 处理文本帧，分发给当前在途生成的回调。DONE 不关连接（留作复用），ERROR 才关。 */
+        private void handleTextMessage(okhttp3.WebSocket ws, String msg) {
+            try {
+                JsonNode node = objectMapper.readTree(msg);
+                String type = node.path(Constants.CARTESIA_FIELD_TYPE).asText();
+                switch (type) {
+                    case Constants.CARTESIA_MSG_TYPE_CHUNK -> {
+                        String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
+                        if (!audioData.isBlank()) {
+                            byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
+                            java.util.function.Consumer<byte[]> cb = curOnChunk;
+                            if (cb != null) cb.accept(pcm);
+                        }
+                    }
+                    case Constants.CARTESIA_MSG_TYPE_DONE ->
+                        // 不关连接：保留长连接给下一句复用（Cartesia 推荐）。
+                        completeOnce(true, null);
+                    case Constants.CARTESIA_MSG_TYPE_FLUSH_DONE -> log.debug("[CartesiaWsClient] flush done");
+                    case Constants.CARTESIA_MSG_TYPE_ERROR -> {
+                        String errMsg = node.path(Constants.CARTESIA_FIELD_MESSAGE).asText(Constants.TTS_ERROR_UNKNOWN);
+                        log.error("[CartesiaWsClient] TTS error: {}", errMsg);
+                        synchronized (this) { open = false; this.webSocket = null; }
+                        try {
+                            ws.close(Constants.CARTESIA_CLOSE_SERVER_ERROR, Constants.CARTESIA_CLOSE_REASON_REUSE);
+                        } catch (Exception ignored) {
+                            // 忽略关闭异常
+                        }
+                        completeOnce(false, errMsg);
+                    }
+                    default -> log.warn("[CartesiaWsClient] unknown message type={}", type);
+                }
+            } catch (Exception e) {
+                log.warn("[CartesiaWsClient] failed to parse message: {}", e.getMessage());
+            }
+        }
+
+        /** 终态回调恰好触发一次（DONE→onComplete，其余→onError），避免重复归还或漏归还连接池连接。 */
+        private void completeOnce(boolean success, String err) {
+            boolean fire;
+            synchronized (this) {
+                fire = generationActive;
+                generationActive = false;
+            }
+            if (!fire) return;
+            if (success) {
+                Runnable cb = curOnComplete;
+                if (cb != null) cb.run();
+            } else {
+                java.util.function.Consumer<String> cb = curOnError;
+                if (cb != null) cb.accept(err);
+            }
+        }
+
+        private Map<String, Object> buildTtsRequest(String text, int sampleRate, double speed,
+                                                    String currentVoiceId, String contextId) {
+            Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
+            ttsMsg.put(Constants.CARTESIA_FIELD_TYPE, Constants.CARTESIA_MSG_TYPE_TTS_REQUEST);
+            ttsMsg.put(Constants.CARTESIA_FIELD_MODEL_ID, properties.getTts().getModelId());
+            ttsMsg.put(Constants.CARTESIA_FIELD_TRANSCRIPT, text);
+            ttsMsg.put(Constants.CARTESIA_FIELD_VOICE, java.util.Map.of("id", currentVoiceId));
+            ttsMsg.put(Constants.CARTESIA_FIELD_OUTPUT_FORMAT, java.util.Map.of(
+                    Constants.CARTESIA_FIELD_CONTAINER, Constants.CARTESIA_CONTAINER,
+                    Constants.CARTESIA_FIELD_ENCODING, Constants.CARTESIA_ENCODING_PCM_S16LE,
+                    Constants.CARTESIA_FIELD_SAMPLE_RATE, sampleRate
+            ));
+            ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
+            ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
+            ttsMsg.put(Constants.CARTESIA_FIELD_CONTINUE, false);
+            ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, Constants.CARTESIA_CUSTOM_BUFFER_DELAY_MS);
+            return ttsMsg;
         }
 
         private String toJson(Map<String, Object> map) {

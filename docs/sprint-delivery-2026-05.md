@@ -1111,6 +1111,42 @@ python tests/api_test.py --base-url http://localhost:8080 --user-id 1
 
 ---
 
+## 十六、声纹识别准确率 + 音色克隆并发优化（2026-06-07/08，基于日志诊断 + Cartesia 官方文档）
+
+### 16.1 声纹识别准确率（5 项 + 修复）
+诊断：识别老是 `identified=false`（真匹配 0.28 被拒），偶发误判（Guest-4 以 0.416 误判成杨斌总）——根因是**注册样本太少（每人 1 条）+ 注册音频被串音污染**。改动：
+- **多样本注册**：绑定时把累计音频切成 ~10s/条（最多 4 条）逐条注册，`enrollSamplesByPersonName(personName, fullPcm, lang)` 内部切分；切分逻辑有单测 `SpeakerEnrollChunkingTest`（5 测试）。
+- **修复路径冲突**：原手动绑定走单样本 `enrollSpeakerProfile` 抢先设 `speakerProfileId`，把后面的多样本路径顶掉（实测只落 1 条）→ 两条入口（`InterpretationFacade` / `SessionSpeakerVoiceService`）统一走多样本。
+- **跨会议追加**：去掉"已注册就跳过"守卫，后续会议再绑同名的人**追加样本**；speaker-service 端 `SPEAKER_MAX_EMBEDDINGS=20` 上限保护（超出丢最旧）。
+- **注册音频加长**：`ENROLL 20→30s`、`MAX 30→45s`。
+- **识别窗口解耦**：`SPEAKER_VOICE_RECENT_AUDIO_SECONDS`（每轮归集块）与新增 `SPEAKER_VOICE_IDENTIFY_WINDOW_SECONDS=12`（识别窗口）拆开——之前一个常量两用，调大会加重归集重叠/串音。
+- **speaker-service**：`apply_vad`（webrtcvad）注册/识别前去静音；`best_score_for_speaker` 改为**质心 vs 单样本取大**；identify 加 **AS-norm z 归一化**（候选≥3 时拒"对所有人都像"的模糊匹配）。`requirements.txt` 加 `webrtcvad`。
+
+### 16.2 声纹删除加固
+音色克隆页"删除"原本是 best-effort：名字原始拼进 URL + 忽略返回值，中文名/归一化不一致时**删不掉还不报错**。改：`deleteEnrollment` 用 `HttpUrl.addPathSegment` 正确编码 + 记日志；`deleteIdentity` 打印 `embeddingRemoved=true/false`。
+
+### 16.3 克隆绑定 UI 同步修复
+克隆完成走 `bindCartesiaVoiceDirect` 时只更新持久 SpeakerIdentity、**没同步内存会话映射**，导致音色克隆页一直显示"克隆完成后自动绑定"（其实已绑定、TTS 正常用）。已让该方法同步刷新 `sessionIdentityMap`。
+
+### 16.4 TTS 并发 / 音色克隆（基于 Cartesia 官方文档）
+邮件提示账户并发 5。查官方文档纠正认知：**"并发"=同时生成数**（≠连接数），可开连接 = 并发×10、对话 ≈ 并发×4，**一条连接可用多个 context 连续多次生成**，空闲 5 分钟才关，建议连接池。原设计**按音色分池 + 每句关连接重建**，音色一多就撞限/高延迟。改动（[CartesiaStreamingIntegration](../si-backend/src/main/java/com/si/backend/integration/CartesiaStreamingIntegration.java)）：
+- **共用连接池**（不再每音色一个池）：音色每句用 `setVoiceId` 指定，连接不绑音色；`max-total-per-voice: 20→4`（限 4，全局并发上限）、`min-idle: 2→0`。
+- **长连接复用**：DONE 后**不关连接**，下一句在老连接上发新请求（新 context_id），省每句 TCP/TLS/WS 握手延迟；连接断了才重连。
+- **终态守卫** `completeOnce`：DONE/ERROR/onFailure/onClosed 恰好回调一次，避免连接途中被关时借出的池连接不归还（防"池耗尽"）。
+- **每人克隆复用**：克隆前查该人是否已有绑定音色，有则复用、不再 `createVoice`（控制 Cartesia 账户音色总数）。
+
+### 16.5 测试结果（2026-06-08）
+- 后端 `mvn -o test`：**BUILD SUCCESS，71 测试全过**（新增 `SpeakerEnrollChunkingTest` 5）。
+- speaker-service `python -m py_compile` 通过。
+- ⚠️ **WS 复用 / 并发≤4 / 低延迟属集成行为，需真实 Cartesia + 真实会议压测**（单测不覆盖）。
+
+**部署**：后端重建 Docker；**speaker-service `pip install webrtcvad` 并重启**（未装则自动降级为不做 VAD）；建议清掉旧的 1 条/人脏声纹会前重注册；`SPEAKER_SERVICE_MIN_SCORE` 建议 0.4→0.45 防误判。验收清单见会话记录（连接不再每句重建、`active` ≤4、无 Cartesia 超限、延迟下降、`reuse existing clone`）。
+
+### 16.6 关联文档
+- `docs/teams-interpreter-automation-plan.md`：Teams 口译账号自动化方案（内置 Teams 网页窗口 / 持久登录 / 实时媒体 Bot 等，待实现）。
+
+---
+
 ## 五、已知限制与后续优化方向
 
 | 项目 | 当前状态 | 建议后续 |

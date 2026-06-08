@@ -203,9 +203,16 @@ public class SessionSpeakerVoiceService {
         final String lang = normalizeCloneLang(sourceLang);
         CompletableFuture.runAsync(() -> {
             try {
-                byte[] wavSample = wrapPcmAsWav(pcmSample);
-                String voiceName = "session-" + sessionId.substring(0, Math.min(8, sessionId.length())) + "-" + speakerId;
-                String voiceId = cartesiaTtsIntegration.createVoice(wavSample, voiceName, lang);
+                // 复用已有克隆：若该人此前已克隆过音色，直接复用，避免在 Cartesia 账户里重复建音色（撞音色数量上限）。
+                String voiceId = personName != null && !personName.isBlank()
+                        ? existingCartesiaVoiceId(personName) : null;
+                if (voiceId != null) {
+                    log.info("[SessionSpeakerVoiceService] reuse existing clone, personName={}, voiceId={}", personName, voiceId);
+                } else {
+                    byte[] wavSample = wrapPcmAsWav(pcmSample);
+                    String voiceName = "session-" + sessionId.substring(0, Math.min(8, sessionId.length())) + "-" + speakerId;
+                    voiceId = cartesiaTtsIntegration.createVoice(wavSample, voiceName, lang);
+                }
                 SessionSpeakerVoice ready = new SessionSpeakerVoice();
                 ready.setSessionId(sessionId);
                 ready.setSpeakerId(speakerId);
@@ -248,7 +255,7 @@ public class SessionSpeakerVoiceService {
         final String lang = normalizeCloneLang(sourceLang);
         CompletableFuture.runAsync(() -> {
             try {
-                speakerIdentityService.enrollByPersonName(personName, pcmSample, lang);
+                speakerIdentityService.enrollSamplesByPersonName(personName, pcmSample, lang);
                 log.info("[SessionSpeakerVoiceService] auto-enrolled speaker from session audio, " +
                         "sessionId={}, speakerId={}, personName={}, audioSeconds={}",
                         sessionId, speakerId, personName, bytesToSeconds(pcmSample.length));
@@ -268,6 +275,19 @@ public class SessionSpeakerVoiceService {
 
     private String buildSpeakerKey(String sessionId, String speakerId) {
         return sessionId + ":" + speakerId;
+    }
+
+    /** 该人此前已克隆并绑定的 Cartesia 音色 id（无则 null）——用于跨会议复用，不重复建音色。 */
+    private String existingCartesiaVoiceId(String personName) {
+        try {
+            com.si.backend.vo.SpeakerIdentityVo idv = speakerIdentityService.findIdentityByName(personName.trim());
+            return idv != null && idv.getCartesiaVoiceId() != null && !idv.getCartesiaVoiceId().isBlank()
+                    ? idv.getCartesiaVoiceId() : null;
+        } catch (Exception e) {
+            log.warn("[SessionSpeakerVoiceService] existingCartesiaVoiceId lookup failed, personName={}: {}",
+                    personName, e.getMessage());
+            return null;
+        }
     }
 
     private String normalizeCloneLang(String sourceLang) {

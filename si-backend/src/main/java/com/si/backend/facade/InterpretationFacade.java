@@ -196,16 +196,17 @@ public class InterpretationFacade {
         if (speakerPcm.length >= minEnrollBytes) {
             SpeakerIdentityVo identityRecord =
                     speakerIdentityService.findIdentityByName(personName.trim());
-            if (identityRecord != null && identityRecord.getId() != null
-                    && (identityRecord.getSpeakerProfileId() == null
-                        || identityRecord.getSpeakerProfileId().isBlank())) {
+            // 即使该人已注册过，也允许再绑定时追加样本（speaker-service 端有上限保护），
+            // 让声纹随会议累积、越来越准。
+            if (identityRecord != null && identityRecord.getId() != null) {
                 String locale = readyVoice != null ? readyVoice.getLanguage() : "zh";
-                final Long identityId = identityRecord.getId();
                 final byte[] pcmSnapshot = speakerPcm;
                 final String finalLocale = locale;
+                final String finalPersonName = personName.trim();
                 CompletableFuture.runAsync(() -> {
                     try {
-                        speakerIdentityService.enrollSpeakerProfile(identityId, pcmSnapshot, finalLocale);
+                        // 多样本注册（切分累计音频），与会中自动注册同一逻辑，避免单样本顶掉多样本。
+                        speakerIdentityService.enrollSamplesByPersonName(finalPersonName, pcmSnapshot, finalLocale);
                         log.info("[InterpretationFacade] auto-enrolled speaker from session audio, " +
                                 "sessionId={}, speakerId={}, personName={}, bytes={}",
                                 sessionId, speakerId, personName, pcmSnapshot.length);

@@ -568,7 +568,7 @@ public class RealtimeInterpretationFacade {
 
     private byte[] resolveSpeakerIdentityPcm(String sessionId, String speakerId) {
         if (isUnknownSpeakerId(speakerId)) {
-            return sessionSpeakerVoiceService.getRecentSessionPcm(sessionId, Constants.SPEAKER_VOICE_RECENT_AUDIO_SECONDS);
+            return sessionSpeakerVoiceService.getRecentSessionPcm(sessionId, Constants.SPEAKER_VOICE_IDENTIFY_WINDOW_SECONDS);
         }
         return sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId);
     }

@@ -44,8 +44,22 @@ log = logging.getLogger("speaker-service")
 
 EMBEDDINGS_FILE = Path(os.environ.get("EMBEDDINGS_FILE", "embeddings.json"))
 MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.4"))
+# Z-norm 门槛：最佳分数相对其他候选人（impostor cohort）的标准分，越高越严格；
+# 只在候选≥3 人时生效，仅用于"拒掉对所有人都像"的模糊匹配，默认偏宽松。
+ZNORM_MIN = float(os.environ.get("SPEAKER_ZNORM_MIN", "0.8"))
+# 每个人最多保留多少条声纹样本（跨会议追加，超出则丢最旧、保留最新，避免无限增长/漂移）
+MAX_EMBEDDINGS_PER_SPEAKER = int(os.environ.get("SPEAKER_MAX_EMBEDDINGS", "20"))
 MODEL_SOURCE = os.environ.get("SPEAKER_MODEL_SOURCE", "speechbrain/spkrec-ecapa-voxceleb")
 MODEL_SAVEDIR = os.environ.get("SPEAKER_MODEL_SAVEDIR", "pretrained_models/spkrec-ecapa-voxceleb")
+
+# ── VAD（去静音/非语音帧；webrtcvad 不可用时整体降级为不过滤）──────────────
+VAD_AGGRESSIVENESS = int(os.environ.get("SPEAKER_VAD_AGGRESSIVENESS", "2"))  # 0~3，越大越激进
+VAD_MIN_SPEECH_SEC = float(os.environ.get("SPEAKER_VAD_MIN_SPEECH_SEC", "1.0"))
+try:
+    import webrtcvad  # type: ignore
+    _vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+except Exception as _vad_err:  # noqa: BLE001
+    _vad = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -111,6 +125,29 @@ def wav_bytes_to_tensor(wav_bytes: bytes) -> torch.Tensor:
     return waveform
 
 
+def apply_vad(waveform: torch.Tensor) -> torch.Tensor:
+    """保留语音帧、去掉静音/非语音（16kHz mono）。VAD 不可用或语音太少时回退原始音频。"""
+    if _vad is None:
+        return waveform
+    samples = waveform.squeeze(0).cpu().numpy()
+    int16 = np.clip(samples * 32768.0, -32768, 32767).astype(np.int16)
+    frame_len = 480  # 30ms @ 16kHz
+    kept_frames = []
+    for start in range(0, len(int16) - frame_len + 1, frame_len):
+        frame = int16[start:start + frame_len]
+        try:
+            if _vad.is_speech(frame.tobytes(), 16000):
+                kept_frames.append(frame)
+        except Exception:  # noqa: BLE001
+            kept_frames.append(frame)  # VAD 出错就保留该帧
+    if not kept_frames:
+        return waveform
+    kept = np.concatenate(kept_frames).astype(np.float32) / 32768.0
+    if len(kept) < VAD_MIN_SPEECH_SEC * 16000:
+        return waveform  # 语音太少（如全是噪声/回灌），用原始音频更稳
+    return torch.from_numpy(kept).unsqueeze(0)
+
+
 def get_embedding(wav_tensor: torch.Tensor) -> np.ndarray:
     with torch.no_grad():
         emb = model.encode_batch(wav_tensor)
@@ -126,9 +163,21 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 
+def _centroid(stored_embeddings: list[list[float]]) -> np.ndarray:
+    """L2 归一化的平均嵌入（质心）：多样本去噪，比单条更稳。"""
+    arr = np.array(stored_embeddings, dtype=np.float32)
+    mean = arr.mean(axis=0)
+    norm = np.linalg.norm(mean)
+    return mean / norm if norm > 0 else mean
+
+
 def best_score_for_speaker(query_emb: np.ndarray, stored_embeddings: list[list[float]]) -> float:
-    scores = [cosine_similarity(query_emb, np.array(e)) for e in stored_embeddings]
-    return max(scores) if scores else 0.0
+    """质心相似度与单样本最高相似度取较大者：多样本时更准，单样本时不退化。"""
+    if not stored_embeddings:
+        return 0.0
+    best_single = max(cosine_similarity(query_emb, np.array(e)) for e in stored_embeddings)
+    centroid_score = cosine_similarity(query_emb, _centroid(stored_embeddings))
+    return max(best_single, centroid_score)
 
 
 
@@ -167,11 +216,15 @@ async def enroll(req: EnrollRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid audio: {e}")
 
+    wav_tensor = apply_vad(wav_tensor)  # 去静音/非语音，注册嵌入更干净
     emb = get_embedding(wav_tensor)
     name = req.name.strip()
     if name not in embedding_store:
         embedding_store[name] = []
     embedding_store[name].append(emb.tolist())
+    # 跨会议追加：超出上限则保留最新 N 条（丢最旧）。
+    if len(embedding_store[name]) > MAX_EMBEDDINGS_PER_SPEAKER:
+        embedding_store[name] = embedding_store[name][-MAX_EMBEDDINGS_PER_SPEAKER:]
     save_embeddings()
     log.info("Enrolled speaker '%s', total enrollments: %d", name, len(embedding_store[name]))
     return EnrollResponse(name=name, enrollment_count=len(embedding_store[name]))
@@ -189,6 +242,7 @@ async def identify(req: IdentifyRequest):
     if not embedding_store:
         return IdentifyResponse(name=None, score=0.0, identified=False)
 
+    wav_tensor = apply_vad(wav_tensor)  # 去静音/非语音，识别更稳
     query_emb = get_embedding(wav_tensor)
     candidates = req.candidates if req.candidates else list(embedding_store.keys())
 
@@ -207,6 +261,17 @@ async def identify(req: IdentifyRequest):
     margin = best_score - second_score if len(scored) > 1 else best_score
 
     identified = best_score >= MIN_SCORE
+    # 分数归一化（AS-norm 简版）：候选≥3 人时，看最佳分相对其余候选的标准分，
+    # 拒掉"对所有人都像"的模糊匹配（best 不够突出）。
+    if identified and len(scored) >= 3:
+        others = np.array([s for _, s in scored[1:]], dtype=np.float32)
+        mu = float(others.mean())
+        sigma = float(others.std()) + 1e-6
+        znorm = (best_score - mu) / sigma
+        if znorm < ZNORM_MIN:
+            identified = False
+            log.info("Rejected by z-norm, best='%s' score=%.4f z=%.4f < %.4f",
+                     best_name, best_score, znorm, ZNORM_MIN)
     if identified:
         log.info("Identified speaker '%s' score=%.4f (runner-up '%s' %.4f, margin %.4f)",
                  best_name, best_score, second_name, second_score, margin)

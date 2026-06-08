@@ -144,11 +144,21 @@ public class SpeakerServiceIntegration {
     public boolean deleteEnrollment(String name) {
         if (!isEnabled()) return false;
         try {
-            Request request = new Request.Builder()
-                    .url(baseUrl() + "/enroll/" + name)
-                    .delete()
-                    .build();
+            okhttp3.HttpUrl base = okhttp3.HttpUrl.parse(baseUrl());
+            if (base == null) {
+                log.warn("[SpeakerServiceIntegration] deleteEnrollment bad baseUrl, name={}", name);
+                return false;
+            }
+            // addPathSegment 对中文/特殊字符做正确的百分号编码（避免原始拼接导致名字对不上、删不掉）。
+            okhttp3.HttpUrl url = base.newBuilder().addPathSegment("enroll").addPathSegment(name).build();
+            Request request = new Request.Builder().url(url).delete().build();
             try (Response response = httpClient.newCall(request).execute()) {
+                if (response.isSuccessful()) {
+                    log.info("[SpeakerServiceIntegration] deleteEnrollment ok, name={}", name);
+                } else {
+                    log.warn("[SpeakerServiceIntegration] deleteEnrollment HTTP {}, name={}（声纹可能未删除）",
+                            response.code(), name);
+                }
                 return response.isSuccessful();
             }
         } catch (Exception e) {

@@ -136,10 +136,12 @@ public class SpeakerIdentityService {
         log.info("[SpeakerIdentityService] deleteIdentity start, id={}", id);
         SpeakerIdentity identity = mapper.findById(id);
         mapper.deleteById(id);
+        boolean embeddingRemoved = false;
         if (identity != null && identity.getPersonName() != null) {
-            speakerServiceIntegration.deleteEnrollment(identity.getPersonName());
+            embeddingRemoved = speakerServiceIntegration.deleteEnrollment(identity.getPersonName());
         }
-        log.info("[SpeakerIdentityService] deleteIdentity end, id={}", id);
+        log.info("[SpeakerIdentityService] deleteIdentity end, id={}, personName={}, embeddingRemoved={}",
+                id, identity != null ? identity.getPersonName() : null, embeddingRemoved);
     }
 
     /** Auto-enrolls a speaker into the Pyannote service using raw PCM audio from the current session. */
@@ -360,6 +362,15 @@ public class SpeakerIdentityService {
             mapper.updateVoiceIfBlank(identity);
             log.info("[SpeakerIdentityService] cartesia voice bound directly, personName={}, voiceId={}", personName, cartesiaVoiceId);
         }
+        // 同步内存中的会话映射，否则前端会话列表会一直显示"克隆完成后自动绑定"（声音其实已绑定）。
+        String norm = normalize(personName);
+        for (SessionSpeakerIdentity mapping : sessionIdentityMap.values()) {
+            if (mapping.getPersonName() != null
+                    && norm.equals(normalize(mapping.getPersonName()))
+                    && (mapping.getCartesiaVoiceId() == null || mapping.getCartesiaVoiceId().isBlank())) {
+                mapping.setCartesiaVoiceId(cartesiaVoiceId);
+            }
+        }
     }
 
     public void enrollByPersonName(String personName, byte[] pcmBytes, String language) {
@@ -375,6 +386,67 @@ public class SpeakerIdentityService {
             return;
         }
         enrollSpeakerProfile(identity.getId(), pcmBytes, language);
+    }
+
+    /**
+     * Enroll a person from accumulated PCM by splitting it into multiple samples (multi-sample →
+     * 更稳的质心、更准的识别）。只在该人尚未注册过时执行（profileId 守卫，避免两条路径重复注册）。
+     * 两条入口（手动绑定 InterpretationFacade / 会中自动 SessionSpeakerVoiceService）都走这里，统一切分。
+     */
+    public void enrollSamplesByPersonName(String personName, byte[] fullPcm, String language) {
+        if (personName == null || personName.isBlank() || fullPcm == null || fullPcm.length == 0) {
+            return;
+        }
+        SpeakerIdentity identity = mapper.findByPersonName(normalize(personName));
+        if (identity == null || identity.getId() == null) {
+            return;
+        }
+        if (!speakerServiceIntegration.isEnabled()) {
+            return;
+        }
+        // 不再因"已注册"跳过：后续会议再绑同名的人时追加样本（speaker-service 端有上限保护），
+        // 让声纹随会议累积、越来越准，避免"首次注册后再也认不出"。会话内重复由各入口自身去重。
+        List<byte[]> chunks = splitPcmIntoChunks(fullPcm,
+                Constants.SPEAKER_VOICE_ENROLL_CHUNK_SECONDS, Constants.SPEAKER_VOICE_ENROLL_MAX_CHUNKS);
+        String name = identity.getPersonName();
+        int enrolled = 0;
+        int totalCount = 0;
+        for (byte[] chunk : chunks) {
+            if (chunk == null || chunk.length == 0) continue;
+            int count = speakerServiceIntegration.enroll(name, chunk, true);
+            if (count >= 0) { enrolled++; totalCount = count; }
+        }
+        if (enrolled > 0 && (identity.getSpeakerProfileId() == null || identity.getSpeakerProfileId().isBlank())) {
+            mapper.updateProfileId(identity.getId(), normalize(name));
+        }
+        log.info("[SpeakerIdentityService] enrollSamplesByPersonName done, personName={}, samplesAdded={}, totalEmbeddings={}",
+                name, enrolled, totalCount);
+    }
+
+    /** 把累计 PCM（16kHz mono 16-bit）切成多条 ~chunkSeconds 样本（尾部不足半条则并入上一条）。 */
+    static List<byte[]> splitPcmIntoChunks(byte[] pcm, int chunkSeconds, int maxChunks) {
+        int chunkBytes = Constants.DEFAULT_SAMPLE_RATE_ASR * (Constants.BITS_PER_SAMPLE / 8) * chunkSeconds;
+        if (pcm.length <= chunkBytes) return List.of(pcm);
+        List<byte[]> chunks = new java.util.ArrayList<>();
+        int off = 0;
+        while (off + chunkBytes <= pcm.length && chunks.size() < maxChunks) {
+            chunks.add(java.util.Arrays.copyOfRange(pcm, off, off + chunkBytes));
+            off += chunkBytes;
+        }
+        int remaining = pcm.length - off;
+        if (remaining > 0) {
+            if (remaining >= chunkBytes / 2 && chunks.size() < maxChunks) {
+                chunks.add(java.util.Arrays.copyOfRange(pcm, off, pcm.length));
+            } else if (!chunks.isEmpty()) {
+                int lastIdx = chunks.size() - 1;
+                byte[] last = chunks.get(lastIdx);
+                byte[] merged = new byte[last.length + remaining];
+                System.arraycopy(last, 0, merged, 0, last.length);
+                System.arraycopy(pcm, off, merged, last.length, remaining);
+                chunks.set(lastIdx, merged);
+            }
+        }
+        return chunks;
     }
 
     public SpeakerIdentityVo toVo(SpeakerIdentity identity) {
