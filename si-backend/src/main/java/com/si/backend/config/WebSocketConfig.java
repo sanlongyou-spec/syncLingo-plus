@@ -11,6 +11,7 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
 import com.si.backend.ws.AsrWebSocketHandler;
 import com.si.backend.ws.JwtHandshakeInterceptor;
 import com.si.backend.ws.ShareWebSocketHandler;
+import com.si.backend.ws.ShareAudioWebSocketHandler;
 import lombok.RequiredArgsConstructor;
 
 @Configuration
@@ -20,6 +21,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final AsrWebSocketHandler asrWebSocketHandler;
     private final ShareWebSocketHandler shareWebSocketHandler;
+    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
 
     @Value("${app.websocket.max-text-size:10485760}")
@@ -42,6 +44,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 .addInterceptors(jwtHandshakeInterceptor)
                 .setAllowedOrigins("*");
         registry.addHandler(shareWebSocketHandler, Constants.WS_PATH_SHARE)
+                .setAllowedOrigins("*");
+        registry.addHandler(shareAudioWebSocketHandler, Constants.WS_PATH_SHARE_AUDIO)
                 .setAllowedOrigins("*");
     }
 }

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 实时同传门面层，协调 ASR、翻译、TTS 的实时处理流程。
  * 所有业务逻辑委托给 AsrService / TtsService，禁止直接调用 Integration 层。
- * 音频路由（VoiceMeeter 分发）完全由前端负责。
+ * TTS/原始音频经服务器 Opus 编码后由 ShareAudioWebSocketHandler 按听众所选语言分发到分享页。
  */
 @Slf4j
 @Component
@@ -97,6 +97,9 @@ public class RealtimeInterpretationFacade {
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsQueueSize = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsSequence = new ConcurrentHashMap<>();
 
+    /** 每个会话当前这句的"开始被收音"时刻（第一帧 recognizing），0=当前无进行中的句子。用于端到端延迟统计。 */
+    private final ConcurrentHashMap<String, AtomicLong> sessionUtteranceStartMs = new ConcurrentHashMap<>();
+
     // ---------- WebSocket session lifecycle ----------
 
     /**
@@ -133,6 +136,7 @@ public class RealtimeInterpretationFacade {
         sessionTargetLangMap.put(sessionId, normalizeTargetLang(targetLang));
         sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
+        sessionUtteranceStartMs.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionSpeakerVoiceService.startSession(sessionId);
         speakerIdentityService.startSession(sessionId);
 
@@ -147,11 +151,20 @@ public class RealtimeInterpretationFacade {
                 sourceLang,
                 sessionService.getSession(sessionId).map(InterpretationSession::getHotwordIds).orElse(null),
                 sessionService.getSession(sessionId).map(InterpretationSession::getEnabledLanguages).orElse(null),
-                (text, lang, speakerId) -> onRecognizing.accept(text, lang, speakerId),
+                (text, lang, speakerId) -> {
+                    // 记录"该句开始被收音"的时刻：本句第一帧 recognizing（上一句 final 后第一次）
+                    sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
+                            .compareAndSet(0, System.currentTimeMillis());
+                    onRecognizing.accept(text, lang, speakerId);
+                },
                 (text, lang, speakerId) -> {
                     onRecognized.accept(text, lang, speakerId);
+                    // 端到端延迟起点：该句"开始被收音"的时刻；取出并清零，下一帧 recognizing 开启新一句
+                    long startedMs = sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
+                            .getAndSet(0);
+                    long speechStartAtMs = startedMs > 0 ? startedMs : System.currentTimeMillis();
                     CompletableFuture.runAsync(() ->
-                            processFinalRecognition(text, lang, speakerId, sessionId, voiceId),
+                            processFinalRecognition(text, lang, speakerId, sessionId, voiceId, speechStartAtMs),
                             TRANSLATION_EXECUTOR)
                             .exceptionally(ex -> {
                                 log.error("[RealtimeInterpretationFacade] processFinalRecognition async error, sessionId={}", sessionId, ex);
@@ -215,6 +228,7 @@ public class RealtimeInterpretationFacade {
         sessionTargetLangMap.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
+        sessionUtteranceStartMs.remove(sessionId);
         recordService.cleanupSession(sessionId);
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);
@@ -228,6 +242,10 @@ public class RealtimeInterpretationFacade {
      * 处理最终识别结果：根据检测到的语种自动选择翻译方向，然后 TTS 播报。
      */
     public void processFinalRecognition(String text, String detectedLang, String speakerId, String sessionId, String voiceId) {
+        processFinalRecognition(text, detectedLang, speakerId, sessionId, voiceId, System.currentTimeMillis());
+    }
+
+    public void processFinalRecognition(String text, String detectedLang, String speakerId, String sessionId, String voiceId, long speechStartAtMs) {
         if (text == null || text.isBlank()) return;
         if (!isPipelineActive(sessionId, "process_final_start")) return;
 
@@ -265,7 +283,7 @@ public class RealtimeInterpretationFacade {
         targetLangs.forEach(targetLang -> {
             if (!isPipelineActive(sessionId, "before_target_translate")) return;
             CompletableFuture.runAsync(
-                    () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId, sessionId, speakerId, speakerResolution),
+                    () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId, sessionId, speakerId, speakerResolution, speechStartAtMs),
                     TRANSLATION_EXECUTOR
             ).exceptionally(ex -> {
                 log.error("[RealtimeInterpretationFacade] parallel translate error, sessionId={}, targetLang={}", sessionId, targetLang, ex);
@@ -340,6 +358,19 @@ public class RealtimeInterpretationFacade {
             String sessionId,
             String speakerId,
             SpeakerIdentityService.SpeakerResolution speakerResolution
+    ) {
+        translateAndStreamTts(text, sourceLang, targetLang, voiceId, sessionId, speakerId, speakerResolution, System.currentTimeMillis());
+    }
+
+    public void translateAndStreamTts(
+            String text,
+            String sourceLang,
+            String targetLang,
+            String voiceId,
+            String sessionId,
+            String speakerId,
+            SpeakerIdentityService.SpeakerResolution speakerResolution,
+            long speechStartAtMs
     ) {
         if (text == null || text.isBlank()) return;
         if (!isPipelineActive(sessionId, "translate_start")) return;
@@ -449,6 +480,9 @@ public class RealtimeInterpretationFacade {
                             if (firstChunkLogged.compareAndSet(false, true)) {
                                 log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, costMs={}, bytes={}",
                                         sessionId, ttsTaskId, ttsSequence, System.currentTimeMillis() - ttsStart, pcm.length);
+                                // 端到端(服务端口径)：该句开始被收音 → 该句该语言 TTS 首音从服务器发出
+                                log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
+                                        sessionId, finalTargetLang, System.currentTimeMillis() - speechStartAtMs, finalTranslated.length());
                             }
                             audioQueue.offer(new TtsBufferedChunk(pcm, finalTargetLang, ttsTaskId, ttsSequence, chunkIndex, System.nanoTime()));
                         }
@@ -513,7 +547,7 @@ public class RealtimeInterpretationFacade {
 
                     TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
                     if (onTtsAudio != null) {
-                        onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex());
+                        onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(), speechStartAtMs);
                     }
                     lastChunkTimeNanos = chunk.createdAtNanos();
                     lastSendTimeNanos = System.nanoTime();
@@ -663,6 +697,7 @@ public class RealtimeInterpretationFacade {
         sessionTargetLangMap.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
+        sessionUtteranceStartMs.remove(sessionId);
         recordService.cleanupSession(sessionId);
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);
@@ -708,7 +743,7 @@ public class RealtimeInterpretationFacade {
 
     @FunctionalInterface
     public interface TtsAudioCallback {
-        void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex);
+        void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex, long speechStartAtMs);
     }
 
     @FunctionalInterface

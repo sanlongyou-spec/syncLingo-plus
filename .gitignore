@@ -58,3 +58,10 @@ speaker-service/__pycache__/
 speaker-service/embeddings.json
 speaker-service/pretrained_models/
 speaker-service/embeddings.json.bak.*
+
+# TLS certs / private keys (本地HTTPS, 勿入库)
+*.pem
+*.key
+
+# 临时价格数据(阿里云抓取, 勿入库)
+.tmp-aliyun-price/

@@ -109,6 +109,21 @@ public class InterpretationController {
         return Result.ok(sessionId);
     }
 
+    @PostMapping("/public/latency")
+    public Result<Void> reportLatency(@RequestBody java.util.Map<String, Object> body) {
+        log.info("[InterpretationController] e2e client latency, lang={}, e2eMs={}, captureMs={}, rttMs={}, tailMs={}",
+                body.get("lang"), body.get("e2eMs"), body.get("captureMs"), body.get("rttMs"), body.get("tailMs"));
+        return Result.ok();
+    }
+
+    @GetMapping("/public/{sessionId}/info")
+    public Result<com.si.backend.vo.PublicSessionInfoVo> getPublicSessionInfo(@PathVariable String sessionId) {
+        log.info("[InterpretationController] getPublicSessionInfo start, sessionId={}", sessionId);
+        com.si.backend.vo.PublicSessionInfoVo info = facade.getPublicSessionInfo(sessionId);
+        log.info("[InterpretationController] getPublicSessionInfo end, sessionId={}, found={}", sessionId, info != null);
+        return Result.ok(info);
+    }
+
     @GetMapping("/public/{sessionId}/results")
     public Result<java.util.List<InterpretationResultItemVo>> getPublicResults(@PathVariable String sessionId) {
         log.info("[InterpretationController] getPublicResults start, sessionId={}", sessionId);

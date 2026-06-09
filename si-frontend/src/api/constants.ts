@@ -24,10 +24,3 @@ export const PCM = {
   SIGNED_MASK: 0x8000,
   CLIP_THRESHOLD: 0x7fff,
 } as const
-
-/** VoiceMeeter 虚拟设备标签（用于按名称自动匹配音频输出设备）*/
-export const VOICEMEETER = {
-  ZH_DEVICE_LABEL: 'VoiceMeeter Input',
-  ID_DEVICE_LABEL: 'VoiceMeeter Aux Input',
-  EN_DEVICE_LABEL: 'VoiceMeeter VAIO3',
-} as const

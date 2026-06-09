@@ -148,6 +148,13 @@ export interface InterpretationResultItem {
   createTime?: string
 }
 
+export interface PublicSessionInfo {
+  sessionId: string
+  title?: string
+  status?: string
+  enabledLanguages: string[]
+}
+
 export interface SaveInterpretationResultParams {
   sessionId: string
   sourceText: string

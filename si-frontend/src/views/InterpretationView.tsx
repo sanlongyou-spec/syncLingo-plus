@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   generateSpeakerSummary,
   getAsrHotwords,
@@ -11,7 +11,7 @@ import {
   startInterpretation,
   stopInterpretation,
 } from '../api'
-import { AUDIO_DEFAULTS, VOICEMEETER } from '../api/constants'
+import { AUDIO_DEFAULTS } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
@@ -124,7 +124,6 @@ export default function InterpretationView() {
     isPaused: isTranscriptAutoScrollPaused,
     scrollToBottom: scrollTranscriptToBottom,
   } = useSmartAutoScroll<HTMLDivElement>([transcripts, currentSource])
-  const ttsChunkIndexByTaskRef = useRef<Map<string, number>>(new Map())
 
   // Speaker change detection refs (ID-based for known speakers)
   const speakerBufferRef = useRef<Record<string, string>>({})
@@ -141,23 +140,6 @@ export default function InterpretationView() {
   // (4) Text whose speaker is not yet resolved by voiceprint; re-attributed to the
   // speaker once their identity resolves, instead of being dropped from the summary.
   const provisionalNameTextRef = useRef('')
-
-  const streamContextRef = useRef<AudioContext | null>(null)
-  const streamDestZhRef = useRef<MediaStreamAudioDestinationNode | null>(null)
-  const streamDestIdRef = useRef<MediaStreamAudioDestinationNode | null>(null)
-  const streamDestEnRef = useRef<MediaStreamAudioDestinationNode | null>(null)
-  const streamAudioElZhRef = useRef<HTMLAudioElement | null>(null)
-  const streamAudioElIdRef = useRef<HTMLAudioElement | null>(null)
-  const streamAudioElEnRef = useRef<HTMLAudioElement | null>(null)
-  const streamSinkReadyZhRef = useRef(false)
-  const streamSinkReadyIdRef = useRef(false)
-  const streamSinkReadyEnRef = useRef(false)
-  const scheduleTimeZhRef = useRef(0)
-  const scheduleTimeIdRef = useRef(0)
-  const scheduleTimeEnRef = useRef(0)
-  const pendingSourcesZhRef = useRef<Set<AudioBufferSourceNode>>(new Set())
-  const pendingSourcesIdRef = useRef<Set<AudioBufferSourceNode>>(new Set())
-  const pendingSourcesEnRef = useRef<Set<AudioBufferSourceNode>>(new Set())
 
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -212,121 +194,6 @@ export default function InterpretationView() {
     window.addEventListener('hashchange', refreshMeetings)
     return () => window.removeEventListener('hashchange', refreshMeetings)
   }, [userId])
-
-  const initStreamAudio = useCallback(async () => {
-    if (!streamContextRef.current) {
-      streamContextRef.current = new AudioContext()
-    }
-    const ctx = streamContextRef.current
-    const setupElement = (destRef: React.MutableRefObject<MediaStreamAudioDestinationNode | null>, elRef: React.MutableRefObject<HTMLAudioElement | null>) => {
-      if (destRef.current) return
-      destRef.current = ctx.createMediaStreamDestination()
-      elRef.current = new Audio()
-      elRef.current.srcObject = destRef.current.stream
-      elRef.current.autoplay = false
-      elRef.current.volume = 0
-      elRef.current.pause()
-    }
-    setupElement(streamDestZhRef, streamAudioElZhRef)
-    setupElement(streamDestIdRef, streamAudioElIdRef)
-    setupElement(streamDestEnRef, streamAudioElEnRef)
-  }, [])
-
-  const applyVoiceMeeterSinks = useCallback(async () => {
-    const muteAndPause = (el: HTMLAudioElement | null) => {
-      if (!el) return
-      el.volume = 0
-      el.autoplay = false
-      el.pause()
-    }
-    const setSink = async (el: HTMLAudioElement | null, deviceId: string) => {
-      if (!el || !('setSinkId' in el)) return false
-      try {
-        await (el as HTMLAudioElement & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
-        el.volume = 1
-        await el.play()
-        return true
-      } catch (err) {
-        console.warn('[InterpretationView] setSinkId/play failed:', err)
-        muteAndPause(el)
-        return false
-      }
-    }
-
-    streamSinkReadyZhRef.current = false
-    streamSinkReadyIdRef.current = false
-    streamSinkReadyEnRef.current = false
-    muteAndPause(streamAudioElZhRef.current)
-    muteAndPause(streamAudioElIdRef.current)
-    muteAndPause(streamAudioElEnRef.current)
-
-    const outputs = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audiooutput')
-    const voiceMeeterOutputs = outputs.filter(device => {
-      const label = device.label.toLowerCase()
-      return label.includes('voicemeeter') || label.includes('voice meeter')
-    })
-    const zhDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.ZH_DEVICE_LABEL.toLowerCase()) &&
-      !device.label.toLowerCase().includes('aux') &&
-      !device.label.toLowerCase().includes('vaio3'),
-    ) || voiceMeeterOutputs.find(device =>
-      !device.label.toLowerCase().includes('aux') && !device.label.toLowerCase().includes('vaio3'),
-    )
-    const idDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.ID_DEVICE_LABEL.toLowerCase()),
-    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('aux'))
-    const enDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.EN_DEVICE_LABEL.toLowerCase()),
-    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('vaio3'))
-
-    if (zhDevice) streamSinkReadyZhRef.current = await setSink(streamAudioElZhRef.current, zhDevice.deviceId)
-    if (idDevice) streamSinkReadyIdRef.current = await setSink(streamAudioElIdRef.current, idDevice.deviceId)
-    if (enDevice) streamSinkReadyEnRef.current = await setSink(streamAudioElEnRef.current, enDevice.deviceId)
-  }, [])
-
-  const areVoiceMeeterSinksReady = useCallback(() => (
-    streamSinkReadyZhRef.current && streamSinkReadyIdRef.current
-  ), [])
-
-  const playStreamPcmDirect = (
-    pcmData: Int16Array,
-    sampleRate: number,
-    ctx: AudioContext,
-    dest: MediaStreamAudioDestinationNode,
-    scheduleRef: React.MutableRefObject<number>,
-    pendingRef: React.MutableRefObject<Set<AudioBufferSourceNode>>,
-  ) => {
-    const floatData = new Float32Array(pcmData.length)
-    for (let i = 0; i < pcmData.length; i += 1) {
-      floatData[i] = pcmData[i] / 32768
-    }
-    const buffer = ctx.createBuffer(1, floatData.length, sampleRate)
-    buffer.copyToChannel(floatData, 0)
-    const source = ctx.createBufferSource()
-    source.buffer = buffer
-    source.connect(dest)
-    const startAt = Math.max(ctx.currentTime + 0.02, scheduleRef.current)
-    pendingRef.current.add(source)
-    source.onended = () => pendingRef.current.delete(source)
-    source.start(startAt)
-    scheduleRef.current = startAt + buffer.duration
-  }
-
-  const playStreamPcm = useCallback((pcmData: Int16Array, sampleRate: number, targetLang: string) => {
-    const isEn = targetLang.startsWith('en')
-    const isId = targetLang.startsWith('id')
-    const ctx = streamContextRef.current
-    const dest = isEn ? streamDestEnRef.current : (isId ? streamDestIdRef.current : streamDestZhRef.current)
-    const sinkReady = isEn ? streamSinkReadyEnRef.current : (isId ? streamSinkReadyIdRef.current : streamSinkReadyZhRef.current)
-    if (!ctx || !dest || !sinkReady) return
-    const scheduleRef = isEn ? scheduleTimeEnRef : (isId ? scheduleTimeIdRef : scheduleTimeZhRef)
-    const pendingRef = isEn ? pendingSourcesEnRef : (isId ? pendingSourcesIdRef : pendingSourcesZhRef)
-    playStreamPcmDirect(pcmData, sampleRate, ctx, dest, scheduleRef, pendingRef)
-  }, [])
-
-  const playPcm = useCallback((pcmData: Int16Array, targetLang: string) => {
-    playStreamPcm(pcmData, 24000, targetLang)
-  }, [playStreamPcm])
 
   const resolveSpeakerName = useCallback((speakerId?: string, speakerName?: string | null) => {
     const displayName = speakerName?.trim()
@@ -596,25 +463,6 @@ export default function InterpretationView() {
           }
         }
         break
-      case 'tts_audio':
-        if (msg.audioBase64 && msg.targetLanguage) {
-          if (msg.ttsTaskId && typeof msg.chunkIndex === 'number') {
-            const lastIndex = ttsChunkIndexByTaskRef.current.get(msg.ttsTaskId) ?? -1
-            if (msg.chunkIndex <= lastIndex) break
-            ttsChunkIndexByTaskRef.current.set(msg.ttsTaskId, msg.chunkIndex)
-          }
-          try {
-            const binaryStr = atob(msg.audioBase64)
-            const bytes = new Uint8Array(binaryStr.length)
-            for (let i = 0; i < binaryStr.length; i += 1) {
-              bytes[i] = binaryStr.charCodeAt(i)
-            }
-            playPcm(new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2), msg.targetLanguage)
-          } catch (err) {
-            console.error('[InterpretationView] failed to play TTS audio:', err)
-          }
-        }
-        break
       case 'started':
         setIsRunning(true)
         setError('')
@@ -640,7 +488,7 @@ export default function InterpretationView() {
         setError(msg.message || '发生错误')
         break
     }
-  }, [playPcm, rememberSpeakerName, resolveSpeakerName])
+  }, [rememberSpeakerName, resolveSpeakerName])
 
   const triggerSpeakerSummary = useCallback(async (
     speakerId: string, speakerName: string, text: string, sid: string,
@@ -677,7 +525,6 @@ export default function InterpretationView() {
     setError('')
     setIsLoading(true)
     try {
-      ttsChunkIndexByTaskRef.current.clear()
       const selectedMeeting = meetings.find(m => m.id === selectedMeetingId)
       const sessionTitle = selectedMeeting?.title || await resolveActiveMeetingTitle()
 
@@ -701,12 +548,6 @@ export default function InterpretationView() {
       await ws.connect(sid)
       ws.onMessage(handleWsMessage)
       ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO, voiceId: voiceId || undefined })
-
-      await initStreamAudio()
-      await applyVoiceMeeterSinks()
-      if (!areVoiceMeeterSinksReady()) {
-        throw new Error('VoiceMeeter output is not ready. Please select VoiceMeeter output devices before starting.')
-      }
 
       const audio = new AudioCapture({
         sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
@@ -807,26 +648,6 @@ export default function InterpretationView() {
       console.warn('[InterpretationView] stopInterpretation failed:', err)
     })
     wsRef.current?.close()
-    streamAudioElZhRef.current?.pause()
-    streamAudioElIdRef.current?.pause()
-    streamAudioElEnRef.current?.pause()
-    pendingSourcesZhRef.current.forEach(source => { try { source.stop() } catch { /* already ended */ } })
-    pendingSourcesIdRef.current.forEach(source => { try { source.stop() } catch { /* already ended */ } })
-    pendingSourcesEnRef.current.forEach(source => { try { source.stop() } catch { /* already ended */ } })
-    pendingSourcesZhRef.current.clear()
-    pendingSourcesIdRef.current.clear()
-    pendingSourcesEnRef.current.clear()
-    streamSinkReadyZhRef.current = false
-    streamSinkReadyIdRef.current = false
-    streamSinkReadyEnRef.current = false
-    streamDestZhRef.current = null
-    streamDestIdRef.current = null
-    streamDestEnRef.current = null
-    streamAudioElZhRef.current = null
-    streamAudioElIdRef.current = null
-    streamAudioElEnRef.current = null
-    await streamContextRef.current?.close()
-    streamContextRef.current = null
     wsRef.current = null
     setSessionId(null)
     sessionIdRef.current = null

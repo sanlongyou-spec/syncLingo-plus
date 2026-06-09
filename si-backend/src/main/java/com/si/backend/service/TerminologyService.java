@@ -145,13 +145,13 @@ public class TerminologyService {
             if (sourceTerm == null || sourceTerm.isBlank() || targetTerm == null || targetTerm.isBlank()) {
                 continue;
             }
-            if (!protectedText.contains(sourceTerm)) {
+            if (!termMatches(protectedText, sourceTerm)) {
                 continue;
             }
             String placeholder = Constants.TERMINOLOGY_PLACEHOLDER_PREFIX
                     + placeholderIndex
                     + Constants.TERMINOLOGY_PLACEHOLDER_SUFFIX;
-            protectedText = protectedText.replace(sourceTerm, placeholder);
+            protectedText = replaceTerm(protectedText, sourceTerm, placeholder);
             targetTermByPlaceholder.put(placeholder, targetTerm);
             placeholderIndex++;
         }
@@ -188,7 +188,7 @@ public class TerminologyService {
             if (sourceTerm == null || sourceTerm.isBlank() || targetTerm == null || targetTerm.isBlank()) {
                 continue;
             }
-            if (sourceText.contains(sourceTerm) && !correctedText.contains(targetTerm)) {
+            if (termMatches(sourceText, sourceTerm) && !correctedText.contains(targetTerm)) {
                 correctedText = correctedText + " (" + targetTerm + ")";
                 log.info("[TerminologyService] terminology corrected, sourceTermLen={}, targetTermLen={}",
                         sourceTerm.length(), targetTerm.length());
@@ -196,6 +196,53 @@ public class TerminologyService {
         }
         log.debug("[TerminologyService] applyAfterTranslate end, changed={}", !correctedText.equals(targetText));
         return correctedText;
+    }
+
+    /** 术语最小长度：短于此值（单字母 "f" / 单个汉字）一律不参与匹配，避免命中词内部。 */
+    private static final int MIN_TERM_LEN = 2;
+
+    /** 是否为拉丁文术语（含字母、且不含 CJK 汉字）。CJK 术语无空格分词，仍按子串处理。 */
+    private static boolean isLatinTerm(String term) {
+        boolean hasLetter = false;
+        for (int i = 0; i < term.length(); i++) {
+            char c = term.charAt(i);
+            if (Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN) {
+                return false;
+            }
+            if (Character.isLetter(c)) {
+                hasLetter = true;
+            }
+        }
+        return hasLetter;
+    }
+
+    private static java.util.regex.Pattern wordPattern(String term) {
+        return java.util.regex.Pattern.compile(
+                "\\b" + java.util.regex.Pattern.quote(term) + "\\b",
+                java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CHARACTER_CLASS);
+    }
+
+    /** 长度<2 的术语（单字母/单汉字）一律不匹配；拉丁文按单词边界，CJK 按子串。 */
+    private boolean termMatches(String text, String term) {
+        if (term.trim().length() < MIN_TERM_LEN) {
+            return false;
+        }
+        if (isLatinTerm(term)) {
+            return wordPattern(term).matcher(text).find();
+        }
+        return text.contains(term);
+    }
+
+    /** 与 {@link #termMatches} 一致的替换：长度<2 跳过；拉丁文按单词边界，CJK 按子串。 */
+    private String replaceTerm(String text, String term, String replacement) {
+        if (term.trim().length() < MIN_TERM_LEN) {
+            return text;
+        }
+        if (isLatinTerm(term)) {
+            return wordPattern(term).matcher(text)
+                    .replaceAll(java.util.regex.Matcher.quoteReplacement(replacement));
+        }
+        return text.replace(term, replacement);
     }
 
     private String termByLang(Terminology terminology, String lang) {

@@ -59,7 +59,10 @@ public class TranslationService {
                 terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
         String protectedText = terminologyProtection.getProtectedText();
 
+        long mtStart = System.currentTimeMillis();
         String result = translator.translate(protectedText, sourceLang, targetLang, userId);
+        log.info("[TranslationService] google translate done, sourceLang={}, targetLang={}, costMs={}",
+                sourceLang, targetLang, System.currentTimeMillis() - mtStart);
         result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
         result = compressIfNeeded(text, sourceLang, targetLang, result, start);
 

@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { getPublicInterpretationResults } from '../api'
+import { getPublicInterpretationResults, getPublicSessionInfo } from '../api'
 import { WS_DEFAULTS } from '../api/constants'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import type { InterpretationResultItem, WsMessage } from '../types'
 import './InterpretationView.css'
+
+const LANG_LABELS: Record<string, string> = { zh: '中文', id: '印尼语', en: 'English' }
+const AUDIO_SAMPLE_RATE = 48000
+
+const toCanonicalLang = (lang: string): string => {
+  const lower = lang.trim().toLowerCase()
+  if (lower.startsWith('zh')) return 'zh'
+  if (lower.startsWith('id')) return 'id'
+  if (lower.startsWith('en')) return 'en'
+  return lower
+}
 
 interface DisplayShareItem {
   id: number
@@ -111,7 +122,145 @@ export default function ShareView() {
   const liveIdRef = useRef(-1)
   const speakerNameMapRef = useRef<Record<string, string>>({})
 
+  // ── 音频：选语言 + Opus(WebCodecs) 播放 ──────────────────────
+  const [audioLangs, setAudioLangs] = useState<string[]>([])
+  const [selectedLang, setSelectedLang] = useState<string | null>(null)
+  const audioWsRef = useRef<WebSocket | null>(null)
+  const selectedLangRef = useRef<string | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const decoderRef = useRef<{ decode: (chunk: unknown) => void; close: () => void } | null>(null)
+  const scheduleRef = useRef(0)
+  const tsRef = useRef(0)
+  const pendingSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
+
+  // 兜底：从实时文本消息里推断可选语言，确保即使 /info 接口异常按钮也能出现
+  const addAudioLang = (raw?: string) => {
+    if (!raw) return
+    const c = toCanonicalLang(raw)
+    if (c !== 'zh' && c !== 'id' && c !== 'en') return
+    const order = ['zh', 'id', 'en']
+    setAudioLangs(prev => (prev.includes(c) ? prev : [...prev, c].sort((a, b) => order.indexOf(a) - order.indexOf(b))))
+  }
+
+  const stopAudio = () => {
+    selectedLangRef.current = null
+    audioWsRef.current?.close()
+    audioWsRef.current = null
+    try { decoderRef.current?.close() } catch { /* already closed */ }
+    decoderRef.current = null
+    pendingSourcesRef.current.forEach(source => { try { source.stop() } catch { /* ended */ } })
+    pendingSourcesRef.current.clear()
+    void audioCtxRef.current?.close()
+    audioCtxRef.current = null
+    scheduleRef.current = 0
+    tsRef.current = 0
+  }
+
+  const startAudio = (lang: string) => {
+    stopAudio()
+    const canonical = toCanonicalLang(lang)
+    selectedLangRef.current = canonical
+    setSelectedLang(canonical)
+
+    const AudioDecoderCtor = (window as unknown as { AudioDecoder?: unknown }).AudioDecoder as
+      | (new (init: { output: (data: unknown) => void; error: (e: unknown) => void }) => {
+          configure: (cfg: unknown) => void
+          decode: (chunk: unknown) => void
+          close: () => void
+        })
+      | undefined
+    const EncodedAudioChunkCtor = (window as unknown as { EncodedAudioChunk?: unknown }).EncodedAudioChunk as
+      | (new (init: { type: string; timestamp: number; data: ArrayBuffer | ArrayBufferView }) => unknown)
+      | undefined
+    if (!AudioDecoderCtor || !EncodedAudioChunkCtor) {
+      setError('当前浏览器不支持音频解码（需要 Chrome/Edge 等支持 WebCodecs 的浏览器）')
+      return
+    }
+
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+    audioCtxRef.current = ctx
+    void ctx.resume()
+
+    const handleAudioData = (data: unknown) => {
+      const audioData = data as {
+        numberOfFrames: number
+        sampleRate: number
+        allocationSize: (opt: { planeIndex: number; format: string }) => number
+        copyTo: (dest: Float32Array, opt: { planeIndex: number; format: string }) => void
+        close: () => void
+      }
+      try {
+        const size = audioData.allocationSize({ planeIndex: 0, format: 'f32-planar' })
+        const samples = new Float32Array(size / 4)
+        audioData.copyTo(samples, { planeIndex: 0, format: 'f32-planar' })
+        const buffer = ctx.createBuffer(1, samples.length, audioData.sampleRate)
+        buffer.copyToChannel(samples, 0)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(ctx.destination)
+        const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
+        pendingSourcesRef.current.add(source)
+        source.onended = () => pendingSourcesRef.current.delete(source)
+        source.start(startAt)
+        scheduleRef.current = startAt + buffer.duration
+      } catch (err) {
+        console.warn('[ShareView] audio render failed:', err)
+      } finally {
+        audioData.close()
+      }
+    }
+
+    const decoder = new AudioDecoderCtor({
+      output: handleAudioData,
+      error: (e: unknown) => console.warn('[ShareView] audio decode error:', e),
+    })
+    decoder.configure({ codec: 'opus', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 1 })
+    decoderRef.current = decoder
+
+    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share-audio?sessionId=${encodeURIComponent(sessionId)}&lang=${canonical}`
+    const ws = new WebSocket(wsUrl)
+    ws.binaryType = 'arraybuffer'
+    audioWsRef.current = ws
+    ws.onmessage = event => {
+      if (!(event.data instanceof ArrayBuffer) || decoderRef.current !== decoder) return
+      const view = new Uint8Array(event.data)
+      if (view.length === 0) return
+      // 帧首字节：0x01=音频 0x02=标记 0x03=心跳；本页只播音频，其余忽略
+      if (view[0] !== 0x01) return
+      try {
+        decoder.decode(new EncodedAudioChunkCtor({ type: 'key', timestamp: tsRef.current, data: event.data.slice(1) }))
+        tsRef.current += 20000
+      } catch (err) {
+        console.warn('[ShareView] decode chunk failed:', err)
+      }
+    }
+    ws.onclose = () => {
+      // 仍选着该语言则自动重连
+      if (audioWsRef.current === ws && selectedLangRef.current === canonical) {
+        window.setTimeout(() => {
+          if (audioWsRef.current === ws && selectedLangRef.current === canonical) startAudio(canonical)
+        }, 2000)
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!sessionId) return
+    getPublicSessionInfo(sessionId)
+      .then(res => {
+        const langs = Array.from(new Set((res.data?.enabledLanguages ?? []).map(toCanonicalLang)))
+        setAudioLangs(langs)
+      })
+      .catch((err: unknown) => console.warn('[ShareView] getPublicSessionInfo failed:', err))
+  }, [sessionId])
+
+  useEffect(() => stopAudio, [])
+
   const upsertPersistedItems = (list: InterpretationResultItem[]) => {
+    list.forEach(item => {
+      addAudioLang(item.sourceLang)
+      addAudioLang(item.targetLang)
+    })
     setItems(prev => {
       const next = [...prev]
       list.forEach(item => {
@@ -170,6 +319,8 @@ export default function ShareView() {
   const handleShareMessage = (msg: WsMessage) => {
     const messageSpeakerId = normalizeSpeakerId(msg.speakerId)
     const messageSpeakerName = resolveSpeakerName(messageSpeakerId, msg.speakerName)
+    addAudioLang(msg.language)
+    addAudioLang(msg.targetLanguage)
     switch (msg.type) {
       case 'recognizing':
         setCurrentRecognizing(msg.text || '')
@@ -368,6 +519,30 @@ export default function ShareView() {
           <div className="si-tri-host-layout">
             <div className="si-tri-toolbar">
               <span className="si-live-indicator is-running" />
+              {audioLangs.length > 0 && (
+                <div className="si-share-audio-langs">
+                  <span className="si-share-audio-label">🔊 收听语言</span>
+                  {audioLangs.map(lang => (
+                    <button
+                      key={lang}
+                      type="button"
+                      className={`si-share-audio-btn ${selectedLang === lang ? 'is-active' : ''}`}
+                      onClick={() => startAudio(lang)}
+                    >
+                      {LANG_LABELS[lang] || lang}
+                    </button>
+                  ))}
+                  {selectedLang && (
+                    <button
+                      type="button"
+                      className="si-share-audio-btn si-share-audio-btn--mute"
+                      onClick={() => { stopAudio(); setSelectedLang(null) }}
+                    >
+                      关闭声音
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {error && <p className="si-tri-err">{error}</p>}

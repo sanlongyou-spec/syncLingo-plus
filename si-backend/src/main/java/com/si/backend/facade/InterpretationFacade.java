@@ -90,6 +90,31 @@ public class InterpretationFacade {
                 .orElse(null);
     }
 
+    public com.si.backend.vo.PublicSessionInfoVo getPublicSessionInfo(String sessionId) {
+        InterpretationSession session = sessionService.getSession(sessionId)
+                .orElseGet(() -> sessionService.getSessionHistory(sessionId));
+        if (session == null) {
+            return null;
+        }
+        List<String> enabledLanguages = parseEnabledLanguages(session.getEnabledLanguages());
+        return com.si.backend.vo.PublicSessionInfoVo.builder()
+                .sessionId(sessionId)
+                .title(session.getTitle())
+                .status(session.getStatus())
+                .enabledLanguages(enabledLanguages)
+                .build();
+    }
+
+    private List<String> parseEnabledLanguages(String enabledLanguages) {
+        if (enabledLanguages == null || enabledLanguages.isBlank()) {
+            return List.of("zh-CN", "id-ID");
+        }
+        return java.util.Arrays.stream(enabledLanguages.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
     public InterpretationSessionVo getSessionHistory(String sessionId) {
         InterpretationSession session = sessionService.getSessionHistory(sessionId);
         if (session == null) return null;

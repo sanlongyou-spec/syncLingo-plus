@@ -76,6 +76,8 @@ public final class Constants {
     /** WebSocket ASR 路径 */
     public static final String WS_PATH_ASR = "/ws/asr";
     public static final String WS_PATH_SHARE = "/ws/share";
+    /** WebSocket 分享页音频分发路径（二进制 Opus） */
+    public static final String WS_PATH_SHARE_AUDIO = "/ws/share-audio";
     /** WebSocket 最大文本消息大小（64KB） */
     public static final int WS_MAX_TEXT_MESSAGE_SIZE = 1024 * 64;
     /** WebSocket 最大二进制消息大小（10MB，与 application.yml 保持一致） */
@@ -149,10 +151,10 @@ public final class Constants {
     public static final int CARTESIA_CUSTOM_BUFFER_DELAY_MS = 0;
     /** Cartesia TTS WebSocket JSON 字段：speed（语速倍率，1.0 为正常） */
     public static final String CARTESIA_FIELD_SPEED = "speed";
-    /** 印尼语 TTS 语速倍率（1.25 = 加速 25%） */
-    public static final double TTS_SPEED_INDONESIAN = 1.25;
-    /** 英语 TTS 语速倍率 */
-    public static final double TTS_SPEED_ENGLISH = 1.05;
+    /** 印尼语 TTS 语速倍率（1.2 = 加速 20%） */
+    public static final double TTS_SPEED_INDONESIAN = 1.2;
+    /** 英语 TTS 语速倍率（1.1 = 加速 10%） */
+    public static final double TTS_SPEED_ENGLISH = 1.1;
     /** 默认 TTS 语速倍率（正常速度） */
     public static final double TTS_SPEED_DEFAULT = 1.0;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
@@ -266,24 +268,5 @@ public final class Constants {
     public static final String ASR_CANCELED_REASON = "ASR canceled";
     /** ASR 识别超时错误信息 */
     public static final String ASR_TIMEOUT_ERROR = "ASR recognition timeout";
-
-    // ═══════════════════════════════════════════════════════════
-    // VoiceMeeter
-    // ═══════════════════════════════════════════════════════════
-
-    /** VoiceMeeter Potato 共享内存映射名称 */
-    public static final String VOICEMEETER_MAP_NAME_POTATO = "VoiceMeeterPotato";
-    /** VoiceMeeter Basic/Standard 共享内存映射名称 */
-    public static final String VOICEMEETER_MAP_NAME_BASIC = "VoiceMeeter";
-    /** 共享内存全局前缀（Windows 命名共享内存格式） */
-    public static final String VOICEMEETER_SHARED_MEMORY_PREFIX = "Global\\";
-    /** 共享内存名称后缀 */
-    public static final String VOICEMEETER_SHARED_MEMORY_SUFFIX = "_Now";
-    /** 共享内存控制头大小（字节） */
-    public static final int VOICEMEETER_SHARED_MEMORY_HEADER_SIZE = 256;
-    /** 每个 Strip 在共享内存中的 stride（字节，4KB 对齐） */
-    public static final int VOICEMEETER_STRIP_STRIDE = 4096;
-    /** 获取字符串参数时缓冲区大小（字节） */
-    public static final int VOICEMEETER_STRING_BUFFER_SIZE = 256;
 
 }

@@ -34,9 +34,12 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final RealtimeInterpretationFacade realtimeFacade;
     private final ShareWebSocketHandler shareWebSocketHandler;
+    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
+    /** 每个会话当前检测到的源语言，用于把原始麦克风音频路由给“选了源语言”的分享听众 */
+    private final Map<String, String> sessionSourceLangMap = new ConcurrentHashMap<>();
     private final Map<String, String> webSocketSessionBizSessionMap = new ConcurrentHashMap<>();
     private final Map<String, OutboundMessageSender> outboundSenderMap = new ConcurrentHashMap<>();
 
@@ -95,6 +98,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 msg.getVoiceId(),
                 // onRecognizing
                 (text, language, speakerId) -> {
+                    if (language != null && !language.isBlank()) {
+                        sessionSourceLangMap.put(sessionId, language);
+                    }
                     WsMessage out = new WsMessage();
                     out.setType(Constants.WS_MSG_TYPE_RECOGNIZING);
                     out.setSessionId(sessionId);
@@ -107,6 +113,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 },
                 // onRecognized：仅推送 WebSocket 消息，翻译/TTS 由 facade 内部管道处理
                 (text, language, speakerId) -> {
+                    if (language != null && !language.isBlank()) {
+                        sessionSourceLangMap.put(sessionId, language);
+                    }
                     log.info("[AsrWebSocketHandler] recognized, sessionId={}, speakerId={}, lang={}, textLen={}",
                             sessionId, speakerId, language, text != null ? text.length() : 0);
                     WsMessage out = new WsMessage();
@@ -137,18 +146,14 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     sendMessage(session, out);
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },
-                // onTtsAudio：将 TTS PCM 数据推送给前端
-                (pcmData, tLang, ttsTaskId, ttsSequence, chunkIndex) -> {
-                    String audioBase64 = java.util.Base64.getEncoder().encodeToString(pcmData);
-                    WsMessage out = new WsMessage();
-                    out.setType(Constants.WS_MSG_TYPE_TTS_AUDIO);
-                    out.setSessionId(sessionId);
-                    out.setAudioBase64(audioBase64);
-                    out.setTargetLanguage(tLang);
-                    out.setTtsTaskId(ttsTaskId);
-                    out.setTtsSequence(ttsSequence);
-                    out.setChunkIndex(chunkIndex);
-                    sendMessage(session, out);
+                // onTtsAudio：将 TTS PCM 编码为 Opus，按目标语言扇出给分享页听众（不再发宿主/VoiceMeeter）
+                (pcmData, tLang, ttsTaskId, ttsSequence, chunkIndex, speechStartAtMs) -> {
+                    if (chunkIndex == 0) {
+                        // 该句首音：发标记，携带"开始收音→首音发出"的服务端耗时，供前端合成真实出声延迟
+                        int captureMs = (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() - speechStartAtMs);
+                        shareAudioWebSocketHandler.sendMarker(sessionId, tLang, captureMs);
+                    }
+                    shareAudioWebSocketHandler.broadcastPcm(sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS);
                 },
                 // onSpeakerIdentity
                 (speakerId, speakerName, speakerProfileId, cartesiaVoiceId, status, source) -> {
@@ -183,13 +188,20 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         }
         byte[] pcm = java.util.Base64.getDecoder().decode(data);
         realtimeFacade.pushAudio(sessionId, pcm);
+        // 把原始麦克风音频（16kHz）转发给“选了当前源语言”的分享听众（编码为 Opus，仅有订阅者时才编码）
+        String sourceLang = sessionSourceLangMap.get(sessionId);
+        if (sourceLang != null) {
+            shareAudioWebSocketHandler.broadcastPcm(sessionId, sourceLang, pcm, Constants.DEFAULT_SAMPLE_RATE_ASR);
+        }
     }
 
     private void handleStop(WebSocketSession session, WsMessage msg) {
         String sessionId = msg.getSessionId();
         sessionLangMap.remove(sessionId);
+        sessionSourceLangMap.remove(sessionId);
         webSocketSessionBizSessionMap.remove(session.getId());
         realtimeFacade.stopInterpretation(sessionId);
+        shareAudioWebSocketHandler.closeSession(sessionId);
 
         WsMessage reply = new WsMessage();
         reply.setType(Constants.WS_MSG_TYPE_STOPPED);
@@ -227,7 +239,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         String bizSessionId = webSocketSessionBizSessionMap.remove(session.getId());
         if (bizSessionId != null) {
             sessionLangMap.remove(bizSessionId);
+            sessionSourceLangMap.remove(bizSessionId);
             realtimeFacade.cleanupSession(bizSessionId);
+            shareAudioWebSocketHandler.closeSession(bizSessionId);
         } else {
             log.info("[AsrWebSocketHandler] no business session bound, skip realtime cleanup, wsSessionId={}", session.getId());
         }

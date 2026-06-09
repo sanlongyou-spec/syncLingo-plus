@@ -4,6 +4,7 @@ import type {
   StartInterpretationParams,
   InterpretationStatus,
   InterpretationResultItem,
+  PublicSessionInfo,
   SaveInterpretationResultParams,
   CloneVoiceParams,
   CloneVoiceResponse,
@@ -85,6 +86,9 @@ export const saveInterpretationResult = (params: SaveInterpretationResultParams)
 
 export const getPublicInterpretationResults = (sessionId: string): Promise<Result<InterpretationResultItem[]>> =>
   client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`).then(r => r.data)
+
+export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSessionInfo>> =>
+  client.get<Result<PublicSessionInfo>>(`/api/interpretation/public/${sessionId}/info`).then(r => r.data)
 
 export const getActiveSessionForUser = (userId: number): Promise<Result<string | null>> =>
   client.get<Result<string | null>>(`/api/interpretation/public/user/${userId}/active`).then(r => r.data)

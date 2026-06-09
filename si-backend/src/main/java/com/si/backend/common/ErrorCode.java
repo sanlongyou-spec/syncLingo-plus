@@ -49,11 +49,7 @@ public enum ErrorCode {
 
     // Voice
     VOICE_SAMPLE_TOO_SHORT(6001, "音色样本时长不足"),
-    VOICE_SAMPLE_INVALID(6002, "音色样本无效"),
-
-    // VoiceMeeter
-    VOICEMEETER_NOT_FOUND(7001, "VoiceMeeter 未安装或未运行"),
-    VOICEMEETER_WRITE_ERROR(7002, "VoiceMeeter 写入失败");
+    VOICE_SAMPLE_INVALID(6002, "音色样本无效");
 
     private final Integer code;
     private final String message;

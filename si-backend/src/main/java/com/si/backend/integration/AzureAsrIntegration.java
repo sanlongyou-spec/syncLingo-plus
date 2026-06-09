@@ -189,6 +189,8 @@ public class AzureAsrIntegration {
         private final AtomicInteger forcedFinalLength = new AtomicInteger(0);
         /** 上一次 Azure 返回的有效 speakerId，用于补全 interim 阶段 Unknown 的强制分段 */
         private final AtomicReference<String> lastValidSpeakerId = new AtomicReference<>("");
+        /** 上一次 transcribing(中间结果) 时间戳，用于估算 ASR 句末延迟（最后中间结果→isFinal） */
+        private final java.util.concurrent.atomic.AtomicLong lastInterimAtMs = new java.util.concurrent.atomic.AtomicLong(0);
 
         private final List<String> hotwords;
 
@@ -266,6 +268,7 @@ public class AzureAsrIntegration {
                 ConversationTranscriptionResult result = e.getResult();
                 String text = result.getText();
                 if (text == null || text.isBlank()) return;
+                lastInterimAtMs.set(System.currentTimeMillis());
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
                 if (emitForcedSegments(text, lang, speakerId)) return;
@@ -295,8 +298,11 @@ public class AzureAsrIntegration {
                     }
                     return;
                 }
+                long lastInterim = lastInterimAtMs.getAndSet(0);
+                long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
                 callback.onRecognizing(text, lang, speakerId, true);
-                log.debug("[AsrSession] transcribed full, len={}, speakerId={}", text != null ? text.length() : 0, speakerId);
+                log.info("[AsrSession] asr final latency, costMs={}, len={}, speakerId={}",
+                        asrTailMs, text != null ? text.length() : 0, speakerId);
             });
 
             conversationTranscriber.canceled.addEventListener((s, e) -> {
