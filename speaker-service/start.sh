@@ -9,7 +9,7 @@ source .venv/bin/activate
 pip install -q -r requirements.txt
 
 export SPEAKER_MIN_SCORE="${SPEAKER_MIN_SCORE:-0.4}"
-export SPEAKER_MODEL_SOURCE="${SPEAKER_MODEL_SOURCE:-speechbrain/spkrec-ecapa-voxceleb}"
+export SPEAKER_ONNX_MODEL="${SPEAKER_ONNX_MODEL:-models/campplus_zh.onnx}"
 export EMBEDDINGS_FILE="${EMBEDDINGS_FILE:-embeddings.json}"
 
 uvicorn main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-7000}"

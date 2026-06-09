@@ -1,5 +1,6 @@
 """
-Speaker recognition microservice using SpeechBrain ECAPA-TDNN.
+Speaker recognition microservice using a pre-exported ONNX speaker-embedding
+model (3D-Speaker CAM++) via sherpa-onnx — no torch/speechbrain at runtime.
 Endpoints: POST /enroll, POST /identify, DELETE /enroll/{name}, GET /health
 Embeddings are persisted to disk (embeddings.json) and loaded on startup.
 """
@@ -11,46 +12,26 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import torch
-import torchaudio
+import sherpa_onnx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-try:
-    from speechbrain.inference.speaker import SpeakerRecognition
-except ImportError:
-    from speechbrain.pretrained import SpeakerRecognition  # type: ignore[no-redef]
-
-# Windows: patch SpeechBrain link_with_strategy() to use COPY instead of SYMLINK.
-# SYMLINK requires elevated privileges on Windows; COPY works without them.
-# Patching link_with_strategy (looked up by name inside fetching.py) is the
-# correct level — patching fetch() suffers from self-referential import issues.
-if os.name == 'nt':
-    import speechbrain.utils.fetching as _sb_fetch_mod
-    from speechbrain.utils.fetching import LocalStrategy as _LS
-    _orig_link = _sb_fetch_mod.link_with_strategy
-
-    def _win_link_with_strategy(src, dst, strategy):
-        if strategy == _LS.SYMLINK:
-            strategy = _LS.COPY
-        return _orig_link(src, dst, strategy)
-
-    _sb_fetch_mod.link_with_strategy = _win_link_with_strategy
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger("speaker-service")
 
 EMBEDDINGS_FILE = Path(os.environ.get("EMBEDDINGS_FILE", "embeddings.json"))
+MODEL_TAG_FILE = EMBEDDINGS_FILE.with_suffix(".model")
 MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.4"))
 # Z-norm 门槛：最佳分数相对其他候选人（impostor cohort）的标准分，越高越严格；
 # 只在候选≥3 人时生效，仅用于"拒掉对所有人都像"的模糊匹配，默认偏宽松。
 ZNORM_MIN = float(os.environ.get("SPEAKER_ZNORM_MIN", "0.8"))
 # 每个人最多保留多少条声纹样本（跨会议追加，超出则丢最旧、保留最新，避免无限增长/漂移）
 MAX_EMBEDDINGS_PER_SPEAKER = int(os.environ.get("SPEAKER_MAX_EMBEDDINGS", "20"))
-MODEL_SOURCE = os.environ.get("SPEAKER_MODEL_SOURCE", "speechbrain/spkrec-ecapa-voxceleb")
-MODEL_SAVEDIR = os.environ.get("SPEAKER_MODEL_SAVEDIR", "pretrained_models/spkrec-ecapa-voxceleb")
+# ONNX 声纹模型路径（CAM++ / WeSpeaker 等，sherpa-onnx 自带特征提取，无需 torch）
+MODEL_PATH = os.environ.get("SPEAKER_ONNX_MODEL", "models/campplus_zh.onnx")
+NUM_THREADS = int(os.environ.get("SPEAKER_ONNX_THREADS", "1"))
 
 # ── VAD（去静音/非语音帧；webrtcvad 不可用时整体降级为不过滤）──────────────
 VAD_AGGRESSIVENESS = int(os.environ.get("SPEAKER_VAD_AGGRESSIVENESS", "2"))  # 0~3，越大越激进
@@ -61,16 +42,16 @@ try:
 except Exception as _vad_err:  # noqa: BLE001
     _vad = None
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model
-    log.info("Loading SpeechBrain model from %s ...", MODEL_SOURCE)
-    model = SpeakerRecognition.from_hparams(
-        source=MODEL_SOURCE,
-        savedir=MODEL_SAVEDIR,
-        run_opts={"device": "cpu"},
+    global extractor
+    log.info("Loading speaker ONNX model from %s ...", MODEL_PATH)
+    cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+        model=MODEL_PATH, num_threads=NUM_THREADS, provider="cpu", debug=False
     )
-    log.info("Model loaded.")
+    extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
+    log.info("Model loaded, embedding dim=%d.", extractor.dim)
     load_embeddings()
     yield
 
@@ -78,37 +59,55 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Speaker Recognition Service", lifespan=lifespan)
 
 # Global state
-model: Optional[SpeakerRecognition] = None
+extractor: Optional["sherpa_onnx.SpeakerEmbeddingExtractor"] = None
 # name -> list of embedding arrays (multiple enrollments per person)
 embedding_store: dict[str, list[list[float]]] = {}
 
 
+def _model_tag() -> str:
+    return os.path.basename(MODEL_PATH)
+
+
 def load_embeddings():
+    """加载声纹库。换模型(tag 不符)时旧 ECAPA 声纹与新模型不兼容 → 备份后从空开始，
+    避免跨模型嵌入污染识别；声纹会在会中自动重新累积。"""
     global embedding_store
-    if EMBEDDINGS_FILE.exists():
+    if not EMBEDDINGS_FILE.exists():
+        embedding_store = {}
+        MODEL_TAG_FILE.write_text(_model_tag(), encoding="utf-8")
+        return
+    prev_tag = MODEL_TAG_FILE.read_text(encoding="utf-8").strip() if MODEL_TAG_FILE.exists() else ""
+    if prev_tag != _model_tag():
+        import time as _t
+        bak = EMBEDDINGS_FILE.with_suffix(f".json.bak.{int(_t.time())}")
         try:
-            embedding_store = json.loads(EMBEDDINGS_FILE.read_text(encoding="utf-8"))
-            log.info("Loaded embeddings for %d speakers from %s", len(embedding_store), EMBEDDINGS_FILE)
-        except Exception as e:
-            log.warning("Failed to load embeddings: %s", e)
-            embedding_store = {}
-    else:
+            EMBEDDINGS_FILE.rename(bak)
+            log.warning("Model changed (%s -> %s); existing voiceprints are incompatible. "
+                        "Backed up to %s and starting empty (will re-enroll during meetings).",
+                        prev_tag or "unknown", _model_tag(), bak.name)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Failed to back up old embeddings: %s", e)
+        embedding_store = {}
+        MODEL_TAG_FILE.write_text(_model_tag(), encoding="utf-8")
+        return
+    try:
+        embedding_store = json.loads(EMBEDDINGS_FILE.read_text(encoding="utf-8"))
+        log.info("Loaded embeddings for %d speakers from %s", len(embedding_store), EMBEDDINGS_FILE)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Failed to load embeddings: %s", e)
         embedding_store = {}
 
 
 def save_embeddings():
     try:
         EMBEDDINGS_FILE.write_text(json.dumps(embedding_store, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
+        MODEL_TAG_FILE.write_text(_model_tag(), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
         log.error("Failed to save embeddings: %s", e)
 
 
-def wav_bytes_to_tensor(wav_bytes: bytes) -> torch.Tensor:
-    """Load WAV bytes and resample to 16 kHz mono.
-
-    Uses the built-in `wave` module to avoid torchaudio backend dependencies
-    (torchcodec, soundfile, sox) that may not be available on all platforms.
-    """
+def wav_bytes_to_array(wav_bytes: bytes) -> np.ndarray:
+    """Load WAV bytes -> float32 mono [n] at 16 kHz (无 torch/torchaudio)。"""
     import wave
     with wave.open(io.BytesIO(wav_bytes)) as wf:
         n_channels = wf.getnchannels()
@@ -116,20 +115,25 @@ def wav_bytes_to_tensor(wav_bytes: bytes) -> torch.Tensor:
         n_frames = wf.getnframes()
         raw = wf.readframes(n_frames)
     samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    waveform = torch.from_numpy(samples.copy())
     if n_channels > 1:
-        waveform = waveform.reshape(-1, n_channels).mean(dim=1)
-    waveform = waveform.unsqueeze(0)  # (1, n_samples)
-    if sample_rate != 16000:
-        waveform = torchaudio.functional.resample(waveform, sample_rate, 16000)
-    return waveform
+        samples = samples.reshape(-1, n_channels).mean(axis=1)
+    if sample_rate != 16000 and samples.size > 0:
+        # 简单线性重采样到 16k（链路本就 16k，仅作兼容兜底）
+        ratio = 16000 / sample_rate
+        out_len = int(round(samples.size * ratio))
+        if out_len > 0:
+            idx = np.linspace(0, samples.size - 1, out_len)
+            lo = np.floor(idx).astype(np.int64)
+            hi = np.minimum(lo + 1, samples.size - 1)
+            frac = idx - lo
+            samples = (samples[lo] * (1 - frac) + samples[hi] * frac).astype(np.float32)
+    return np.ascontiguousarray(samples, dtype=np.float32)
 
 
-def apply_vad(waveform: torch.Tensor) -> torch.Tensor:
+def apply_vad(samples: np.ndarray) -> np.ndarray:
     """保留语音帧、去掉静音/非语音（16kHz mono）。VAD 不可用或语音太少时回退原始音频。"""
-    if _vad is None:
-        return waveform
-    samples = waveform.squeeze(0).cpu().numpy()
+    if _vad is None or samples.size == 0:
+        return samples
     int16 = np.clip(samples * 32768.0, -32768, 32767).astype(np.int16)
     frame_len = 480  # 30ms @ 16kHz
     kept_frames = []
@@ -141,18 +145,20 @@ def apply_vad(waveform: torch.Tensor) -> torch.Tensor:
         except Exception:  # noqa: BLE001
             kept_frames.append(frame)  # VAD 出错就保留该帧
     if not kept_frames:
-        return waveform
+        return samples
     kept = np.concatenate(kept_frames).astype(np.float32) / 32768.0
     if len(kept) < VAD_MIN_SPEECH_SEC * 16000:
-        return waveform  # 语音太少（如全是噪声/回灌），用原始音频更稳
-    return torch.from_numpy(kept).unsqueeze(0)
+        return samples  # 语音太少（如全是噪声/回灌），用原始音频更稳
+    return np.ascontiguousarray(kept, dtype=np.float32)
 
 
-def get_embedding(wav_tensor: torch.Tensor) -> np.ndarray:
-    with torch.no_grad():
-        emb = model.encode_batch(wav_tensor)
-        # shape: (1, 1, emb_dim) -> (emb_dim,)
-        return emb.squeeze().cpu().numpy()
+def get_embedding(samples: np.ndarray) -> np.ndarray:
+    stream = extractor.create_stream()
+    stream.accept_waveform(16000, samples)
+    stream.input_finished()
+    if not extractor.is_ready(stream):
+        raise HTTPException(status_code=400, detail="audio too short for embedding")
+    return np.array(extractor.compute(stream), dtype=np.float32)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -178,7 +184,6 @@ def best_score_for_speaker(query_emb: np.ndarray, stored_embeddings: list[list[f
     best_single = max(cosine_similarity(query_emb, np.array(e)) for e in stored_embeddings)
     centroid_score = cosine_similarity(query_emb, _centroid(stored_embeddings))
     return max(best_single, centroid_score)
-
 
 
 class EnrollRequest(BaseModel):
@@ -212,12 +217,12 @@ async def enroll(req: EnrollRequest):
         raise HTTPException(status_code=400, detail="name must not be blank")
     wav_bytes = base64.b64decode(req.audio_base64)
     try:
-        wav_tensor = wav_bytes_to_tensor(wav_bytes)
-    except Exception as e:
+        samples = wav_bytes_to_array(wav_bytes)
+    except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid audio: {e}")
 
-    wav_tensor = apply_vad(wav_tensor)  # 去静音/非语音，注册嵌入更干净
-    emb = get_embedding(wav_tensor)
+    samples = apply_vad(samples)  # 去静音/非语音，注册嵌入更干净
+    emb = get_embedding(samples)
     name = req.name.strip()
     if name not in embedding_store:
         embedding_store[name] = []
@@ -235,15 +240,15 @@ async def identify(req: IdentifyRequest):
     import base64
     wav_bytes = base64.b64decode(req.audio_base64)
     try:
-        wav_tensor = wav_bytes_to_tensor(wav_bytes)
-    except Exception as e:
+        samples = wav_bytes_to_array(wav_bytes)
+    except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid audio: {e}")
 
     if not embedding_store:
         return IdentifyResponse(name=None, score=0.0, identified=False)
 
-    wav_tensor = apply_vad(wav_tensor)  # 去静音/非语音，识别更稳
-    query_emb = get_embedding(wav_tensor)
+    samples = apply_vad(samples)  # 去静音/非语音，识别更稳
+    query_emb = get_embedding(samples)
     candidates = req.candidates if req.candidates else list(embedding_store.keys())
 
     # Rank candidates so we can return the runner-up (for Top-2 margin disambiguation).
@@ -299,7 +304,7 @@ async def delete_enrollment(name: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "speakers": len(embedding_store), "model_loaded": model is not None}
+    return {"status": "ok", "speakers": len(embedding_store), "model_loaded": extractor is not None}
 
 
 if __name__ == "__main__":
