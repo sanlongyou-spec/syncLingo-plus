@@ -128,6 +128,10 @@ export default function UserShareView() {
   const pingTimerRef = useRef<number | null>(null)
 
   const reportLatency = (lang: string, e2eMs: number, captureMs: number, rttMs: number, tailMs: number) => {
+    // 防御：缺少有效服务端段(captureMs)的样本不上报，避免污染统计(历史上出现过 e2eMs≈2 的坏样本)
+    if (!(captureMs > 0) || !(e2eMs >= 200)) {
+      return
+    }
     console.info('[UserShareView] e2e(client)', { lang, e2eMs, captureMs, rttMs, tailMs })
     try {
       void fetch('/api/interpretation/public/latency', {

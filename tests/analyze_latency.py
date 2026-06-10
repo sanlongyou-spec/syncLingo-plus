@@ -72,6 +72,31 @@ def main():
         pct_s = f"{pct:.0f}%" if key != "totalMs" else "100%"
         print(f"{name:<18}{st['n']:>5}{st['mean']:>9.0f}{pct_s:>7}{st['p50']:>8.0f}{st['p90']:>8.0f}{st['p95']:>8.0f}{st['max']:>8.0f}")
 
+    # ── 开始说话 → 开始播放 (e2eMs) 的分布直方图 + 百分位 ──
+    e2e = cl["e2eMs"]
+    if e2e:
+        print()
+        print("=" * 78)
+        print("【开始说话 → 开始播放 分布】 e2eMs (含说话时长, 已过滤 <200ms 噪声)")
+        print("=" * 78)
+        st = stats(e2e)
+        print(f"样本={st['n']}  最小={st['min']/1000:.1f}s  p25={pctile(e2e,25)/1000:.1f}s  "
+              f"中位={st['p50']/1000:.1f}s  p75={pctile(e2e,75)/1000:.1f}s  "
+              f"p90={st['p90']/1000:.1f}s  p95={st['p95']/1000:.1f}s  最大={st['max']/1000:.1f}s  均值={st['mean']/1000:.1f}s")
+        print("-" * 78)
+        # 1 秒一档的直方图, 直观看分布形状(是否双峰/集中在哪)
+        edges = list(range(0, 17)) + [999]  # 0..16s, 然后 16s+
+        n = len(e2e)
+        for i in range(len(edges) - 1):
+            lo, hi = edges[i], edges[i + 1]
+            cnt = sum(1 for v in e2e if lo * 1000 <= v < hi * 1000)
+            if cnt == 0:
+                continue
+            pct = cnt / n * 100
+            label = f"{lo}-{hi}s" if hi != 999 else f">{lo}s"
+            bar = "█" * int(round(pct / 2))
+            print(f"{label:>8} | {cnt:>3} ({pct:>4.1f}%) {bar}")
+
     print()
     print("=" * 78)
     print("【客户端 真实出声延迟】 收音→听众耳朵 (已过滤 e2eMs<200ms 噪声)")
