@@ -60,6 +60,17 @@ public class TerminologyController {
         return Result.ok(created);
     }
 
+    @PostMapping("/import")
+    public Result<com.si.backend.vo.TerminologyImportResultVo> importExcel(
+            @RequestParam Long userId,
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file) {
+        log.info("[TerminologyController] importExcel start, userId={}, fileName={}",
+                userId, file != null ? file.getOriginalFilename() : null);
+        com.si.backend.vo.TerminologyImportResultVo result = facade.importExcel(userId, file);
+        log.info("[TerminologyController] importExcel end, userId={}, total={}", userId, result.getTotalCount());
+        return Result.ok(result);
+    }
+
     @PatchMapping("/{id}/enabled")
     public Result<Void> updateEnabled(@PathVariable Long id, @RequestParam Long userId, @RequestParam Boolean enabled) {
         log.info("[TerminologyController] updateEnabled start, id={}, enabled={}", id, enabled);

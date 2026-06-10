@@ -45,6 +45,15 @@ public class TerminologyFacade {
         return result;
     }
 
+    public com.si.backend.vo.TerminologyImportResultVo importExcel(Long userId, org.springframework.web.multipart.MultipartFile file) {
+        log.info("[TerminologyFacade] importExcel start, userId={}, fileName={}",
+                userId, file != null ? file.getOriginalFilename() : null);
+        com.si.backend.vo.TerminologyImportResultVo result = terminologyService.importExcel(userId, file);
+        log.info("[TerminologyFacade] importExcel end, userId={}, created={}, skipped={}",
+                userId, result.getCreatedCount(), result.getSkippedCount());
+        return result;
+    }
+
     public void updateEnabled(Long id, Long userId, Boolean enabled) {
         log.info("[TerminologyFacade] updateEnabled start, id={}, userId={}, enabled={}", id, userId, enabled);
         terminologyService.updateEnabled(id, userId, enabled);

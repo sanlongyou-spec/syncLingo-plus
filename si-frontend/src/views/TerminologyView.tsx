@@ -14,6 +14,7 @@ import {
   getTerminologies,
   getUserInterpretationSessions,
   importSystemUsers,
+  importTerminology,
   previewHotwordsFromSession,
   updateAsrHotword,
   updateAsrHotwordEnabled,
@@ -97,6 +98,8 @@ export default function TerminologyView() {
   const [error, setError] = useState('')
   const [userImporting, setUserImporting] = useState(false)
   const [userImportMessage, setUserImportMessage] = useState('')
+  const [termImporting, setTermImporting] = useState(false)
+  const [termImportMessage, setTermImportMessage] = useState('')
 
   const [collapsedTermGroups, setCollapsedTermGroups] = useState<Set<string>>(new Set())
   const [collapsedHwGroups, setCollapsedHwGroups] = useState<Set<string>>(new Set())
@@ -316,6 +319,27 @@ export default function TerminologyView() {
     }
   }
 
+  const importTermExcel = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setTermImporting(true)
+    setTermImportMessage('')
+    setError('')
+    try {
+      const res = await importTerminology(userId, file)
+      const data = res.data
+      setTermImportMessage(
+        data ? `已导入 ${data.createdCount} 条，跳过重复 ${data.skippedCount} 条` : '导入完成'
+      )
+      await loadItems()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导入术语失败')
+    } finally {
+      setTermImporting(false)
+    }
+  }
+
   const submitBulkHotwords = async () => {
     const rows = bulkHotwords.split(/\r?\n/).map(v => v.trim()).filter(Boolean)
     if (rows.length === 0) return
@@ -426,6 +450,14 @@ export default function TerminologyView() {
                 {editingTermId && <button type="button" onClick={() => { setEditingTermId(null); setTermForm(EMPTY_TERM_FORM) }}>取消</button>}
               </div>
             </form>
+            <div className="user-import-panel">
+              <label className="user-import-button">
+                <input type="file" accept=".xlsx,.xls" disabled={termImporting} onChange={importTermExcel} />
+                {termImporting ? '导入中...' : '批量导入术语表格'}
+              </label>
+              <div className="user-import-hint">表头需含「中文/印尼语/英语」(可含拼音/分类/备注)，重复项自动跳过</div>
+              {termImportMessage && <div className="user-import-message">{termImportMessage}</div>}
+            </div>
           </section>
         )}
 

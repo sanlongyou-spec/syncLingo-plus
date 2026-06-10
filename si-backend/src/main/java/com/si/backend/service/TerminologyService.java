@@ -5,17 +5,30 @@ import com.si.backend.entity.Terminology;
 import com.si.backend.mapper.TerminologyMapper;
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.vo.TerminologyImportResultVo;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 术语服务，提供术语管理与翻译后修正能力。
@@ -92,6 +105,135 @@ public class TerminologyService {
         }
         log.info("[TerminologyService] createTerminologies end, count={}", terminologies.size());
         return terminologies;
+    }
+
+    /**
+     * 从 Excel 批量导入术语。表头自动识别（中文/印尼语/英语/拼音/分类/备注，支持中英文别名）；
+     * 与已有术语按 中文+印尼语+英语 组合去重，重复行跳过。
+     */
+    @Transactional
+    public TerminologyImportResultVo importExcel(Long userId, MultipartFile file) {
+        String fileName = file != null ? file.getOriginalFilename() : null;
+        log.info("[TerminologyService] importExcel start, userId={}, fileName={}, size={}",
+                userId, fileName, file != null ? file.getSize() : 0);
+        if (file == null || file.isEmpty()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的 Excel 文件");
+        }
+        long uid = userId != null ? userId : 1L;
+        try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
+            DataFormatter formatter = new DataFormatter(Locale.ROOT);
+            // 已有术语的去重键集合（中文|印尼语|英语，trim+小写）
+            Set<String> seen = new HashSet<>();
+            for (Terminology existing : terminologyMapper.findAll(uid, null, null)) {
+                seen.add(dedupKey(existing.getTermZh(), existing.getTermId(), existing.getTermEn()));
+            }
+            int created = 0;
+            int skipped = 0;
+            List<String> sheetNames = new java.util.ArrayList<>();
+            boolean headerFound = false;
+            for (Sheet sheet : workbook) {
+                Map<String, Integer> columns = null;
+                int headerRowIndex = -1;
+                for (int rowIndex = 0; rowIndex <= Math.min(sheet.getLastRowNum(), 10); rowIndex++) {
+                    Map<String, Integer> resolved = resolveTermColumns(sheet.getRow(rowIndex), formatter);
+                    if (resolved.containsKey("termZh") || resolved.containsKey("termId") || resolved.containsKey("termEn")) {
+                        columns = resolved;
+                        headerRowIndex = rowIndex;
+                        break;
+                    }
+                }
+                if (columns == null) {
+                    continue; // 该 sheet 没有术语列，跳过
+                }
+                headerFound = true;
+                sheetNames.add(sheet.getSheetName());
+                for (int rowIndex = headerRowIndex + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+                    Row row = sheet.getRow(rowIndex);
+                    if (row == null) continue;
+                    String zh = cellText(row, columns.get("termZh"), formatter);
+                    String id = cellText(row, columns.get("termId"), formatter);
+                    String en = cellText(row, columns.get("termEn"), formatter);
+                    if (zh == null && id == null && en == null) continue; // 空行
+                    String key = dedupKey(zh, id, en);
+                    if (!seen.add(key)) {
+                        skipped++;
+                        continue;
+                    }
+                    Terminology term = new Terminology();
+                    term.setUserId(uid);
+                    term.setTermZh(zh);
+                    term.setTermId(id);
+                    term.setTermEn(en);
+                    term.setPinyin(cellText(row, columns.get("pinyin"), formatter));
+                    term.setCategory(cellText(row, columns.get("category"), formatter));
+                    term.setNote(cellText(row, columns.get("note"), formatter));
+                    term.setSourceSheet(sheet.getSheetName());
+                    term.setSourceRow(rowIndex + 1);
+                    term.setReviewStatus("APPROVED");
+                    term.setEnabled(true);
+                    terminologyMapper.insert(term);
+                    created++;
+                }
+            }
+            if (!headerFound) {
+                throw BizException.of(ErrorCode.BAD_REQUEST, "未找到术语列（中文/印尼语/英语），请检查表头");
+            }
+            TerminologyImportResultVo result = TerminologyImportResultVo.builder()
+                    .sheetName(String.join("、", sheetNames))
+                    .createdCount(created)
+                    .skippedCount(skipped)
+                    .totalCount(created)
+                    .build();
+            log.info("[TerminologyService] importExcel end, userId={}, created={}, skipped={}", uid, created, skipped);
+            return result;
+        } catch (BizException e) {
+            throw e;
+        } catch (IOException e) {
+            log.error("[TerminologyService] importExcel read failed, fileName={}", fileName, e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "Excel 文件读取失败：" + e.getMessage());
+        } catch (Exception e) {
+            log.error("[TerminologyService] importExcel parse failed, fileName={}", fileName, e);
+            throw BizException.of(ErrorCode.BAD_REQUEST, "Excel 文件解析失败：" + e.getMessage());
+        }
+    }
+
+    private Map<String, Integer> resolveTermColumns(Row row, DataFormatter formatter) {
+        Map<String, Integer> columns = new HashMap<>();
+        if (row == null) return columns;
+        for (Cell cell : row) {
+            String h = formatter.formatCellValue(cell).toLowerCase(Locale.ROOT).replace(" ", "");
+            int idx = cell.getColumnIndex();
+            if (h.contains("中文") || h.contains("chinese") || h.equals("zh") || h.contains("汉")) {
+                columns.putIfAbsent("termZh", idx);
+            } else if (h.contains("印尼") || h.contains("indonesia") || h.contains("bahasa")) {
+                columns.putIfAbsent("termId", idx);
+            } else if (h.contains("英语") || h.contains("英文") || h.contains("english")) {
+                columns.putIfAbsent("termEn", idx);
+            } else if (h.contains("拼音") || h.contains("pinyin")) {
+                columns.putIfAbsent("pinyin", idx);
+            } else if (h.contains("分类") || h.contains("类别") || h.contains("category")) {
+                columns.putIfAbsent("category", idx);
+            } else if (h.contains("备注") || h.contains("说明") || h.contains("note") || h.contains("remark")) {
+                columns.putIfAbsent("note", idx);
+            }
+        }
+        return columns;
+    }
+
+    private String cellText(Row row, Integer columnIndex, DataFormatter formatter) {
+        if (row == null || columnIndex == null || columnIndex < 0) return null;
+        Cell cell = row.getCell(columnIndex);
+        if (cell == null) return null;
+        String value = formatter.formatCellValue(cell).trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    private String dedupKey(String zh, String id, String en) {
+        return (norm(zh) + "" + norm(id) + "" + norm(en));
+    }
+
+    private String norm(String s) {
+        return s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
     }
 
     public Terminology findOwnedTerminology(Long userId, Long id) {

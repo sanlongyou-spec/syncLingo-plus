@@ -225,6 +225,22 @@ export const importSystemUsers = (file: File): Promise<Result<SystemUserImportRe
   }).then(r => r.data)
 }
 
+export interface TerminologyImportResult {
+  sheetName?: string
+  createdCount: number
+  skippedCount: number
+  totalCount: number
+}
+
+export const importTerminology = (userId: number, file: File): Promise<Result<TerminologyImportResult>> => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<Result<TerminologyImportResult>>('/api/terminology/import', form, {
+    params: { userId },
+    headers: { 'Content-Type': undefined },
+  }).then(r => r.data)
+}
+
 export const getUserLanguagePreference = (userId: number): Promise<Result<UserLanguagePreference>> =>
   client.get<Result<UserLanguagePreference>>('/api/language-preferences', { params: { userId } }).then(r => r.data)
 
