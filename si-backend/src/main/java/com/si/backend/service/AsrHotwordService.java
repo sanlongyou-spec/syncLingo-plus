@@ -185,10 +185,14 @@ public class AsrHotwordService {
             List<AsrHotword> created,
             Long userId,
             Terminology terminology,
-            String phrase,
+            String rawPhrase,
             String language
     ) {
-        if (phrase == null || phrase.isBlank()) return;
+        if (rawPhrase == null || rawPhrase.isBlank()) return;
+        String phrase = rawPhrase.trim();
+        if (phrase.isEmpty()) return;
+        // 跨类别去重：同一词汇(大小写不敏感, 由 DB 排序规则保证)已存在则跳过, 避免批量导入产生重复热词
+        if (hotwordMapper.countByUserIdPhraseAndLanguage(userId, phrase, language) > 0) return;
         AsrHotword hotword = new AsrHotword();
         hotword.setPhrase(phrase);
         hotword.setLanguage(language);

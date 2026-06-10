@@ -57,10 +57,13 @@ public class AsrService {
                     asrHotwordService.listActive(userId, hotwordLanguage),
                     selectedHotwordIds
             );
+            // 去重：trim + 大小写不敏感，跨类别/跨语言过滤相同词汇，保留首次出现的原始写法
+            java.util.Set<String> seenPhrases = new java.util.HashSet<>();
             var hotwords = selectedHotwords.stream()
                     .map(com.si.backend.entity.AsrHotword::getPhrase)
                     .filter(phrase -> phrase != null && !phrase.isBlank())
-                    .distinct()
+                    .map(String::trim)
+                    .filter(phrase -> seenPhrases.add(phrase.toLowerCase()))
                     .toList();
             log.info("[AsrService] loading hotwords, sessionId={}, userId={}, count={}", sessionId, userId, hotwords.size());
             asrHotwordService.markUsed(userId, selectedHotwords.stream()
