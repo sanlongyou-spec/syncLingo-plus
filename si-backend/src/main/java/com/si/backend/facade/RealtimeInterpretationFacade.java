@@ -389,8 +389,9 @@ public class RealtimeInterpretationFacade {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}, {}→{}", sessionId, sourceLang, targetLang, e);
             return;
         }
+        long translateDoneMs = System.currentTimeMillis();
         log.info("[RealtimeInterpretationFacade] translate done, sessionId={}, costMs={}, translatedLen={}",
-                sessionId, System.currentTimeMillis() - translateStart, translated != null ? translated.length() : 0);
+                sessionId, translateDoneMs - translateStart, translated != null ? translated.length() : 0);
 
         if (translated == null || translated.isBlank()) return;
         if (!isPipelineActive(sessionId, "before_save_record")) return;
@@ -478,11 +479,21 @@ public class RealtimeInterpretationFacade {
                         if (!playFuture.isDone() && sessionService.isSessionActive(sessionId)) {
                             int chunkIndex = Math.toIntExact(chunkCounter.getAndIncrement());
                             if (firstChunkLogged.compareAndSet(false, true)) {
+                                long firstChunkMs = System.currentTimeMillis();
                                 log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, costMs={}, bytes={}",
-                                        sessionId, ttsTaskId, ttsSequence, System.currentTimeMillis() - ttsStart, pcm.length);
+                                        sessionId, ttsTaskId, ttsSequence, firstChunkMs - ttsStart, pcm.length);
                                 // 端到端(服务端口径)：该句开始被收音 → 该句该语言 TTS 首音从服务器发出
                                 log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
-                                        sessionId, finalTargetLang, System.currentTimeMillis() - speechStartAtMs, finalTranslated.length());
+                                        sessionId, finalTargetLang, firstChunkMs - speechStartAtMs, finalTranslated.length());
+                                // 分段耗时：asr(含说话时长+静音判定) / 翻译 / 排队 / TTS首音
+                                log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
+                                        sessionId, finalTargetLang,
+                                        translateStart - speechStartAtMs,
+                                        translateDoneMs - translateStart,
+                                        ttsStart - translateDoneMs,
+                                        firstChunkMs - ttsStart,
+                                        firstChunkMs - speechStartAtMs,
+                                        finalTranslated.length());
                             }
                             audioQueue.offer(new TtsBufferedChunk(pcm, finalTargetLang, ttsTaskId, ttsSequence, chunkIndex, System.nanoTime()));
                         }
