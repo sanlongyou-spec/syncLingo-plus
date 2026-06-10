@@ -10,11 +10,9 @@ import {
   getMeetingSummary,
   getPublicInterpretationResults,
   getSpeakerSummaries,
-  generateSummaryPdf,
-  generateSpeakerSummaryPdf,
   regenerateMeetingSummary,
   regenerateSpeakerSummary,
-  sendSummaryFileToTeams,
+  sendTeamsSummaryToUsers,
   updateActionItemStatus,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
@@ -246,7 +244,6 @@ const formatChineseDate = (src?: string | null): string => {
   return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${dd}日（${wk}）`
 }
 
-const pdfFileName = (base: string) => `${sanitizeFilename(base)}.pdf`
 
 export default function HistoryView() {
   const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
@@ -503,9 +500,9 @@ export default function HistoryView() {
     if (recipients.length === 0) { setTeamsPushStatus('error'); setTimeout(() => setTeamsPushStatus('idle'), 3000); return }
     setTeamsPushStatus('loading')
     try {
-      const blob = await generateSummaryPdf(title || '会议总结', text)
-      const res = await sendSummaryFileToTeams(blob, pdfFileName(title || '会议总结'), { title, recipients })
-      if (!res.sent) throw new Error(res.error || '发送失败')
+      const content = `${title || '会议总结'}\n\n${text}`
+      const res = await sendTeamsSummaryToUsers(content, recipients)
+      if (!res.sent) throw new Error(res.failures?.[0]?.error || '发送失败')
       setTeamsPushStatus('done')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
     } catch {
@@ -582,14 +579,9 @@ export default function HistoryView() {
       const speakerName = record.speakerName || '发言人'
       const dateText = formatChineseDate(
         selectedMeeting?.scheduledTime || selectedMeeting?.createTime || record.createTime)
-      const blob = await generateSpeakerSummaryPdf({
-        meetingName, speakerName, sequence, dateText, body: record.summary || '',
-      })
-      const res = await sendSummaryFileToTeams(blob, pdfFileName(`${speakerName}-发言摘要`), {
-        title: `${meetingName}-${speakerName}发言摘要`,
-        recipients,
-      })
-      if (!res.sent) throw new Error(res.error || '发送失败')
+      const content = `${meetingName} · ${speakerName}发言摘要（第${sequence}位发言 · ${dateText}）\n\n${record.summary || ''}`
+      const res = await sendTeamsSummaryToUsers(content, recipients)
+      if (!res.sent) throw new Error(res.failures?.[0]?.error || '发送失败')
       setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'done' }))
       setTimeout(() => {
         setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
@@ -1014,7 +1006,7 @@ export default function HistoryView() {
                                 onClick={() => { void pushSpeakerSummaryToTeams(rec, chosenRecipients, statusKey, idx + 1) }}
                                 disabled={pushStatus === 'loading' || chosenRecipients.length === 0}
                               >
-                                {pushStatus === 'done' ? '已发送 ✓' : pushStatus === 'error' ? '发送失败' : pushStatus === 'loading' ? '发送中...' : `发送到 Teams · PDF（${chosenRecipients.length} 人）`}
+                                {pushStatus === 'done' ? '已发送 ✓' : pushStatus === 'error' ? '发送失败' : pushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenRecipients.length} 人）`}
                               </button>
                             </div>
                           </div>
@@ -1024,7 +1016,7 @@ export default function HistoryView() {
                             onChange={e => setSpeakerRecords(prev => prev.map((r, i) => i === idx ? { ...r, summary: e.target.value } : r))}
                             spellCheck={false}
                           />
-                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」上传到 Teams/SharePoint 并发送链接</div>
+                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」以文本消息发送给所选 Teams 账号</div>
                         </div>
                       )
                     })}
@@ -1114,12 +1106,12 @@ export default function HistoryView() {
                             onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients) }}
                             disabled={teamsPushStatus === 'loading' || chosenSummaryRecipients.length === 0}
                           >
-                            {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams · PDF（${chosenSummaryRecipients.length} 人）`}
+                            {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenSummaryRecipients.length} 人）`}
                           </button>
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
                         <div className="history-summary-body">
-                          <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams · PDF」上传到 Teams/SharePoint 并发送链接</div>
+                          <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams」以文本消息发送给所选 Teams 账号</div>
                           <textarea
                             className="history-summary-edit"
                             value={displayed}
