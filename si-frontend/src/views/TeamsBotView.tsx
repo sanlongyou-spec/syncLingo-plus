@@ -390,25 +390,34 @@ export default function TeamsBotView() {
   // No auto-fetch on entry — participants/attendance load only when the user clicks 「刷新」
   // (or shortly after the bot joins a meeting, below).
 
-  const handlePreviewMeetingNotification = async () => {
-    if (!selectedMeetingId) { setError('请先选择或新建会议'); return }
+  const handlePreviewMeetingNotification = async (auto = false) => {
+    if (!selectedMeetingId) { if (!auto) setError('请先选择或新建会议'); return }
     const url = meetingUrl.trim()
-    if (!url) { setError('请填写会议链接'); return }
+    if (!url) { if (!auto) setError('请填写会议链接'); return }
     setLinkSaving(true)
-    setError('')
+    if (!auto) setError('')
     try {
       const preview = await previewMeetingNotification(selectedMeetingId, url, scheduleFile?.fileId)
       setNotificationPreview(preview)
       setNotificationContent(preview.notificationContent)
       setSelectedNotificationRecipients(new Set(preview.teamsRecipients.map(recipient => recipient.teamsAccount)))
       setMeetings(prev => prev.map(m => m.id === selectedMeetingId ? { ...m, meetingUrl: url } : m))
-      setSuccess(`会议链接已保存，已生成通知预览并匹配 ${preview.teamsRecipients.length} 个 Teams 账号`)
+      if (!auto) setSuccess(`会议链接已保存，已生成通知预览并匹配 ${preview.teamsRecipients.length} 个 Teams 账号`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '生成通知预览失败')
+      if (!auto) setError(e instanceof Error ? e.message : '生成通知预览失败')
     } finally {
       setLinkSaving(false)
     }
   }
+
+  // 自动生成预览：选好会议且有会议链接时(或上传/更换会议安排后)防抖自动解析展示，
+  // 让用户先看到「拟发送内容 + 参会名单」，确认无误再点「发送通知」。
+  useEffect(() => {
+    if (!selectedMeetingId || !meetingUrl.trim()) return
+    const timer = window.setTimeout(() => { void handlePreviewMeetingNotification(true) }, 700)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMeetingId, meetingUrl, scheduleFile?.fileId])
 
   const toggleNotificationRecipient = (teamsAccount: string) => {
     setSelectedNotificationRecipients(previous => {
@@ -639,15 +648,15 @@ export default function TeamsBotView() {
                   onKeyDown={e => e.key === 'Enter' && void handlePreviewMeetingNotification()}
                 />
                 <button
-                  className={`tb-btn tb-btn--primary ${linkSaving ? 'tb-btn--loading' : ''}`}
+                  className={`tb-btn ${linkSaving ? 'tb-btn--loading' : ''}`}
                   disabled={linkSaving || !meetingUrl.trim()}
                   onClick={() => void handlePreviewMeetingNotification()}
                 >
-                  {linkSaving ? '解析中…' : '保存并生成通知'}
+                  {linkSaving ? '解析中…' : '重新生成预览'}
                 </button>
               </div>
               <p className="tb-meeting-link-hint">
-                系统会解析会议通知、匹配应参会人员的 Teams 账号；检查并修改拟发送内容后，再点击发送通知。
+                填入会议链接后会自动解析并展示「拟发送内容 + 参会名单」；检查并修改无误后，再点击「发送通知」。
               </p>
               {notificationPreview && (
                 <div className="tb-notify-plan">
