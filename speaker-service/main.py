@@ -23,10 +23,13 @@ log = logging.getLogger("speaker-service")
 
 EMBEDDINGS_FILE = Path(os.environ.get("EMBEDDINGS_FILE", "embeddings.json"))
 MODEL_TAG_FILE = EMBEDDINGS_FILE.with_suffix(".model")
-MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.4"))
+MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.5"))
 # Z-norm 门槛：最佳分数相对其他候选人（impostor cohort）的标准分，越高越严格；
 # 只在候选≥3 人时生效，仅用于"拒掉对所有人都像"的模糊匹配，默认偏宽松。
 ZNORM_MIN = float(os.environ.get("SPEAKER_ZNORM_MIN", "0.8"))
+# 最小区分度：最佳与次佳的差(margin)。过小说明"对两个人都同样像"(常见于声纹被污染/重复登记)，
+# 此时分不清是谁，宁可判 Unknown 也不要乱归到某个人。
+MIN_MARGIN = float(os.environ.get("SPEAKER_MIN_MARGIN", "0.10"))
 # 每个人最多保留多少条声纹样本（跨会议追加，超出则丢最旧、保留最新，避免无限增长/漂移）
 MAX_EMBEDDINGS_PER_SPEAKER = int(os.environ.get("SPEAKER_MAX_EMBEDDINGS", "20"))
 # ONNX 声纹模型路径（CAM++ / WeSpeaker 等，sherpa-onnx 自带特征提取，无需 torch）
@@ -277,6 +280,11 @@ async def identify(req: IdentifyRequest):
             identified = False
             log.info("Rejected by z-norm, best='%s' score=%.4f z=%.4f < %.4f",
                      best_name, best_score, znorm, ZNORM_MIN)
+    # 模糊匹配拒绝：最佳与次佳过于接近(margin 小)说明分不清是谁(多见于声纹被污染/重复登记)，判 Unknown
+    if identified and second_name is not None and margin < MIN_MARGIN:
+        identified = False
+        log.info("Rejected by margin, best='%s' %.4f vs '%s' %.4f margin=%.4f < %.4f",
+                 best_name, best_score, second_name, second_score, margin, MIN_MARGIN)
     if identified:
         log.info("Identified speaker '%s' score=%.4f (runner-up '%s' %.4f, margin %.4f)",
                  best_name, best_score, second_name, second_score, margin)
