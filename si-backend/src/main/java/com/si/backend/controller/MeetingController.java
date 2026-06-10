@@ -2,18 +2,23 @@ package com.si.backend.controller;
 
 import com.si.backend.common.Result;
 import com.si.backend.dto.CreateMeetingRequest;
+import com.si.backend.dto.MeetingNotificationPreviewRequest;
+import com.si.backend.dto.MeetingNotificationSendRequest;
 import com.si.backend.dto.SpeakerSummaryRequest;
 import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.facade.InterpretationFacade;
+import com.si.backend.facade.MeetingNotificationFacade;
 import com.si.backend.service.MeetingActionItemService;
 import com.si.backend.service.MeetingInsightService;
-import com.si.backend.service.MeetingNotificationService;
 import com.si.backend.service.MeetingService;
 import com.si.backend.service.PreMeetingService;
 import com.si.backend.service.SpeakerSummaryService;
 import com.si.backend.vo.InterpretationSessionVo;
 import com.si.backend.vo.MeetingFileVo;
+import com.si.backend.vo.MeetingNotificationPreviewVo;
+import com.si.backend.vo.MeetingNotificationRecipientVo;
+import com.si.backend.vo.MeetingNotificationSendVo;
 import com.si.backend.vo.MeetingVo;
 import com.si.backend.vo.PreMeetingSummaryVo;
 import com.si.backend.vo.SpeakerSummaryVo;
@@ -43,7 +48,7 @@ public class MeetingController {
     private final InterpretationFacade interpretationFacade;
     private final MeetingActionItemService actionItemService;
     private final MeetingInsightService meetingInsightService;
-    private final MeetingNotificationService meetingNotificationService;
+    private final MeetingNotificationFacade meetingNotificationFacade;
     private final PreMeetingService preMeetingService;
 
     @PostMapping
@@ -96,40 +101,23 @@ public class MeetingController {
         return Result.ok();
     }
 
-    /**
-     * Set the meeting's join link (required after 会议安排 upload), then build the notification plan
-     * (match 应到名单 → emails → Teams users) and auto-send the meeting notification card.
-     * Returns the plan so the frontend can show matched / skipped / unmatched.
-     */
-    @PostMapping("/{meetingId}/meeting-link")
-    public Result<MeetingNotificationService.NotificationPlan> setMeetingLink(
+    @PostMapping("/{meetingId}/notification-preview")
+    public Result<MeetingNotificationPreviewVo> previewNotification(
             @PathVariable Long meetingId,
-            @RequestBody Map<String, String> body) {
-        String url = body.get("meetingUrl");
-        if (url == null || url.isBlank()) {
-            throw com.si.backend.common.BizException.of(
-                    com.si.backend.common.ErrorCode.BAD_REQUEST, "请填写会议链接");
-        }
-        meetingService.setMeetingUrl(meetingId, url.trim());
+            @RequestBody MeetingNotificationPreviewRequest request) {
+        return Result.ok(meetingNotificationFacade.preview(meetingId, request));
+    }
 
-        String fileId = body.get("fileId");
-        String meetingName = meetingService.getMeeting(meetingId).getTitle();
-        String meetingTime = fileId != null ? preMeetingService.extractMeetingTime(fileId) : null;
-        // Names for matching: prefer the freshly-uploaded 会议安排 (in memory); otherwise fall back to the
-        // 应到名单 persisted on the meeting, so notifications also work for a previously-created meeting.
-        List<String> names = fileId != null
-                ? preMeetingService.extractMeetingEntities(fileId).participantNames()
-                : List.of();
-        if (names.isEmpty()) {
-            names = preMeetingService.expectedParticipantNames(meetingId);
-        }
+    @GetMapping("/{meetingId}/notification-recipients")
+    public Result<List<MeetingNotificationRecipientVo>> notificationRecipients(@PathVariable Long meetingId) {
+        return Result.ok(meetingNotificationFacade.recipients(meetingId));
+    }
 
-        MeetingNotificationService.NotificationPlan plan =
-                meetingNotificationService.buildPlan(meetingName, meetingTime, names);
-        meetingNotificationService.send(plan, url.trim());   // auto-send (test recipient in test mode)
-        log.info("[MeetingController] meeting-link set + notified, meetingId={}, teams={}, skipped={}, unmatched={}",
-                meetingId, plan.teamsRecipients().size(), plan.nonTeamsSkipped().size(), plan.unmatched().size());
-        return Result.ok(plan);
+    @PostMapping("/{meetingId}/notification-send")
+    public Result<MeetingNotificationSendVo> sendNotification(
+            @PathVariable Long meetingId,
+            @RequestBody MeetingNotificationSendRequest request) {
+        return Result.ok(meetingNotificationFacade.send(meetingId, request));
     }
 
     @PutMapping("/{meetingId}/files/{fileId}/summary")

@@ -29,7 +29,9 @@ import type {
   MeetingParticipantsResponse,
   Meeting,
   MeetingFile,
-  MeetingNotificationPlan,
+  MeetingNotificationPreview,
+  MeetingNotificationRecipient,
+  MeetingNotificationSendResult,
   SpeakerSummaryResult,
   SpeakerSummaryRecord,
   MeetingActionItem,
@@ -530,18 +532,39 @@ export const saveMeetingFileSummary = (meetingId: number, fileId: number, summar
 export const saveMeetingAttendance = (meetingId: number, attendanceJson: string): Promise<Result<void>> =>
   client.put<Result<void>>(`/api/meetings/${meetingId}/attendance`, { attendanceJson }).then(r => r.data)
 
-// Set the meeting's join link (required after 会议安排 upload). Backend matches the 应到名单 to the user
-// directory, finds Teams accounts (jlg.co.id) and auto-sends the meeting notification card.
-export const setMeetingLink = (
+export const previewMeetingNotification = (
   meetingId: number,
   meetingUrl: string,
   fileId?: string,
-): Promise<MeetingNotificationPlan> =>
-  client.post<Result<MeetingNotificationPlan>>(`/api/meetings/${meetingId}/meeting-link`, {
+): Promise<MeetingNotificationPreview> =>
+  client.post<Result<MeetingNotificationPreview>>(`/api/meetings/${meetingId}/notification-preview`, {
     meetingUrl,
     ...(fileId ? { fileId } : {}),
   }).then(r => {
     if (r.data?.code !== 200) throw new Error(r.data?.message || '设置会议链接失败')
+    return r.data.data
+  })
+
+export const getMeetingNotificationRecipients = (
+  meetingId: number,
+): Promise<MeetingNotificationRecipient[]> =>
+  client.get<Result<MeetingNotificationRecipient[]>>(
+    `/api/meetings/${meetingId}/notification-recipients`,
+  ).then(r => {
+    if (r.data?.code !== 200) throw new Error(r.data?.message || '读取会议通知账号失败')
+    return r.data.data || []
+  })
+
+export const sendMeetingNotification = (
+  meetingId: number,
+  content: string,
+  recipients: string[],
+): Promise<MeetingNotificationSendResult> =>
+  client.post<Result<MeetingNotificationSendResult>>(`/api/meetings/${meetingId}/notification-send`, {
+    content,
+    recipients,
+  }).then(r => {
+    if (r.data?.code !== 200) throw new Error(r.data?.message || '发送会议通知失败')
     return r.data.data
   })
 

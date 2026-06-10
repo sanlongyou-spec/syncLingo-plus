@@ -157,6 +157,21 @@ public class MeetingService {
         return f;
     }
 
+    public String getMeetingNoticeText(Long meetingId) {
+        requireMeeting(meetingId);
+        List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
+        PersistentPreMeetingFile notice = files.stream()
+                .filter(file -> file.getFileName() != null
+                        && (file.getFileName().contains("会议通知") || file.getFileName().contains("会议安排")))
+                .findFirst()
+                .orElse(files.isEmpty() ? null : files.get(0));
+        if (notice == null || notice.getId() == null) {
+            return "";
+        }
+        PersistentPreMeetingFile full = fileMapper.findById(notice.getId());
+        return full == null || full.getFileContent() == null ? "" : full.getFileContent();
+    }
+
     public void saveAttendance(Long meetingId, String attendanceJson) {
         requireMeeting(meetingId);
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);

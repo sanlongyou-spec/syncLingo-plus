@@ -6,8 +6,6 @@ export const STORAGE_KEYS = {
   USER_ID: 'si_user_id',
   TOKEN: 'si_token',
   CURRENT_SESSION_ID: 'si_current_session_id',
-  SPEAKER_SUMMARY_RECIPIENTS: 'si_speaker_summary_recipients',
-  MEETING_SUMMARY_RECIPIENTS: 'si_meeting_summary_recipients',
   MEETING_SUMMARY_INCLUDE_CHAT: 'si_meeting_summary_include_chat',
   SPEAKER_SUMMARY_REQUIREMENTS: 'si_speaker_summary_requirements',
   MEETING_SUMMARY_REQUIREMENTS: 'si_meeting_summary_requirements',

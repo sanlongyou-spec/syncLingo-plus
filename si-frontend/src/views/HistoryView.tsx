@@ -6,6 +6,7 @@ import {
   getActionItems,
   getMeetings,
   getMeetingSessions,
+  getMeetingNotificationRecipients,
   getMeetingSummary,
   getPublicInterpretationResults,
   getSpeakerSummaries,
@@ -16,13 +17,14 @@ import {
   sendSummaryFileToTeams,
   updateActionItemStatus,
 } from '../api'
-import { ROUTES, STORAGE_KEYS, TEAMS_BOT_STORAGE_KEYS } from '../constants'
+import { ROUTES, STORAGE_KEYS } from '../constants'
 import type {
   InterpretationResultItem,
   InterpretationStatus,
   Meeting,
   MeetingActionItem,
   MeetingFile,
+  MeetingNotificationRecipient,
   MeetingParticipant,
   PreMeetingAttendanceResult,
   SpeakerSummaryRecord,
@@ -57,31 +59,6 @@ const mergeParticipants = (participants: MeetingParticipant[]) => {
     })
   })
   return Array.from(byAadId.values())
-}
-
-const readStoredKnownParticipants = () => {
-  try {
-    const saved = localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.ALL_KNOWN_PARTICIPANTS)
-    return saved ? mergeParticipants(JSON.parse(saved) as MeetingParticipant[]) : []
-  } catch {
-    return []
-  }
-}
-
-const readStoredRecipientSet = (key: string) => {
-  try {
-    const saved = localStorage.getItem(key)
-    if (!saved) return new Set<string>()
-    const parsed = JSON.parse(saved)
-    if (!Array.isArray(parsed)) return new Set<string>()
-    return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== ''))
-  } catch {
-    return new Set<string>()
-  }
-}
-
-const saveStoredRecipientSet = (key: string, recipients: Set<string>) => {
-  localStorage.setItem(key, JSON.stringify(Array.from(recipients)))
 }
 
 const parseSavedAttendance = (json?: string | null) => {
@@ -299,9 +276,9 @@ export default function HistoryView() {
   )
   const [summaryReqSaved, setSummaryReqSaved] = useState(false)
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
-    () => readStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS)
-  )
+  const [meetingRecipientAccounts, setMeetingRecipientAccounts] = useState<MeetingNotificationRecipient[]>([])
+  const [recipientAccountsLoading, setRecipientAccountsLoading] = useState(false)
+  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set())
   const hasFetchedSummaryRef = useRef(false)
 
   // ── Speaker tab ─────────────────────────────────────────
@@ -311,9 +288,7 @@ export default function HistoryView() {
     () => localStorage.getItem(STORAGE_KEYS.SPEAKER_SUMMARY_REQUIREMENTS) ?? ''
   )
   const [speakerReqSaved, setSpeakerReqSaved] = useState(false)
-  const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(
-    () => readStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS)
-  )
+  const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(new Set())
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
 
@@ -323,13 +298,6 @@ export default function HistoryView() {
   const [extractingActionItems, setExtractingActionItems] = useState(false)
 
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
-  const allKnownParticipants = useMemo(() => {
-    const participantsFromMeetings = meetings.flatMap(meeting =>
-      parseSavedAttendance(meeting.attendanceJson).participants
-    )
-    return mergeParticipants([...readStoredKnownParticipants(), ...participantsFromMeetings])
-  }, [meetings])
-
   const transcriptGroups = useMemo(() => {
     const groups: TranscriptGroup[] = []
     for (const item of results) {
@@ -372,14 +340,6 @@ export default function HistoryView() {
   const activeTranscriptMatchKind = transcriptMatches[activeTranscriptMatchIndex]?.kind ?? null
 
   useEffect(() => {
-    if (allKnownParticipants.length === 0) return
-    localStorage.setItem(
-      TEAMS_BOT_STORAGE_KEYS.ALL_KNOWN_PARTICIPANTS,
-      JSON.stringify(allKnownParticipants),
-    )
-  }, [allKnownParticipants])
-
-  useEffect(() => {
     if (transcriptMatchIndexes.length === 0) {
       setActiveTranscriptMatchIndex(0)
       return
@@ -418,8 +378,9 @@ export default function HistoryView() {
     setSpeakerRecords([])
     setSessions([])
     setSelectedSessionId(null)
-    setSelectedRecipients(readStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS))
-    setSelectedSpeakerRecipients(readStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS))
+    setMeetingRecipientAccounts([])
+    setSelectedRecipients(new Set())
+    setSelectedSpeakerRecipients(new Set())
     setSpeakerRegenStatus({})
     setSpeakerPushStatus({})
     setTeamsPushStatus('idle')
@@ -432,6 +393,24 @@ export default function HistoryView() {
         if (list.length > 0) setSelectedSessionId(list[0].sessionId)
       })
       .catch(() => {})
+  }, [selectedMeetingId])
+
+  useEffect(() => {
+    if (selectedMeetingId === null) return
+    setRecipientAccountsLoading(true)
+    getMeetingNotificationRecipients(selectedMeetingId)
+      .then(recipients => {
+        setMeetingRecipientAccounts(recipients)
+        const accountIds = new Set(recipients.map(recipient => recipient.teamsAccount))
+        setSelectedRecipients(new Set(accountIds))
+        setSelectedSpeakerRecipients(new Set(accountIds))
+      })
+      .catch(() => {
+        setMeetingRecipientAccounts([])
+        setSelectedRecipients(new Set())
+        setSelectedSpeakerRecipients(new Set())
+      })
+      .finally(() => setRecipientAccountsLoading(false))
   }, [selectedMeetingId])
 
   // ── Load tab data lazily ─────────────────────────────────
@@ -551,7 +530,6 @@ export default function HistoryView() {
     setSelectedRecipients(prev => {
       const next = new Set(prev)
       next.has(aadId) ? next.delete(aadId) : next.add(aadId)
-      saveStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS, next)
       return next
     })
   }
@@ -560,7 +538,6 @@ export default function HistoryView() {
     setSelectedSpeakerRecipients(prev => {
       const next = new Set(prev)
       next.has(aadId) ? next.delete(aadId) : next.add(aadId)
-      saveStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS, next)
       return next
     })
   }
@@ -945,15 +922,15 @@ export default function HistoryView() {
 
               {/* ── 发言摘要 Tab ── */}
               {activeTab === 'speakers' && (() => {
-                const validParticipants = allKnownParticipants.filter(p => p.aadId)
-                const chosenRecipients = validParticipants
-                  .filter(p => selectedSpeakerRecipients.has(p.aadId))
-                  .map(p => p.aadId)
-                const allSelected = validParticipants.length > 0
-                  && validParticipants.every(p => selectedSpeakerRecipients.has(p.aadId))
+                const chosenRecipients = meetingRecipientAccounts
+                  .filter(recipient => selectedSpeakerRecipients.has(recipient.teamsAccount))
+                  .map(recipient => recipient.teamsAccount)
+                const allSelected = meetingRecipientAccounts.length > 0
+                  && meetingRecipientAccounts.every(recipient => selectedSpeakerRecipients.has(recipient.teamsAccount))
                 const toggleAll = () => {
-                  const next = allSelected ? new Set<string>() : new Set(validParticipants.map(p => p.aadId))
-                  saveStoredRecipientSet(STORAGE_KEYS.SPEAKER_SUMMARY_RECIPIENTS, next)
+                  const next = allSelected
+                    ? new Set<string>()
+                    : new Set(meetingRecipientAccounts.map(recipient => recipient.teamsAccount))
                   setSelectedSpeakerRecipients(next)
                 }
                 return (
@@ -977,9 +954,11 @@ export default function HistoryView() {
                         rows={3}
                       />
                     </div>
-                    {validParticipants.length === 0 ? (
+                    {recipientAccountsLoading ? (
+                      <div className="history-summary-send-hint">正在读取会议通知名单并匹配 Teams 账号...</div>
+                    ) : meetingRecipientAccounts.length === 0 ? (
                       <div className="history-summary-send-hint">
-                        暂无可选账号。请先在 Teams Bot 页面刷新参会人员或生成参会情况。
+                        该会议通知的应参会名单中暂无可匹配的 Teams 账号。
                       </div>
                     ) : (
                       <div className="history-summary-send-panel">
@@ -990,14 +969,14 @@ export default function HistoryView() {
                           </button>
                         </div>
                         <div className="history-summary-send-list">
-                          {validParticipants.map(p => (
-                            <label key={p.aadId} className="history-summary-send-item">
+                          {meetingRecipientAccounts.map(recipient => (
+                            <label key={recipient.teamsAccount} className="history-summary-send-item">
                               <input
                                 type="checkbox"
-                                checked={selectedSpeakerRecipients.has(p.aadId)}
-                                onChange={() => toggleSpeakerRecipient(p.aadId)}
+                                checked={selectedSpeakerRecipients.has(recipient.teamsAccount)}
+                                onChange={() => toggleSpeakerRecipient(recipient.teamsAccount)}
                               />
-                              <span>{p.displayName || p.email || p.aadId}</span>
+                              <span>{recipient.scheduleName} · {recipient.accountName || recipient.teamsAccount}</span>
                             </label>
                           ))}
                         </div>
@@ -1056,14 +1035,17 @@ export default function HistoryView() {
               {/* ── 会议总结 Tab ── */}
               {activeTab === 'summary' && (() => {
                 const displayed = summaryText
-                const validP = allKnownParticipants.filter(p => p.aadId)
-                const allSummarySelected = validP.length > 0 && validP.every(p => selectedRecipients.has(p.aadId))
+                const allSummarySelected = meetingRecipientAccounts.length > 0
+                  && meetingRecipientAccounts.every(recipient => selectedRecipients.has(recipient.teamsAccount))
                 const toggleAllSummary = () => {
-                  const next = allSummarySelected ? new Set<string>() : new Set(validP.map(p => p.aadId))
-                  saveStoredRecipientSet(STORAGE_KEYS.MEETING_SUMMARY_RECIPIENTS, next)
+                  const next = allSummarySelected
+                    ? new Set<string>()
+                    : new Set(meetingRecipientAccounts.map(recipient => recipient.teamsAccount))
                   setSelectedRecipients(next)
                 }
-                const chosenSummaryRecipients = validP.filter(p => selectedRecipients.has(p.aadId)).map(p => p.aadId)
+                const chosenSummaryRecipients = meetingRecipientAccounts
+                  .filter(recipient => selectedRecipients.has(recipient.teamsAccount))
+                  .map(recipient => recipient.teamsAccount)
                 return (
                   <div className="history-summary-tab">
                     <div className="history-summary-requirements">
@@ -1082,9 +1064,11 @@ export default function HistoryView() {
                       />
                     </div>
                     <div className="history-summary-send-settings">
-                      {validP.length === 0 ? (
+                      {recipientAccountsLoading ? (
+                        <div className="history-summary-send-hint">正在读取会议通知名单并匹配 Teams 账号...</div>
+                      ) : meetingRecipientAccounts.length === 0 ? (
                         <div className="history-summary-send-hint">
-                          暂无可选账号。请先在 Teams Bot 页面刷新参会人员或生成参会情况。
+                          该会议通知的应参会名单中暂无可匹配的 Teams 账号。
                         </div>
                       ) : (
                         <div className="history-summary-send-panel">
@@ -1095,14 +1079,14 @@ export default function HistoryView() {
                             </button>
                           </div>
                           <div className="history-summary-send-list">
-                            {validP.map(p => (
-                              <label key={p.aadId} className="history-summary-send-item">
+                            {meetingRecipientAccounts.map(recipient => (
+                              <label key={recipient.teamsAccount} className="history-summary-send-item">
                                 <input
                                   type="checkbox"
-                                  checked={selectedRecipients.has(p.aadId)}
-                                  onChange={() => toggleSummaryRecipient(p.aadId)}
+                                  checked={selectedRecipients.has(recipient.teamsAccount)}
+                                  onChange={() => toggleSummaryRecipient(recipient.teamsAccount)}
                                 />
-                                <span>{p.displayName || p.email || p.aadId}</span>
+                                <span>{recipient.scheduleName} · {recipient.accountName || recipient.teamsAccount}</span>
                               </label>
                             ))}
                           </div>

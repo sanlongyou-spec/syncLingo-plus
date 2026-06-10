@@ -7,11 +7,12 @@ import {
   generateAttendanceFromMeeting,
   generatePreMeetingAttendance,
   getMeetingParticipants,
+  sendMeetingNotification,
   saveExpectedParticipants,
   getMeetings,
   joinMeeting,
   loadMeetingFileForSummary,
-  setMeetingLink,
+  previewMeetingNotification,
   saveMeetingAttendance,
   saveMeetingFileSummary,
   summarizePreMeetingFile,
@@ -23,7 +24,7 @@ import { ROUTES, STORAGE_KEYS, TEAMS_BOT_STORAGE_KEYS } from '../constants'
 import type {
   Meeting,
   MeetingFile,
-  MeetingNotificationPlan,
+  MeetingNotificationPreview,
   MeetingParticipant,
   PreMeetingAttendanceResult,
   PreMeetingFile,
@@ -135,7 +136,10 @@ export default function TeamsBotView() {
   // 会议链接（一个会议一个链接，必填）— 保存后机器人加入会议直接用它，无需再次粘贴。
   const [meetingUrl, setMeetingUrl] = useState('')          // link draft for the selected meeting
   const [linkSaving, setLinkSaving] = useState(false)
-  const [notificationPlan, setNotificationPlan] = useState<MeetingNotificationPlan | null>(null)
+  const [notificationPreview, setNotificationPreview] = useState<MeetingNotificationPreview | null>(null)
+  const [notificationContent, setNotificationContent] = useState('')
+  const [selectedNotificationRecipients, setSelectedNotificationRecipients] = useState<Set<string>>(new Set())
+  const [notificationSending, setNotificationSending] = useState(false)
 
   // ── Section 3: Teams Bot ─────────────────────────────
   const [joinStatus, setJoinStatus] = useState<'idle' | 'joining' | 'joined' | 'error'>('idle')
@@ -178,7 +182,9 @@ export default function TeamsBotView() {
     setMeetingName(m?.title || '')
     setMeetingHasExpected(!!m?.hasExpectedParticipants)
     setMeetingUrl(m?.meetingUrl || '')
-    setNotificationPlan(null)
+    setNotificationPreview(null)
+    setNotificationContent('')
+    setSelectedNotificationRecipients(new Set())
     // A previously-selected meeting has no in-memory 会议安排; clear it. The attendance comparison
     // still works if the meeting has a saved 应到 list (meetingHasExpected); otherwise refresh
     // just shows the Teams 实到 list.
@@ -210,7 +216,7 @@ export default function TeamsBotView() {
       setMeetingName(title)
       setPrepFiles([]); setSummaryMap({}); setSelectedFileId(''); setPreMeetingToDbFileId({})
       setParticipants([]); setAttendanceResult(null)
-      setMeetingUrl(''); setNotificationPlan(null)
+      setMeetingUrl(''); setNotificationPreview(null); setNotificationContent(''); setSelectedNotificationRecipients(new Set())
       setSuccess('会议已创建，请填写会议链接以通知参会人')
     } catch (e) {
       setError(e instanceof Error ? e.message : '新建会议失败')
@@ -234,9 +240,10 @@ export default function TeamsBotView() {
       const newMeeting = mRes.data
       setSelectedMeetingId(newMeeting.id)
       localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.LAST_SELECTED_MEETING_ID, String(newMeeting.id))
-      setMeetingFiles([])
+      const noticeFileRes = await uploadFileToMeeting(newMeeting.id, file)
+      setMeetingFiles([noticeFileRes.data])
       // fresh meeting — clear any prior AI/attendance working state
-      setPrepFiles([]); setSummaryMap({}); setSelectedFileId(''); setPreMeetingToDbFileId({})
+      setPrepFiles([]); setSummaryMap({}); setSelectedFileId(''); setPreMeetingToDbFileId({ [first.fileId]: noticeFileRes.data.id })
       setParticipants([]); setAttendanceResult(null)
       // Persist the 应到 list onto the meeting so the comparison survives across sessions.
       let savedExpected = false
@@ -247,8 +254,8 @@ export default function TeamsBotView() {
         console.warn('[TeamsBotView] saveExpectedParticipants failed:', err)
       }
       setMeetingHasExpected(savedExpected)
-      setMeetingUrl(''); setNotificationPlan(null)   // fresh meeting — link required before notifying
-      setMeetings(prev => [{ ...newMeeting, hasExpectedParticipants: savedExpected },
+      setMeetingUrl(''); setNotificationPreview(null); setNotificationContent(''); setSelectedNotificationRecipients(new Set())
+      setMeetings(prev => [{ ...newMeeting, hasExpectedParticipants: savedExpected, files: [noticeFileRes.data] },
         ...prev.filter(m => m.id !== newMeeting.id)])
       setSuccess(savedExpected
         ? '会议已创建，会议安排与应到名单已保存，请填写会议链接以通知参会人'
@@ -383,23 +390,48 @@ export default function TeamsBotView() {
   // No auto-fetch on entry — participants/attendance load only when the user clicks 「刷新」
   // (or shortly after the bot joins a meeting, below).
 
-  // Save the meeting's join link (required, one per meeting); the backend matches the 应到名单 to the
-  // user directory, finds Teams accounts and auto-sends the meeting notification card.
-  const handleSaveMeetingLink = async () => {
+  const handlePreviewMeetingNotification = async () => {
     if (!selectedMeetingId) { setError('请先选择或新建会议'); return }
     const url = meetingUrl.trim()
     if (!url) { setError('请填写会议链接'); return }
     setLinkSaving(true)
     setError('')
     try {
-      const plan = await setMeetingLink(selectedMeetingId, url, scheduleFile?.fileId)
-      setNotificationPlan(plan)
+      const preview = await previewMeetingNotification(selectedMeetingId, url, scheduleFile?.fileId)
+      setNotificationPreview(preview)
+      setNotificationContent(preview.notificationContent)
+      setSelectedNotificationRecipients(new Set(preview.teamsRecipients.map(recipient => recipient.teamsAccount)))
       setMeetings(prev => prev.map(m => m.id === selectedMeetingId ? { ...m, meetingUrl: url } : m))
-      setSuccess(`会议链接已保存，已通知 ${plan.teamsRecipients.length} 位 Teams 用户`)
+      setSuccess(`会议链接已保存，已生成通知预览并匹配 ${preview.teamsRecipients.length} 个 Teams 账号`)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '保存会议链接失败')
+      setError(e instanceof Error ? e.message : '生成通知预览失败')
     } finally {
       setLinkSaving(false)
+    }
+  }
+
+  const toggleNotificationRecipient = (teamsAccount: string) => {
+    setSelectedNotificationRecipients(previous => {
+      const next = new Set(previous)
+      next.has(teamsAccount) ? next.delete(teamsAccount) : next.add(teamsAccount)
+      return next
+    })
+  }
+
+  const handleSendMeetingNotification = async () => {
+    if (!selectedMeetingId || !notificationPreview) return
+    const recipients = Array.from(selectedNotificationRecipients)
+    if (recipients.length === 0) { setError('请至少选择一个通知账号'); return }
+    if (!notificationContent.trim()) { setError('拟发送通知不能为空'); return }
+    setNotificationSending(true)
+    setError('')
+    try {
+      const result = await sendMeetingNotification(selectedMeetingId, notificationContent, recipients)
+      setSuccess(`通知已发送：选择 ${result.selectedRecipientCount} 个账号，实际投递 ${result.deliveryRecipientCount} 个账号`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '发送会议通知失败')
+    } finally {
+      setNotificationSending(false)
     }
   }
 
@@ -594,7 +626,7 @@ export default function TeamsBotView() {
             </div>
           </div>
 
-          {/* 会议链接（一个会议一个链接，必填）— 保存后自动通知应到名单中的 Teams 用户 */}
+          {/* 会议链接（一个会议一个链接，必填）— 保存后生成通知预览，确认后才发送 */}
           {selectedMeetingId && (
             <div className="tb-meeting-link">
               <span className="tb-new-meeting-label">会议链接 <em className="tb-required">必填</em></span>
@@ -604,60 +636,105 @@ export default function TeamsBotView() {
                   placeholder="https://teams.microsoft.com/l/meetup-join/..."
                   value={meetingUrl}
                   onChange={e => setMeetingUrl(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && void handleSaveMeetingLink()}
+                  onKeyDown={e => e.key === 'Enter' && void handlePreviewMeetingNotification()}
                 />
                 <button
                   className={`tb-btn tb-btn--primary ${linkSaving ? 'tb-btn--loading' : ''}`}
                   disabled={linkSaving || !meetingUrl.trim()}
-                  onClick={() => void handleSaveMeetingLink()}
+                  onClick={() => void handlePreviewMeetingNotification()}
                 >
-                  {linkSaving ? '保存中…' : '保存并通知'}
+                  {linkSaving ? '解析中…' : '保存并生成通知'}
                 </button>
               </div>
               <p className="tb-meeting-link-hint">
-                保存后机器人加入会议直接用此链接；系统会自动匹配应到名单并向 Teams 用户发送会议通知卡片。
+                系统会解析会议通知、匹配应参会人员的 Teams 账号；检查并修改拟发送内容后，再点击发送通知。
               </p>
-              {notificationPlan && (
+              {notificationPreview && (
                 <div className="tb-notify-plan">
-                  <div className="tb-notify-row tb-notify-row--ok">
-                    <span>已通知（Teams）</span>
-                    <strong>{notificationPlan.teamsRecipients.length}</strong>
+                  <div className="tb-notify-section-title">读取后的会议信息</div>
+                  <div className="tb-notify-detail-grid">
+                    <div><span>会议</span><strong>{notificationPreview.meetingName}</strong></div>
+                    <div><span>日期</span><strong>{notificationPreview.dateText || '未识别'}</strong></div>
+                    <div><span>地点</span><strong>{notificationPreview.venue || '未识别'}</strong></div>
+                    <div><span>会议 ID</span><strong>{notificationPreview.meetingCode || '未识别'}</strong></div>
+                    <div><span>密码</span><strong>{notificationPreview.passcode || '未识别'}</strong></div>
                   </div>
-                  {notificationPlan.teamsRecipients.length > 0 && (
+                  {notificationPreview.timeLines.length > 0 && (
+                    <div className="tb-notify-times">
+                      {notificationPreview.timeLines.map(timeLine => <span key={timeLine}>{timeLine}</span>)}
+                    </div>
+                  )}
+                  <div className="tb-notify-row">
+                    <span>读取到的应参会名单</span>
+                    <strong>{notificationPreview.participantNames.length}</strong>
+                    <span className="tb-notify-names">{notificationPreview.participantNames.join('、')}</span>
+                  </div>
+
+                  <div className="tb-notify-section-title">选择通知账号</div>
+                  <div className="tb-notify-row tb-notify-row--ok">
+                    <span>已匹配 Teams 账号</span>
+                    <strong>{notificationPreview.teamsRecipients.length}</strong>
+                  </div>
+                  {notificationPreview.teamsRecipients.length > 0 && (
                     <table className="tb-notify-table">
                       <thead>
-                        <tr><th>姓名</th><th>Teams 账号名</th><th>邮箱</th></tr>
+                        <tr><th>选择</th><th>通知姓名</th><th>系统账号名</th><th>Teams 账号</th></tr>
                       </thead>
                       <tbody>
-                        {notificationPlan.teamsRecipients.map((r, i) => (
-                          <tr key={i}>
+                        {notificationPreview.teamsRecipients.map(r => (
+                          <tr key={`${r.scheduleName}-${r.teamsAccount}`}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selectedNotificationRecipients.has(r.teamsAccount)}
+                                onChange={() => toggleNotificationRecipient(r.teamsAccount)}
+                              />
+                            </td>
                             <td>{r.scheduleName}</td>
                             <td>{r.accountName}</td>
-                            <td>{r.email}</td>
+                            <td>{r.teamsAccount}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   )}
-                  {notificationPlan.nonTeamsSkipped.length > 0 && (
+                  {notificationPreview.nonTeamsSkipped.length > 0 && (
                     <div className="tb-notify-row tb-notify-row--skip">
                       <span>非 Teams 跳过</span>
-                      <strong>{notificationPlan.nonTeamsSkipped.length}</strong>
-                      <span className="tb-notify-names">{notificationPlan.nonTeamsSkipped.join('、')}</span>
+                      <strong>{notificationPreview.nonTeamsSkipped.length}</strong>
+                      <span className="tb-notify-names">{notificationPreview.nonTeamsSkipped.join('、')}</span>
                     </div>
                   )}
-                  {notificationPlan.unmatched.length > 0 && (
+                  {notificationPreview.unmatched.length > 0 && (
                     <div className="tb-notify-row tb-notify-row--warn">
                       <span>未匹配到用户</span>
-                      <strong>{notificationPlan.unmatched.length}</strong>
-                      <span className="tb-notify-names">{notificationPlan.unmatched.join('、')}</span>
+                      <strong>{notificationPreview.unmatched.length}</strong>
+                      <span className="tb-notify-names">{notificationPreview.unmatched.join('、')}</span>
                     </div>
                   )}
-                  {notificationPlan.teamsRecipients.length === 0
-                    && notificationPlan.nonTeamsSkipped.length === 0
-                    && notificationPlan.unmatched.length === 0 && (
+                  {notificationPreview.teamsRecipients.length === 0
+                    && notificationPreview.nonTeamsSkipped.length === 0
+                    && notificationPreview.unmatched.length === 0 && (
                     <p className="tb-meeting-link-hint">未读取到应到名单：该会议没有可匹配的参会名单（请上传带名单的会议安排）。</p>
                   )}
+
+                  <div className="tb-notify-section-title">拟发送通知</div>
+                  <textarea
+                    className="tb-notify-content"
+                    value={notificationContent}
+                    onChange={event => setNotificationContent(event.target.value)}
+                    spellCheck={false}
+                  />
+                  <div className="tb-notify-send-row">
+                    <span>将发送给 {selectedNotificationRecipients.size} 个所选账号</span>
+                    <button
+                      className={`tb-btn tb-btn--primary ${notificationSending ? 'tb-btn--loading' : ''}`}
+                      disabled={notificationSending || selectedNotificationRecipients.size === 0 || !notificationContent.trim()}
+                      onClick={() => void handleSendMeetingNotification()}
+                    >
+                      {notificationSending ? '发送中…' : '发送通知'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

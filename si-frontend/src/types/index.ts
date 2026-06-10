@@ -305,15 +305,29 @@ export interface MeetingNotificationRecipient {
   scheduleName: string
   accountName: string
   email: string
+  teamsAccount: string
 }
 
-// Result of matching the 会议安排 应到名单 to the user directory and sending the Teams notification.
-export interface MeetingNotificationPlan {
+// Parsed meeting notice, matched Teams accounts, and editable notification draft.
+export interface MeetingNotificationPreview {
   meetingName: string
-  meetingTime?: string | null
+  dateText?: string | null
+  timeLines: string[]
+  venue?: string | null
+  meetingCode?: string | null
+  passcode?: string | null
+  meetingUrl: string
+  notificationContent: string
+  participantNames: string[]
   teamsRecipients: MeetingNotificationRecipient[]
   nonTeamsSkipped: string[]
   unmatched: string[]
+}
+
+export interface MeetingNotificationSendResult {
+  selectedRecipientCount: number
+  deliveryRecipientCount: number
+  botStatusCode: number
 }
 
 export interface MeetingFile {

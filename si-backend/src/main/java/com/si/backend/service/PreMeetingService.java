@@ -199,14 +199,6 @@ public class PreMeetingService {
      * Extracts expected participant names and the meeting venue from a stored agenda file,
      * for feeding into the ASR hotword list.
      */
-    /** First date/time found in the 会议安排 text (for the meeting notification), or null. */
-    public String extractMeetingTime(String fileId) {
-        PreMeetingDoc doc = store.get(fileId);
-        if (doc == null) return null;
-        Matcher m = DATE_PATTERN.matcher(doc.text());
-        return m.find() ? m.group().trim() : null;
-    }
-
     public MeetingEntities extractMeetingEntities(String fileId) {
         PreMeetingDoc doc = store.get(fileId);
         if (doc == null) {
@@ -1429,6 +1421,16 @@ public class PreMeetingService {
     private String deriveMeetingTitle(PreMeetingDoc doc) {
         String title = null;
         String date = null;
+        for (String rawLine : doc.text().split("\\R")) {
+            String line = normalizeLine(rawLine);
+            if (line.length() >= 4
+                    && line.length() <= 80
+                    && (line.contains("专项会议") || line.contains("专题会议"))
+                    && !line.contains("会议通知")) {
+                title = line.replaceAll("^[【\\[]|[】\\]]$", "");
+                break;
+            }
+        }
         for (String rawLine : doc.text().split("\\R")) {
             String line = normalizeLine(rawLine);
             if (title == null

@@ -5,18 +5,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * Batch-2 orchestration for meeting notifications:
- * 会议安排 名单 → 按国籍匹配用户表(NameMatchService) → 取邮箱 → @{teams-domain} 判定 Teams 用户 →
- * 自动发会议通知卡片(测试期只发 test-recipient)。
+ * Builds meeting notification drafts and classifies notice participants against existing Teams users.
  */
 @Slf4j
 @Service
@@ -24,7 +18,7 @@ import java.util.Locale;
 public class MeetingNotificationService {
 
     /** A matched Teams recipient: 会议安排原始名 / 系统账号名 / 邮箱. */
-    public record Recipient(String scheduleName, String accountName, String email) {}
+    public record Recipient(String scheduleName, String accountName, String email, String teamsAccount) {}
 
     /** Outcome of matching a 会议安排 name list against the directory. */
     public record NotificationPlan(
@@ -40,49 +34,61 @@ public class MeetingNotificationService {
     private boolean testMode;
     @Value("${notification.test-recipient:yousanlong@jlg.co.id}")
     private String testRecipient;
-    @Value("${bot.api.url:http://localhost:3978}")
-    private String botApiUrl;
 
     private final NameMatchService nameMatchService;
 
     /** Build the notification plan from the schedule's parsed name list. */
     public NotificationPlan buildPlan(String meetingName, String meetingTime, List<String> scheduleNames) {
-        return classify(meetingName, meetingTime, nameMatchService.match(scheduleNames), teamsDomain);
+        log.info("[MeetingNotificationService] buildPlan start, meetingName={}, participantCount={}",
+                meetingName, scheduleNames == null ? 0 : scheduleNames.size());
+        NotificationPlan plan = classify(
+                meetingName,
+                meetingTime,
+                nameMatchService.match(scheduleNames == null ? List.of() : scheduleNames),
+                teamsDomain
+        );
+        log.info("[MeetingNotificationService] buildPlan end, matched={}, nonTeams={}, unmatched={}",
+                plan.teamsRecipients().size(), plan.nonTeamsSkipped().size(), plan.unmatched().size());
+        return plan;
     }
 
-    /**
-     * Send the meeting notification card to the plan's Teams recipients (or the test recipient in test
-     * mode) via the bot. Best-effort: failures are logged, never thrown.
-     */
-    public void send(NotificationPlan plan, String meetingUrl) {
-        List<String> recipients = testMode
-                ? List.of(testRecipient)
-                : plan.teamsRecipients().stream().map(Recipient::email).toList();
-        if (recipients.isEmpty()) {
-            log.info("[MeetingNotificationService] no recipients to notify, meeting={}", plan.meetingName());
-            return;
+    public String buildNotificationContent(
+            MeetingNoticeParser.MeetingNoticeDetails details,
+            String meetingUrl
+    ) {
+        List<String> lines = new ArrayList<>();
+        lines.add("各位领导及同事好，现将今日的会议安排通知如下：");
+        lines.add("【" + details.meetingName() + "】");
+        lines.add("");
+        if (!details.dateText().isBlank()) {
+            lines.add("📅 " + details.dateText());
         }
-        String botBase = botApiUrl;
-        if (botBase == null || botBase.isBlank()) {
-            log.warn("[MeetingNotificationService] bot api url not configured; would notify {} about {}",
-                    recipients, plan.meetingName());
-            return;
+        for (String timeLine : details.timeLines()) {
+            lines.add("⏰ " + timeLine);
         }
-        try {
-            String body = buildJson(plan.meetingName(), plan.meetingTime(), meetingUrl, recipients);
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(botBase.replaceAll("/+$", "") + "/api/meetings/notification"))
-                    .header("Content-Type", "application/json; charset=utf-8")
-                    .POST(HttpRequest.BodyPublishers.ofString(body, java.nio.charset.StandardCharsets.UTF_8))
-                    .build();
-            HttpResponse<String> resp = HttpClient.newHttpClient()
-                    .send(req, HttpResponse.BodyHandlers.ofString());
-            log.info("[MeetingNotificationService] notification sent, meeting={}, recipients={}, botStatus={}",
-                    plan.meetingName(), recipients.size(), resp.statusCode());
-        } catch (Exception e) {
-            log.warn("[MeetingNotificationService] notification send failed, meeting={}: {}",
-                    plan.meetingName(), e.getMessage());
+        if (!details.venue().isBlank()) {
+            lines.add("📍 " + details.venue());
         }
+        if (!details.meetingCode().isBlank()) {
+            lines.add("💻 会议 ID: " + details.meetingCode());
+        }
+        if (!details.passcode().isBlank()) {
+            lines.add("密码: " + details.passcode());
+        }
+        if (meetingUrl != null && !meetingUrl.isBlank()) {
+            lines.add(meetingUrl.trim());
+        }
+        lines.add("");
+        lines.add("请各位领导及同事提前安排时间准时参会，谢谢 🙏🏻");
+        return String.join("\n", lines);
+    }
+
+    public List<String> resolveDeliveryRecipients(List<String> selectedRecipients) {
+        if (testMode) {
+            log.info("[MeetingNotificationService] test mode delivery, selectedCount=1");
+            return List.of(testRecipient);
+        }
+        return selectedRecipients;
     }
 
     // ── pure classification (testable) ───────────────────────────────────────
@@ -97,7 +103,10 @@ public class MeetingNotificationService {
             if (m.status() == NameMatchService.Status.MATCHED && m.user() != null) {
                 String email = m.user().getEmail();
                 if (email != null && email.toLowerCase(Locale.ROOT).endsWith(suffix)) {
-                    teams.add(new Recipient(m.scheduleName(), m.user().getPersonName(), email));
+                    String teamsAccount = m.user().getMicrosoftId() == null || m.user().getMicrosoftId().isBlank()
+                            ? email
+                            : m.user().getMicrosoftId();
+                    teams.add(new Recipient(m.scheduleName(), m.user().getPersonName(), email, teamsAccount));
                 } else {
                     nonTeams.add(m.scheduleName() + (email != null ? "(" + email + ")" : "(无邮箱)"));
                 }
@@ -106,24 +115,5 @@ public class MeetingNotificationService {
             }
         }
         return new NotificationPlan(meetingName, meetingTime, teams, nonTeams, unmatched);
-    }
-
-    private static String buildJson(String name, String time, String url, List<String> recipients) {
-        StringBuilder sb = new StringBuilder("{");
-        sb.append("\"meetingName\":").append(jsonStr(name)).append(',');
-        sb.append("\"meetingTime\":").append(jsonStr(time)).append(',');
-        sb.append("\"meetingUrl\":").append(jsonStr(url)).append(',');
-        sb.append("\"recipients\":[");
-        for (int i = 0; i < recipients.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(jsonStr(recipients.get(i)));
-        }
-        sb.append("]}");
-        return sb.toString();
-    }
-
-    private static String jsonStr(String s) {
-        if (s == null) return "\"\"";
-        return '"' + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + '"';
     }
 }
