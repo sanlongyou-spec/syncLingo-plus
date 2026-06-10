@@ -73,3 +73,9 @@ bot.tar.gz
 
 # 前端构建产物(服务器自行构建, 不入库, 避免 pull 冲突)
 si-frontend/dist/
+
+# Teams Bot 构建产物与密钥(服务器自有 appsettings, 勿入库)
+bot/CallingBotSample/bin/
+bot/CallingBotSample/obj/
+bot/CallingBotSample/appsettings.json
+bot/CallingBotSample/appsettings.*.json

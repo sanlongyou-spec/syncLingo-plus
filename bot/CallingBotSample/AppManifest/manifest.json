@@ -1,0 +1,63 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "version": "1.0.4",
+  "manifestVersion": "1.19",
+  "id": "8d24f60f-f031-43ae-a228-c7089d688b57",
+  "developer": {
+    "name": "syncLingo",
+    "websiteUrl": "https://auction-uncombed-imply.ngrok-free.dev",
+    "privacyUrl": "https://teams.microsoft.com",
+    "termsOfUseUrl": "https://teams.microsoft.com"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "meeting bot",
+    "full": "meeting bot"
+  },
+  "description": {
+    "short": "Meeting bot for interpretation and summary delivery",
+    "full": "syncLingo meeting bot for simultaneous interpretation and summary delivery"
+  },
+  "accentColor": "#FFFFFF",
+  "bots": [
+    {
+      "botId": "ed32d429-d58f-4a4e-89dd-bfc4312aab4d",
+      "scopes": [
+        "personal",
+        "team",
+        "groupChat"
+      ],
+      "commandLists": [
+        {
+          "commands": [
+            {
+              "title": "welcome",
+              "description": "Show welcome message"
+            }
+          ],
+          "scopes": [
+            "personal"
+          ]
+        }
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "supportsCalling": true,
+      "supportsVideo": true
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "auction-uncombed-imply.ngrok-free.dev"
+  ],
+  "webApplicationInfo": {
+    "id": "ed32d429-d58f-4a4e-89dd-bfc4312aab4d",
+    "resource": "https://RscString"
+  }
+}
