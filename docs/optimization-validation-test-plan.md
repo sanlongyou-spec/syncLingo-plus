@@ -1114,3 +1114,53 @@ docker logs --since 30m si-backend 2>&1 \
 - 已执行：前端 `npm.cmd run build` 通过；后端 `mvn.cmd clean test` 通过（78 项测试）；延迟分析脚本语法检查及模拟 `1.00x / 加速中 / 1.35x` 分组验证通过。
 - 遗留问题：动态加速改变音调；需要结合真实印尼语与英语 TTS 判断可接受程度。
 - 需回归项：分享页自动重连、切换语言、关闭声音后重新收听。
+
+## 周度验证记录：2026-W24 TTS 严格句序播放
+
+### 对应优化范围
+
+- 对应 `docs/optimization-implementation-plan.md` 中的 `周度优化记录：2026-W24 TTS 严格句序播放`。
+
+### 验证目标
+
+- 验证后一句先完成翻译和 TTS 合成时，仍不能先于前一句播放。
+- 验证翻译失败、会话停止或播放异常不会永久阻塞后续句子。
+- 验证不同目标语言仍保持独立播放链。
+
+### 优先通过自动化测试验证
+
+```powershell
+cd D:\data\syncLingo-++\si-backend
+mvn.cmd clean test
+```
+
+重点测试：
+
+- `RealtimeInterpretationOrderTest.laterTranslationCannotPlayBeforeEarlierSentence`
+- 测试主动阻塞第一句翻译，让第二句先完成翻译与 TTS 合成。
+- 通过标准：实际播放回调收到的 sequence 必须为 `[1, 2]`。
+
+### 服务器日志验证
+
+```bash
+docker logs --since 30m si-backend 2>&1 \
+  | grep -a -E "TTS order reserved|TTS order released|TTS queued"
+```
+
+通过标准：
+
+- 同一个 `sessionId` 和 `lang` 的预留顺序与 ASR final 句序一致。
+- 同一个 `sessionId` 和 `lang` 的释放 sequence 不倒退；不同语言的 sequence 可以交错或跳号。
+- 不出现某个任务长期只有 `reserved`、没有 `released`，且会话仍持续活动。
+
+### 必要时再做人工判断
+
+- 连续说出带明确编号的句子，例如“第一句……、第二句……、第三句……”，让第一句内容明显更长、更复杂。
+- 分别收听中文、印尼语和英语频道，确认没有后句先读、前句后补。
+- 确认前句处理慢时后句只是等待，不出现长时间永久静音。
+
+### 结果记录
+
+- 通过 / 不通过：本地代码级验证通过；服务器真人收听待验证。
+- 已执行：后端 `mvn.cmd clean test` 通过（79 项测试）；第二句先完成翻译和合成时，实际播放 sequence 仍为 `[1, 2]`。
+- 需回归项：连续快速短句、长短句交替、翻译服务瞬时失败、停止同传后重新开始。

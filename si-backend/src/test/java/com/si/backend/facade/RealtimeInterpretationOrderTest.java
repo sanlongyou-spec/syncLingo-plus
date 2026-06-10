@@ -1,0 +1,145 @@
+package com.si.backend.facade;
+
+import com.si.backend.config.CartesiaProperties;
+import com.si.backend.entity.InterpretationSession;
+import com.si.backend.service.AsrService;
+import com.si.backend.service.InterpretationRecordService;
+import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.SessionSpeakerVoiceService;
+import com.si.backend.service.SpeakerIdentityService;
+import com.si.backend.service.TtsService;
+import com.si.backend.service.TranslationService;
+import com.si.backend.service.VoiceCloneService;
+import com.si.backend.service.VoiceUsageRecordService;
+import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Field;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * Verifies that translated TTS audio keeps ASR sentence order even when a later translation finishes first.
+ */
+class RealtimeInterpretationOrderTest {
+
+    @Test
+    void laterTranslationCannotPlayBeforeEarlierSentence() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        VoiceUsageRecordService usageService = mock(VoiceUsageRecordService.class);
+        VoiceCloneService voiceCloneService = mock(VoiceCloneService.class);
+        SessionSpeakerVoiceService speakerVoiceService = mock(SessionSpeakerVoiceService.class);
+        SpeakerIdentityService speakerIdentityService = mock(SpeakerIdentityService.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                usageService,
+                voiceCloneService,
+                speakerVoiceService,
+                speakerIdentityService
+        );
+
+        String sessionId = "order-test-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(voiceCloneService.isVoiceUsable(anyString())).thenReturn(true);
+
+        CountDownLatch firstTranslationStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstTranslation = new CountDownLatch(1);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong()))
+                .thenAnswer(invocation -> {
+                    String text = invocation.getArgument(0);
+                    if ("first".equals(text)) {
+                        firstTranslationStarted.countDown();
+                        assertTrue(releaseFirstTranslation.await(5, TimeUnit.SECONDS));
+                    }
+                    return text + "-translated";
+                });
+
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(4);
+            Runnable onComplete = invocation.getArgument(5);
+            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2)});
+            onComplete.run();
+            return null;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                any(),
+                any(),
+                any()
+        );
+
+        List<Long> playedSequences = new CopyOnWriteArrayList<>();
+        CountDownLatch played = new CountDownLatch(2);
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (chunkIndex == 0) {
+                playedSequences.add(sequence);
+                played.countDown();
+            }
+        });
+
+        SpeakerIdentityService.SpeakerResolution speaker = SpeakerIdentityService.SpeakerResolution.builder()
+                .sessionId(sessionId)
+                .speakerId("speaker-1")
+                .build();
+
+        Thread first = new Thread(() -> facade.translateAndStreamTts(
+                "first", "zh-CN", "id", null, sessionId, "speaker-1", speaker, System.currentTimeMillis()
+        ));
+        first.start();
+        assertTrue(firstTranslationStarted.await(5, TimeUnit.SECONDS));
+
+        facade.translateAndStreamTts(
+                "second", "zh-CN", "id", null, sessionId, "speaker-1", speaker, System.currentTimeMillis()
+        );
+        releaseFirstTranslation.countDown();
+        first.join(5_000);
+
+        assertTrue(played.await(5, TimeUnit.SECONDS));
+        assertEquals(List.of(1L, 2L), playedSequences);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void putTtsCallback(
+            RealtimeInterpretationFacade facade,
+            String sessionId,
+            RealtimeInterpretationFacade.TtsAudioCallback callback
+    ) throws Exception {
+        Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsAudioCallbackMap");
+        field.setAccessible(true);
+        ((Map<String, RealtimeInterpretationFacade.TtsAudioCallback>) field.get(facade)).put(sessionId, callback);
+    }
+}
