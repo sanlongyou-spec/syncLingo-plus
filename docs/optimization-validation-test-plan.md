@@ -1064,3 +1064,53 @@ POST https://graph.microsoft.com/v1.0/chats/{encoded-thread-id}/installedApps
 - 已执行：读取 `%TEMP%\bot.log` 定位两条失败路径；Graph 直接验证 meeting chat 已安装 `meeting bot`；C# Bot `dotnet build` 通过；backend、frontend、Bot、ngrok 已重新拉起。
 - 遗留问题：`start-all.bat` 本次在 Docker Desktop build export 阶段遇到 snapshot/cache 错误，需要清理 Docker build cache 或重启 Docker Desktop 后回归脚本全流程。
 - 需回归项：会议聊天摘要发送、参会人员 personal chat 摘要发送、Teams Bot 历史会议查询。
+
+## 周度验证记录：2026-W24 分享页 1.35x 加速端到端延迟分组统计
+
+### 对应优化范围
+
+- 对应 `docs/optimization-implementation-plan.md` 中的 `周度优化记录：2026-W24 分享页 1.35x 加速端到端延迟分组统计`
+
+### 验证目标
+
+- 确认分享页播放积压达到 4 秒后实际进入 `1.35x`。
+- 测量 `1.35x` 样本中“开始说话到听众开始播放对应 TTS”的端到端延迟。
+- 对比 `1.00x`、加速中和 `1.35x` 三组延迟。
+
+### 优先通过日志 / 接口 / 数据库验证
+
+在分享页 `/share/user/<userId>` 选择收听语言，连续讲话制造播放积压。测试结束后在服务器执行：
+
+```bash
+docker logs --since 30m si-backend 2>&1 \
+  | grep -a "e2e client latency" \
+  | grep -a "sessionId=<本次sessionId>" \
+  | python3 /opt/syncLingo/tests/analyze_latency.py
+```
+
+快速确认是否达到最高速：
+
+```bash
+docker logs --since 30m si-backend 2>&1 \
+  | grep -a "e2e client latency" \
+  | grep -a "sessionId=<本次sessionId>" \
+  | grep -a "playbackRateMilli=1350"
+```
+
+通过标准：
+
+- 日志至少出现一个 `playbackRateMilli=1350`。
+- 分析结果包含 `1.35x` 分组，且样本数大于 0。
+- `1.35x` 分组输出端到端均值、中位数、p90 与播放积压。
+
+### 必要时再做人工判断
+
+- 使用 Chrome 或 Edge 收听分享页，确认 `1.35x` 时内容仍可理解。
+- 确认加速期间没有跳句、缺字、明显爆音或长时间静音。
+
+### 结果记录
+
+- 通过 / 不通过：代码级验证通过；待部署后进行真实连续语音测试。
+- 已执行：前端 `npm.cmd run build` 通过；后端 `mvn.cmd clean test` 通过（78 项测试）；延迟分析脚本语法检查及模拟 `1.00x / 加速中 / 1.35x` 分组验证通过。
+- 遗留问题：动态加速改变音调；需要结合真实印尼语与英语 TTS 判断可接受程度。
+- 需回归项：分享页自动重连、切换语言、关闭声音后重新收听。

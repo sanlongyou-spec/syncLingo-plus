@@ -111,8 +111,9 @@ public class InterpretationController {
 
     @PostMapping("/public/latency")
     public Result<Void> reportLatency(@RequestBody java.util.Map<String, Object> body) {
-        log.info("[InterpretationController] e2e client latency, lang={}, e2eMs={}, captureMs={}, rttMs={}, tailMs={}",
-                body.get("lang"), body.get("e2eMs"), body.get("captureMs"), body.get("rttMs"), body.get("tailMs"));
+        log.info("[InterpretationController] e2e client latency, sessionId={}, lang={}, e2eMs={}, captureMs={}, rttMs={}, tailMs={}, outputLatencyMs={}, backlogMs={}, playbackRateMilli={}",
+                body.get("sessionId"), body.get("lang"), body.get("e2eMs"), body.get("captureMs"), body.get("rttMs"),
+                body.get("tailMs"), body.get("outputLatencyMs"), body.get("backlogMs"), body.get("playbackRateMilli"));
         return Result.ok();
     }
 

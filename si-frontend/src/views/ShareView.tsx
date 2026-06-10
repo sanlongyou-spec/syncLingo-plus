@@ -13,6 +13,15 @@ const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
   id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
 }
 const AUDIO_SAMPLE_RATE = 48000
+// 播放积压时加速追赶(变速变调, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.35x
+const CATCHUP_START_SEC = 1.0
+const CATCHUP_FULL_SEC = 4.0
+const CATCHUP_MAX_RATE = 1.35
+const catchupRate = (backlogSec: number): number => {
+  if (backlogSec <= CATCHUP_START_SEC) return 1.0
+  if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
+  return 1.0 + (backlogSec - CATCHUP_START_SEC) / (CATCHUP_FULL_SEC - CATCHUP_START_SEC) * (CATCHUP_MAX_RATE - 1.0)
+}
 
 const toCanonicalLang = (lang: string): string => {
   const lower = lang.trim().toLowerCase()
@@ -205,11 +214,14 @@ export default function ShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(ctx.destination)
+        const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
+        const rate = catchupRate(backlogSec)
+        source.playbackRate.value = rate
         const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
         pendingSourcesRef.current.add(source)
         source.onended = () => pendingSourcesRef.current.delete(source)
         source.start(startAt)
-        scheduleRef.current = startAt + buffer.duration
+        scheduleRef.current = startAt + buffer.duration / rate
       } catch (err) {
         console.warn('[ShareView] audio render failed:', err)
       } finally {

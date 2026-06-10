@@ -65,3 +65,8 @@ speaker-service/embeddings.json.bak.*
 
 # 临时价格数据(阿里云抓取, 勿入库)
 .tmp-aliyun-price/
+
+# 部署记录(含密钥/authtoken), 严禁入库
+DEPLOYMENT-RECORD*.md
+*.secret.md
+bot.tar.gz

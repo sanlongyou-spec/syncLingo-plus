@@ -1056,3 +1056,43 @@ npm.cmd run dev
 
 - 真实 Teams 端到端发送需用户重新加入会议后回归。
 - Docker Desktop snapshot/cache 损坏会导致完整 `start-all.bat` 在 backend image export 阶段失败；需要后续清理 Docker build cache 或重启 Docker Desktop 后再验证脚本全流程。
+
+## 周度优化记录：2026-W24 分享页 1.35x 加速端到端延迟分组统计
+
+### 本周目标
+
+- 让分享页在音频播放积压时最高使用 `1.35x` 追赶，且不丢弃音频。
+- 精确区分普通播放、加速中和 `1.35x` 样本，测量“开始说话到听众开始播放对应 TTS”的端到端延迟。
+
+### 优化项
+
+| 优化项 | 状态 | 说明 |
+|---|---|---|
+| 分享页动态播放加速 | 已完成 | 积压不超过 1 秒使用 `1.00x`，1 至 4 秒线性加速，达到 4 秒后使用 `1.35x` |
+| 加速状态上报 | 已完成 | 客户端延迟样本新增 `sessionId`、`backlogMs`、`playbackRateMilli` 与 `outputLatencyMs` |
+| 延迟日志增强 | 已完成 | 后端 `e2e client latency` 日志记录播放积压与播放倍速 |
+| 延迟分析分组 | 已完成 | 分析脚本单独输出 `1.00x`、加速中、`1.35x` 的端到端延迟 |
+
+### 实施结果
+
+- 分享页继续完整播放全部 Opus 音频，只通过 Web Audio `playbackRate` 逐步消化积压。
+- `UserShareView` 使用浏览器官方 `AudioContext.getOutputTimestamp()` 将对应 TTS 首音映射到音频输出设备时间，并上报端到端延迟、服务端段、RTT、本地尾延迟、输出设备尾延迟、积压和播放倍速。
+- `tests/analyze_latency.py` 可直接判断测试期间是否真正进入 `1.35x`，并输出该组延迟分布。
+
+### 影响范围
+
+- 前端：`ShareView`、`UserShareView`、`src/api/index.ts`。
+- 后端：`InterpretationController` 延迟日志。
+- 测试：`tests/analyze_latency.py`。
+
+### 验收标准
+
+- 前端构建和后端测试通过。
+- 连续说话产生至少一个 `playbackRateMilli=1350` 样本。
+- 分析脚本输出 `1.35x` 样本数、端到端均值/中位数/p90 和积压均值/p90。
+- 人工确认 `1.35x` 下语音仍可理解。
+
+### 遗留问题
+
+- `playbackRate` 会同时提高音调，听感必须由真人确认。
+- `1.35x` 只会缩短已有播放积压，不会缩短第一句的 ASR、翻译或 TTS 首音耗时。

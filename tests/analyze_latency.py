@@ -6,8 +6,9 @@
 
 解析两类日志:
   - latency-breakdown (服务端分段): asrMs / translateMs / gapMs / ttsMs / totalMs
-  - e2e client latency (客户端真实出声): e2eMs / captureMs / rttMs / tailMs
+  - e2e client latency (客户端真实出声): e2eMs / captureMs / rttMs / tailMs / outputLatencyMs / backlogMs / playbackRateMilli
 输出每段的 样本数/均值/中位数/p90/p95/最小/最大, 以及各段占总时长的百分比。
+客户端延迟额外按 1.00x / 加速中 / 1.35x 分组，验证加速后的真实端到端延迟。
 """
 import sys
 import re
@@ -39,7 +40,16 @@ def parse_kv(line):
 
 def main():
     bd = {"asrMs": [], "translateMs": [], "gapMs": [], "ttsMs": [], "totalMs": []}
-    cl = {"e2eMs": [], "captureMs": [], "rttMs": [], "tailMs": []}
+    cl = {
+        "e2eMs": [],
+        "captureMs": [],
+        "rttMs": [],
+        "tailMs": [],
+        "outputLatencyMs": [],
+        "backlogMs": [],
+        "playbackRateMilli": [],
+    }
+    client_rows = []
     for line in sys.stdin:
         if "latency-breakdown" in line:
             kv = parse_kv(line)
@@ -51,6 +61,7 @@ def main():
             # 过滤明显噪声: 总时长 < 200ms 视为异常样本
             if kv.get("e2eMs", 0) < 200:
                 continue
+            client_rows.append(kv)
             for k in cl:
                 if k in kv:
                     cl[k].append(kv[k])
@@ -99,17 +110,49 @@ def main():
 
     print()
     print("=" * 78)
-    print("【客户端 真实出声延迟】 收音→听众耳朵 (已过滤 e2eMs<200ms 噪声)")
+    print("【客户端 输出设备估算延迟】 收音→浏览器估算音频输出设备开始播放 (已过滤 e2eMs<200ms 噪声)")
     print("=" * 78)
     print(f"{'指标':<18}{'样本':>5}{'均值ms':>9}{'p50':>8}{'p90':>8}{'p95':>8}{'最小':>8}{'最大':>8}")
     print("-" * 78)
-    for key, name in [("e2eMs", "端到端(总)"), ("captureMs", "服务端段"), ("rttMs", "网络RTT"), ("tailMs", "解码/播放缓冲")]:
+    for key, name in [
+        ("e2eMs", "端到端(总)"),
+        ("captureMs", "服务端段"),
+        ("rttMs", "网络RTT"),
+        ("tailMs", "解码/播放缓冲"),
+        ("outputLatencyMs", "输出设备尾延迟"),
+        ("backlogMs", "播放积压"),
+        ("playbackRateMilli", "播放倍速(x1000)"),
+    ]:
         st = stats(cl[key])
         if not st:
             print(f"{name:<18}  无数据")
             continue
         print(f"{name:<18}{st['n']:>5}{st['mean']:>9.0f}{st['p50']:>8.0f}{st['p90']:>8.0f}{st['p95']:>8.0f}{st['min']:>8.0f}{st['max']:>8.0f}")
     print()
+
+    if any("playbackRateMilli" in row for row in client_rows):
+        print("=" * 78)
+        print("【按前端播放倍速分组】 重点看 1.35x 的端到端延迟与播放积压")
+        print("=" * 78)
+        print(f"{'倍速组':<18}{'样本':>5}{'e2e均值ms':>12}{'e2e中位':>10}{'e2e p90':>10}{'积压均值ms':>12}{'积压p90':>10}")
+        print("-" * 78)
+        groups = [
+            ("1.00x", lambda rate: rate == 1000),
+            ("加速中(1.00-1.35x)", lambda rate: 1000 < rate < 1350),
+            ("1.35x", lambda rate: rate == 1350),
+        ]
+        for name, matches in groups:
+            rows = [row for row in client_rows if matches(row.get("playbackRateMilli", 0))]
+            e2e_stats = stats([row["e2eMs"] for row in rows if "e2eMs" in row])
+            backlog_stats = stats([row["backlogMs"] for row in rows if "backlogMs" in row])
+            if not e2e_stats:
+                print(f"{name:<18}  无数据")
+                continue
+            backlog_mean = backlog_stats["mean"] if backlog_stats else 0
+            backlog_p90 = backlog_stats["p90"] if backlog_stats else 0
+            print(f"{name:<18}{e2e_stats['n']:>5}{e2e_stats['mean']:>12.0f}{e2e_stats['p50']:>10.0f}"
+                  f"{e2e_stats['p90']:>10.0f}{backlog_mean:>12.0f}{backlog_p90:>10.0f}")
+        print()
 
 if __name__ == "__main__":
     main()

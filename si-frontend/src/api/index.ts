@@ -93,6 +93,21 @@ export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSe
 export const getActiveSessionForUser = (userId: number): Promise<Result<string | null>> =>
   client.get<Result<string | null>>(`/api/interpretation/public/user/${userId}/active`).then(r => r.data)
 
+export interface PublicLatencyReport {
+  sessionId: string
+  lang: string
+  e2eMs: number
+  captureMs: number
+  rttMs: number
+  tailMs: number
+  outputLatencyMs: number
+  backlogMs: number
+  playbackRateMilli: number
+}
+
+export const reportPublicLatency = (params: PublicLatencyReport): Promise<Result<void>> =>
+  client.post<Result<void>>('/api/interpretation/public/latency', params).then(r => r.data)
+
 export const getUserInterpretationSessions = (userId: number, keyword = ''): Promise<Result<InterpretationStatus[]>> =>
   client.get<Result<InterpretationStatus[]>>(`/api/interpretation/users/${userId}/sessions`, { params: { keyword } }).then(r => r.data)
 
