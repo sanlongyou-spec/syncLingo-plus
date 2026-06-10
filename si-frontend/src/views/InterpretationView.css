@@ -1042,3 +1042,55 @@ body {
   border-color: #b00020;
   color: #b00020;
 }
+
+/* 收听语言提示弹窗 */
+.si-notice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  padding: 16px;
+  animation: si-notice-fade 0.15s ease-out;
+}
+@keyframes si-notice-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.si-notice-card {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 28px 24px 24px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+}
+.si-notice-icon {
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+.si-notice-text {
+  margin: 0 0 22px;
+  font-size: 15px;
+  line-height: 1.7;
+  color: #1f2937;
+}
+.si-notice-btn {
+  min-width: 140px;
+  padding: 11px 28px;
+  border: none;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.si-notice-btn:hover {
+  background: #1d4ed8;
+}

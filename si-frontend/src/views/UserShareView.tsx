@@ -6,7 +6,12 @@ import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import type { InterpretationResultItem, WsMessage } from '../types'
 import './InterpretationView.css'
 
-const LANG_LABELS: Record<string, string> = { zh: '中文', id: '印尼语', en: 'English' }
+const LANG_LABELS: Record<string, string> = { zh: '中文', id: 'Bahasa Indonesia', en: 'English' }
+const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
+  zh: { text: '请先静音或降低 Teams 原声，避免同时听到原声和传译声音。谢谢。', button: '我知道了' },
+  en: { text: 'Please mute or lower the original Teams audio to avoid hearing both original and interpretation audio. Thank you.', button: 'Got it' },
+  id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
+}
 const AUDIO_SAMPLE_RATE = 48000
 
 const toCanonicalLang = (lang: string): string => {
@@ -108,6 +113,7 @@ export default function UserShareView() {
   // ── 音频：选语言 + Opus(WebCodecs) 播放 ──────────────────────
   const [audioLangs, setAudioLangs] = useState<string[]>([])
   const [selectedLang, setSelectedLang] = useState<string | null>(null)
+  const [noticeLang, setNoticeLang] = useState<string | null>(null)
   const audioWsRef = useRef<WebSocket | null>(null)
   const selectedLangRef = useRef<string | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -166,6 +172,7 @@ export default function UserShareView() {
     const canonical = toCanonicalLang(lang)
     selectedLangRef.current = canonical
     setSelectedLang(canonical)
+    setNoticeLang(MUTE_NOTICE[canonical] ? canonical : null)
 
     const AudioDecoderCtor = (window as unknown as { AudioDecoder?: unknown }).AudioDecoder as
       | (new (init: { output: (data: unknown) => void; error: (e: unknown) => void }) => {
@@ -533,8 +540,21 @@ export default function UserShareView() {
     }
   }, [userId, connectWs, disconnectWs, clearSessionState, stopAudio])
 
+  const notice = noticeLang ? MUTE_NOTICE[noticeLang] : null
+
   return (
     <div className="si-root">
+      {notice && (
+        <div className="si-notice-overlay" onClick={() => setNoticeLang(null)}>
+          <div className="si-notice-card" onClick={e => e.stopPropagation()}>
+            <div className="si-notice-icon">🔇</div>
+            <p className="si-notice-text">{notice.text}</p>
+            <button type="button" className="si-notice-btn" onClick={() => setNoticeLang(null)}>
+              {notice.button}
+            </button>
+          </div>
+        </div>
+      )}
       <header className="si-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">聚龙同传</h1>
