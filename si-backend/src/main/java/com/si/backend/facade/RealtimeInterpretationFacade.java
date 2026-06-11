@@ -51,8 +51,12 @@ public class RealtimeInterpretationFacade {
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
     private static final int TTS_QUEUE_LIMIT = 6;
-    /** 阶段1 自适应压缩：无积压时, 印尼语说话超过此时长(ms)的长句也压缩(实测印尼语音频≈说话时长, 不压必积压) */
-    private static final long COMPRESS_MIN_SPEAKING_MS = 3000L;
+    /**
+     * 阶段1 自适应压缩：无积压时, 印尼语说话超过此时长(ms)的句子也压缩。
+     * 实测印尼语音频≈说话时长×1.74, 不压则即使 1.5x 加速也排不空(1.74/1.5>1)→ 积压。
+     * 故调激进到 1.5s: 基本都压、把 ratio 压下来让 1.5x 能排空; 只豁免极短句(压不动也不积压)。
+     */
+    private static final long COMPRESS_MIN_SPEAKING_MS = 1500L;
 
     /** 翻译任务专用线程池，有界队列防止 OOM，CallerRunsPolicy 提供背压 */
     private static final Executor TRANSLATION_EXECUTOR = new ThreadPoolExecutor(
