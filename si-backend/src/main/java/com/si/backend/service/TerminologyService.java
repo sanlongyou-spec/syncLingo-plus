@@ -333,18 +333,8 @@ public class TerminologyService {
         // 兜底：清除任何残留的占位符(没还原成功的)，绝不让 SI_TERM_N 出现在最终译文/TTS
         correctedText = RESIDUAL_PLACEHOLDER.matcher(correctedText).replaceAll("")
                 .replaceAll("\\s{2,}", " ").trim();
-        for (Terminology terminology : terminologyMapper.findEnabled(userId)) {
-            String sourceTerm = termByLang(terminology, sourceLang);
-            String targetTerm = termByLang(terminology, targetLang);
-            if (sourceTerm == null || sourceTerm.isBlank() || targetTerm == null || targetTerm.isBlank()) {
-                continue;
-            }
-            if (termMatches(sourceText, sourceTerm) && !correctedText.contains(targetTerm)) {
-                correctedText = correctedText + " (" + targetTerm + ")";
-                log.info("[TerminologyService] terminology corrected, sourceTermLen={}, targetTermLen={}",
-                        sourceTerm.length(), targetTerm.length());
-            }
-        }
+        // 术语只走"译前占位符 → 译后内联还原"这条干净路径(上面)。
+        // 已移除原先"在句尾追加 (目标译名)"的兜底：术语多/多候选时会满屏括号、污染译文。
         log.debug("[TerminologyService] applyAfterTranslate end, changed={}", !correctedText.equals(targetText));
         return correctedText;
     }
