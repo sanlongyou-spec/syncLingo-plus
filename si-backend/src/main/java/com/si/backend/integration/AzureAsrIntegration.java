@@ -194,10 +194,12 @@ public class AzureAsrIntegration {
         private final long forceSegmentMs;
         /** 当前未提交段落的开始时刻（ms）；emit 或 final 后重置，用于按时间强切 */
         private final java.util.concurrent.atomic.AtomicLong segmentStartMs = new java.util.concurrent.atomic.AtomicLong(0);
-        /** 已强制发出的文本(按内容对齐, 不用下标, 防 Azure 改写中间结果导致句首丢字) */
-        private volatile String committedText = "";
-        /** 上一次中间结果的未提交部分(算稳定前缀: 连续两次未变=Azure已确认, 才可安全切) */
-        private volatile String prevWorking = "";
+        /** 当前句已发出(最终)的字符数, 单调只增, 只在 segLock 内改 → 绝不重发已发文本(防失控刷段) */
+        private int emittedLen = 0;
+        /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
+        private String prevText = "";
+        /** 序列化 中间/最终 结果处理(Azure 事件可能在不同线程派发) */
+        private final Object segLock = new Object();
         /** 上一次 Azure 返回的有效 speakerId，用于补全 interim 阶段 Unknown 的强制分段 */
         private final AtomicReference<String> lastValidSpeakerId = new AtomicReference<>("");
         /** 上一次 transcribing(中间结果) 时间戳，用于估算 ASR 句末延迟（最后中间结果→isFinal） */
@@ -285,10 +287,12 @@ public class AzureAsrIntegration {
                 segmentStartMs.compareAndSet(0, System.currentTimeMillis());
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
-                // 按内容剥离已提交部分, 仅对未提交的 working 做强切(内容对齐, 不丢字)
-                String working = stripCommitted(text);
-                emitForcedSegments(working, lang, speakerId);
-                String interimText = stripCommitted(text).trim();
+                // 强切 + 取未发出的中间结果, 全程加锁 + emittedLen 单调推进(防失控刷段/竞态)
+                String interimText;
+                synchronized (segLock) {
+                    emitForcedSegments(text, lang, speakerId);
+                    interimText = text.substring(Math.min(emittedLen, text.length())).trim();
+                }
                 if (!interimText.isBlank()) {
                     callback.onRecognizing(interimText, lang, speakerId, false);
                 }
@@ -301,11 +305,16 @@ public class AzureAsrIntegration {
                 String text = result.getText();
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
-                // 最终结果: 按内容剥离已强切发出的部分, 只发剩余(内容对齐, 不会因 Azure 改写而丢字)
-                boolean hadForced = !committedText.isEmpty();
-                String remainder = stripCommitted(text == null ? "" : text).trim();
-                committedText = "";
-                prevWorking = "";
+                // 最终结果: 按 emittedLen 取已强切之后的剩余部分(单调下标, 不重发已发文本)
+                String full = text == null ? "" : text;
+                String remainder;
+                boolean hadForced;
+                synchronized (segLock) {
+                    hadForced = emittedLen > 0;
+                    remainder = full.substring(Math.min(emittedLen, full.length())).trim();
+                    emittedLen = 0;
+                    prevText = "";
+                }
                 segmentStartMs.set(0);
                 long lastInterim = lastInterimAtMs.getAndSet(0);
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
@@ -328,70 +337,62 @@ public class AzureAsrIntegration {
         }
 
         /**
-         * 安全强切(内容对齐, 不丢字): 在 working(未提交部分)里, 仅在
-         * 「稳定前缀(连续两次中间结果未变) ∩ 留尾余量」 范围内、按 句末标点>逗号>词/字边界 切。
-         * 提交按内容累加到 committedText(不用下标), 最终结果再按内容剥离 → Azure 改写也不丢字。
+         * 安全强切(单调下标 + 每事件最多切一次, 防失控刷段; 必须在 segLock 内调用):
+         * emittedLen 单调只增 → 绝不重发已发文本; 只在 「稳定前缀(连续两次中间结果未变) ∩ 留尾余量」
+         * 内, 按 句末标点>逗号>词/字边界 切一刀。Azure 改写已发区最多产生极小接缝, 不会雪崩。
          */
-        private void emitForcedSegments(String working, String lang, String speakerId) {
-            String w = working;
-            while (true) {
-                int stableLen = commonPrefixLen(w, prevWorking);
-                int safe = Math.min(stableLen, w.length() - FORCE_TAIL_MARGIN_CHARS);
-                if (safe <= 0) {
-                    break;
+        private void emitForcedSegments(String text, String lang, String speakerId) {
+            if (emittedLen > text.length()) {
+                emittedLen = text.length();   // Azure 缩短/改写: 收缩 emittedLen, 不越界(不重发)
+            }
+            int stableAbs = commonPrefixLen(text, prevText);
+            prevText = text;
+            int start = emittedLen;
+            if (start >= text.length()) {
+                return;
+            }
+            String working = text.substring(start);
+            int stableInWorking = Math.max(0, stableAbs - start);
+            int safe = Math.min(stableInWorking, working.length() - FORCE_TAIL_MARGIN_CHARS);
+            if (safe <= 0) {
+                return;
+            }
+            int end = NO_SEGMENT;
+            String reason = null;
+            // 1) 句末标点(最早出现, 必须落在安全区内)
+            if (sentenceSegmentationEnabled) {
+                int e = findSentenceSegmentEnd(working, 0);
+                if (e != NO_SEGMENT && e <= safe) {
+                    end = e;
+                    reason = "sentence";
                 }
-                int end = NO_SEGMENT;
-                String reason = null;
-                // 1) 句末标点(最早出现, 必须落在安全区内)
-                if (sentenceSegmentationEnabled) {
-                    int e = findSentenceSegmentEnd(w, 0);
-                    if (e != NO_SEGMENT && e <= safe) {
-                        end = e;
-                        reason = "sentence";
+            }
+            // 2) 长句强切(超字数/词数 或 超时): 优先逗号, 否则词/字边界
+            if (end == NO_SEGMENT && shouldForce(working, lang)) {
+                int c = findCommaSegmentEnd(working, 0);
+                if (c != NO_SEGMENT && c <= safe) {
+                    end = c;
+                    reason = "force-comma";
+                } else {
+                    int b = wordOrCharBoundaryAt(working, safe, lang);
+                    if (b > 0) {
+                        end = b;
+                        reason = "force-boundary";
                     }
                 }
-                // 2) 长句强切(超字数/词数 或 超时): 优先逗号, 否则词/字边界
-                if (end == NO_SEGMENT && shouldForce(w, lang)) {
-                    int c = findCommaSegmentEnd(w, 0);
-                    if (c != NO_SEGMENT && c <= safe) {
-                        end = c;
-                        reason = "force-comma";
-                    } else {
-                        int b = wordOrCharBoundaryAt(w, safe, lang);
-                        if (b > 0) {
-                            end = b;
-                            reason = "force-boundary";
-                        }
-                    }
-                }
-                if (end == NO_SEGMENT || end <= 0 || end > w.length()) {
-                    break;
-                }
-                String segRaw = w.substring(0, end);
-                committedText = committedText + segRaw;   // 按内容累加, 不 trim, 保证后续前缀匹配
-                w = w.substring(end);
-                segmentStartMs.set(System.currentTimeMillis());
-                String segment = segRaw.trim();
-                if (!segment.isBlank()) {
-                    String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
-                    log.info("[AsrSession] force-segment by {}, len={}, lang={}, speakerId={}",
-                            reason, segment.length(), lang, resolvedSpeakerId);
-                    callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
-                }
             }
-            prevWorking = w;
-        }
-
-        /** 按内容剥离已提交前缀;若 Azure 改写了已提交区(罕见)则退让到最长公共前缀, 只重发不丢字。 */
-        private String stripCommitted(String full) {
-            String c = committedText;
-            if (c.isEmpty()) {
-                return full;
+            if (end == NO_SEGMENT || end <= 0) {
+                return;
             }
-            if (full.startsWith(c)) {
-                return full.substring(c.length());
+            String segment = working.substring(0, end).trim();
+            emittedLen = start + end;   // 单调推进(下标), 下次从这里继续, 不会回头重切
+            segmentStartMs.set(System.currentTimeMillis());
+            if (!segment.isBlank()) {
+                String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                log.info("[AsrSession] force-segment by {}, len={}, lang={}, speakerId={}",
+                        reason, segment.length(), lang, resolvedSpeakerId);
+                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
-            return full.substring(commonPrefixLen(full, c));
         }
 
         private int commonPrefixLen(String a, String b) {
