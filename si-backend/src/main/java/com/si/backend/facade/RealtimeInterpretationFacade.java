@@ -770,12 +770,8 @@ public class RealtimeInterpretationFacade {
     }
 
     private double resolveTtsSpeed(String targetLang) {
-        if (Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)) {
-            return Constants.TTS_SPEED_INDONESIAN;
-        }
-        if (Constants.LANG_EN_SHORT.equalsIgnoreCase(targetLang) || Constants.LANG_EN_US.equalsIgnoreCase(targetLang)) {
-            return Constants.TTS_SPEED_ENGLISH;
-        }
+        // 合成阶段一律用自然语速(1.0)：加速只在前端按播放积压驱动(变调 playbackRate, 最高 1.5x)，
+        // 避免无积压时也把译音说得很赶。targetLang 暂保留以便将来按语种微调。
         return Constants.TTS_SPEED_DEFAULT;
     }
 
