@@ -49,6 +49,9 @@ def main():
         "backlogMs": [],
         "playbackRateMilli": [],
     }
+    # 新埋点(阶段0): 首音"实际发送"口径 + 真实音频时长
+    sent = {"captureToSentMs": [], "sendQueueWaitMs": []}
+    dur = {"audioDurationMs": [], "ratio": []}
     client_rows = []
     for line in sys.stdin:
         if "latency-breakdown" in line:
@@ -56,6 +59,20 @@ def main():
             for k in bd:
                 if k in kv:
                     bd[k].append(kv[k])
+        elif "tts-first-chunk-sent" in line:
+            kv = parse_kv(line)
+            if "captureToSentMs" in kv:
+                sent["captureToSentMs"].append(kv["captureToSentMs"])
+            if kv.get("sendQueueWaitMs", -1) >= 0:
+                sent["sendQueueWaitMs"].append(kv["sendQueueWaitMs"])
+        elif "tts-audio-duration" in line:
+            kv = parse_kv(line)
+            ad = kv.get("audioDurationMs", -1)
+            sw = kv.get("sourceSpeechWindowMs", 0)
+            if ad > 0:
+                dur["audioDurationMs"].append(ad)
+            if ad > 0 and sw > 0:
+                dur["ratio"].append(ad / sw)
         elif "e2e client latency" in line:
             kv = parse_kv(line)
             # 过滤明显噪声: 总时长 < 200ms 视为异常样本
@@ -107,6 +124,29 @@ def main():
             label = f"{lo}-{hi}s" if hi != 999 else f">{lo}s"
             bar = "█" * int(round(pct / 2))
             print(f"{label:>8} | {cnt:>3} ({pct:>4.1f}%) {bar}")
+
+    # ── 阶段0 新埋点: 真实"说话→首音实际发送"(含发送排队) + 印尼语音频时长比 ──
+    if sent["captureToSentMs"] or dur["ratio"]:
+        print()
+        print("=" * 78)
+        print("【真实首音(发送口径) + 音频时长比】 阶段0 新埋点, 修正之前漏掉的发送排队")
+        print("=" * 78)
+        st = stats(sent["captureToSentMs"])
+        if st:
+            print(f"说话→首音实际发送 captureToSentMs: 样本={st['n']}  均值={st['mean']/1000:.1f}s  "
+                  f"p50={st['p50']/1000:.1f}s  p90={st['p90']/1000:.1f}s  p95={st['p95']/1000:.1f}s  最大={st['max']/1000:.1f}s")
+        st = stats(sent["sendQueueWaitMs"])
+        if st:
+            print(f"生成→发送 排队等待 sendQueueWaitMs:  样本={st['n']}  均值={st['mean']:.0f}ms  "
+                  f"p50={st['p50']:.0f}  p90={st['p90']:.0f}  p95={st['p95']:.0f}  最大={st['max']:.0f}  (之前 latency-breakdown 完全漏掉这块)")
+        st = stats(dur["audioDurationMs"])
+        if st:
+            print(f"印尼/译文 音频真实时长 audioDurationMs: 样本={st['n']}  均值={st['mean']/1000:.1f}s  p50={st['p50']/1000:.1f}s  p90={st['p90']/1000:.1f}s")
+        if dur["ratio"]:
+            r = dur["ratio"]
+            print(f"音频时长 / 说话窗口 比值: 样本={len(r)}  均值={sum(r)/len(r):.2f}  "
+                  f"p50={pctile(r,50):.2f}  p90={pctile(r,90):.2f}  "
+                  f"(>1 表示译音比说话还长→必然积压, 这是压缩目标的依据)")
 
     print()
     print("=" * 78)

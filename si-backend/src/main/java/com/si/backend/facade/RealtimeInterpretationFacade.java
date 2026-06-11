@@ -273,12 +273,25 @@ public class RealtimeInterpretationFacade {
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
         sessionSpeakerVoiceService.collectAndCloneIfNeeded(sessionId, speakerId, sourceLang);
-        SpeakerIdentityService.SpeakerResolution speakerResolution = speakerIdentityService.resolveOrIdentify(
-                sessionId,
-                speakerId,
-                resolveSpeakerIdentityPcm(sessionId, speakerId)
-        );
+        // 声纹识别移出关键路径：本句立即用缓存/上一句/默认身份，不阻塞翻译；
+        // 真正的网络声纹识别异步执行，结果更新缓存供后续语句使用（首次出现的说话人本句用默认音色）。
+        SpeakerIdentityService.SpeakerResolution speakerResolution =
+                speakerIdentityService.resolveCached(sessionId, speakerId);
         notifySpeakerIdentity(sessionId, speakerResolution);
+        final byte[] speakerIdentityPcm = resolveSpeakerIdentityPcm(sessionId, speakerId);
+        CompletableFuture.runAsync(() -> {
+            long identifyStart = System.currentTimeMillis();
+            SpeakerIdentityService.SpeakerResolution full =
+                    speakerIdentityService.resolveOrIdentify(sessionId, speakerId, speakerIdentityPcm);
+            log.info("[RealtimeInterpretationFacade] speakerIdentify async done, sessionId={}, speakerId={}, personName={}, speakerIdentifyMs={}",
+                    sessionId, speakerId, full.getPersonName(), System.currentTimeMillis() - identifyStart);
+            if (isPipelineActive(sessionId, "speaker_identify_async")) {
+                notifySpeakerIdentity(sessionId, full);
+            }
+        }, TRANSLATION_EXECUTOR).exceptionally(ex -> {
+            log.warn("[RealtimeInterpretationFacade] speakerIdentify async error, sessionId={}, speakerId={}", sessionId, speakerId, ex);
+            return null;
+        });
 
         log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, speakerId={}, speakerName={}, detected={}, sourceLang={}, targetLangs={}",
                 sessionId, speakerId, speakerResolution.getPersonName(), detectedLang, sourceLang, targetLangs);
@@ -504,6 +517,9 @@ public class RealtimeInterpretationFacade {
         final double ttsSpeed = resolveTtsSpeed(targetLang);
 
         BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
+        final AtomicLong firstChunkGenMs = new AtomicLong(0);  // 首块"生成"时刻：度量 生成→实际发送 的排队等待
+        final AtomicLong totalPcmBytes = new AtomicLong(0);     // 整句 TTS PCM 字节累计：算真实音频时长
+        final int ttsSampleRate = cartesiaProperties.getTts().getSampleRate();
 
         CompletableFuture.runAsync(() -> {
             if (!isPipelineActive(sessionId, "before_tts_synth")) {
@@ -528,16 +544,18 @@ public class RealtimeInterpretationFacade {
                     pcm -> {
                         if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)) {
                             int chunkIndex = Math.toIntExact(chunkCounter.getAndIncrement());
+                            totalPcmBytes.addAndGet(pcm.length);
                             if (firstChunkLogged.compareAndSet(false, true)) {
                                 long firstChunkMs = System.currentTimeMillis();
+                                firstChunkGenMs.set(firstChunkMs);
                                 log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, costMs={}, bytes={}",
                                         sessionId, ttsTaskId, ttsSequence, firstChunkMs - ttsStart, pcm.length);
                                 // 端到端(服务端口径)：该句开始被收音 → 该句该语言 TTS 首音从服务器发出
                                 log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
                                         sessionId, finalTargetLang, firstChunkMs - speechStartAtMs, finalTranslated.length());
-                                // 分段耗时：asr(含说话时长+静音判定) / 翻译 / 排队 / TTS首音
-                                log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
-                                        sessionId, finalTargetLang,
+                                // 分段耗时：asr(含说话时长+静音判定) / 翻译 / 排队 / TTS首音(生成口径)；带 taskId/sequence 便于按句去重
+                                log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, taskId={}, sequence={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
+                                        sessionId, ttsTaskId, ttsSequence, finalTargetLang,
                                         translateStart - speechStartAtMs,
                                         translateDoneMs - translateStart,
                                         ttsStart - translateDoneMs,
@@ -552,6 +570,13 @@ public class RealtimeInterpretationFacade {
                         try {
                             log.info("[RealtimeInterpretationFacade] TTS synth complete, sessionId={}, taskId={}, sequence={}, chunks={}, costMs={}",
                                     sessionId, ttsTaskId, ttsSequence, chunkCounter.get(), System.currentTimeMillis() - ttsStart);
+                            // 真实音频时长(按 PCM 字节算, 不是字符) + 说话窗口, 用于压缩目标的 时长口径 度量
+                            long audioDurationMs = ttsSampleRate > 0
+                                    ? totalPcmBytes.get() * 1000L / ((long) ttsSampleRate * 2L)
+                                    : -1L;
+                            log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, lang={}, audioDurationMs={}, sourceSpeechWindowMs={}, textLen={}",
+                                    sessionId, ttsTaskId, finalTargetLang, audioDurationMs,
+                                    translateStart - speechStartAtMs, finalTranslated.length());
                         } finally {
                             audioQueue.offer(TTS_END);
                         }
@@ -575,6 +600,7 @@ public class RealtimeInterpretationFacade {
             long playbackStart = System.currentTimeMillis();
             long lastChunkTimeNanos = -1L;
             long lastSendTimeNanos = -1L;
+            boolean firstSentLogged = false;
             try {
                 while (true) {
                     TtsBufferedChunk chunk = audioQueue.poll(Constants.TTS_STREAM_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -606,6 +632,16 @@ public class RealtimeInterpretationFacade {
                     TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
                     if (onTtsAudio != null) {
                         onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(), speechStartAtMs);
+                    }
+                    if (!firstSentLogged) {
+                        firstSentLogged = true;
+                        long sentMs = System.currentTimeMillis();
+                        long gen = firstChunkGenMs.get();
+                        // 真实"说话开始→首音实际发出"(含 生成→发送 的串行排队等待, 之前 latency-breakdown 漏掉的最大一块)
+                        log.info("[RealtimeInterpretationFacade] tts-first-chunk-sent, sessionId={}, taskId={}, sequence={}, captureToSentMs={}, sendQueueWaitMs={}",
+                                sessionId, chunk.taskId(), chunk.sequence(),
+                                sentMs - speechStartAtMs,
+                                gen > 0 ? sentMs - gen : -1L);
                     }
                     lastChunkTimeNanos = chunk.createdAtNanos();
                     lastSendTimeNanos = System.nanoTime();

@@ -170,6 +170,28 @@ public class SpeakerIdentityService {
         return toVo(mapper.findById(id));
     }
 
+    /**
+     * 纯缓存解析（不触网，立即返回），用于把声纹识别移出关键路径：
+     * 本句先用 已缓存身份 → 上一句已确认身份 → Unknown 之一，立即走翻译/TTS；
+     * 真正的网络声纹识别由调用方异步执行，结果更新缓存供后续语句使用。
+     */
+    public SpeakerResolution resolveCached(String sessionId, String speakerId) {
+        if (!hasSpeakerId(speakerId)) {
+            return SpeakerResolution.unknown(sessionId, speakerId);
+        }
+        if (!isUnknownSpeakerId(speakerId)) {
+            SessionSpeakerIdentity existing = sessionIdentityMap.get(buildKey(sessionId, speakerId));
+            if (existing != null && !STATUS_UNKNOWN.equals(existing.getStatus())) {
+                return existing.toResolution();
+            }
+        }
+        SessionSpeakerIdentity last = sessionLastResolvedMap.get(sessionId);
+        if (last != null && last.getPersonName() != null && !last.getPersonName().isBlank()) {
+            return last.toResolution();
+        }
+        return SpeakerResolution.unknown(sessionId, speakerId);
+    }
+
     public SpeakerResolution resolveOrIdentify(String sessionId, String speakerId, byte[] recentPcm) {
         if (!hasSpeakerId(speakerId)) {
             return SpeakerResolution.unknown(sessionId, speakerId);

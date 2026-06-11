@@ -14,8 +14,8 @@ import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,14 +28,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 服务器为每个 (sessionId, lang) 维护一个 {@link OpusStreamEncoder}，把 TTS / 原始麦克风 PCM
  * 编码成 48kHz/24kbps Opus 包，只扇出给“选了该语言”的订阅者。每包一条二进制帧（一个 20ms Opus 包）。
  *
- * <p>每个订阅连接有独立的有界发送队列 + 单独发送线程，队列满时丢弃最旧的包，避免个别慢客户端拖垮整体。
+ * <p>每个订阅连接有独立的<b>无界</b>发送队列 + 单独发送线程：严格不丢音频。Opus 包很小(~60B/20ms)，
+ * 慢客户端只是在自己的队列里堆积（内存可忽略），不影响其他订阅者；真正掉线的连接其发送线程会在
+ * sendMessage 抛 IOException 时自行退出、随后被清理。重连的听众直接接入实时流（同传不回放历史）。
  */
 @Slf4j
 @Component
 public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
-
-    /** 每连接发送队列容量（约 2 秒 @ 50 包/秒） */
-    private static final int SEND_QUEUE_CAPACITY = 120;
 
     /** 二进制帧首字节类型标记 */
     private static final byte FRAME_AUDIO = 0x01;   // 后跟 Opus 包
@@ -253,12 +252,12 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         }
     }
 
-    /** 单个订阅连接：有界队列 + 独立发送线程，满则丢最旧包。 */
+    /** 单个订阅连接：无界队列 + 独立发送线程，严格不丢音频（慢客户端只在自己队列堆积）。 */
     private static final class AudioSubscriber implements Runnable {
         private final WebSocketSession session;
         private final String sessionId;
         private final String lang;
-        private final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<>(SEND_QUEUE_CAPACITY);
+        private final BlockingQueue<byte[]> queue = new LinkedBlockingQueue<>();
         private final AtomicBoolean running = new AtomicBoolean(true);
 
         private AudioSubscriber(WebSocketSession session, String sessionId, String lang) {
@@ -272,11 +271,8 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
             if (!running.get()) {
                 return;
             }
-            if (!queue.offer(packet)) {
-                // 队列满：丢最旧的一个再放入，保证低延迟
-                queue.poll();
-                queue.offer(packet);
-            }
+            // 无界队列：永不丢包。慢客户端只是在自己的队列里堆积；真正掉线由发送线程的 IOException 退出处理。
+            queue.offer(packet);
         }
 
         private void stop() {
