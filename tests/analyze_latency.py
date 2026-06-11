@@ -213,14 +213,14 @@ def main():
 
     if any("playbackRateMilli" in row for row in client_rows):
         print("=" * 78)
-        print("【按前端播放倍速分组】 倍速=两次上报间的峰值(封顶 1.35x); 看加速段的延迟与积压")
+        print("【按前端播放倍速分组】 倍速=两次上报间的峰值(封顶 1.2x); 看加速段的延迟与积压")
         print("=" * 78)
         print(f"{'倍速组':<18}{'样本':>5}{'e2e均值ms':>12}{'e2e中位':>10}{'e2e p90':>10}{'积压均值ms':>12}{'积压p90':>10}")
         print("-" * 78)
         groups = [
             ("1.00x(未加速)", lambda rate: rate <= 1000),
-            ("加速中(1.0-1.35x)", lambda rate: 1000 < rate < 1350),
-            ("1.35x(满速)", lambda rate: rate >= 1350),
+            ("加速中(1.0-1.2x)", lambda rate: 1000 < rate < 1200),
+            ("1.2x(满速)", lambda rate: rate >= 1200),
         ]
         for name, matches in groups:
             rows = [row for row in client_rows if matches(row.get("playbackRateMilli", 0))]
