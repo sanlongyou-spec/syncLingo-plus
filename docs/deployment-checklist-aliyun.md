@@ -1,5 +1,8 @@
 # SyncLingo 完整部署清单（阿里云雅加达 · Ubuntu 22.04 · 4C8G）
 
+> ⚠️ **部分内容已过时**（bot 路径、nginx /bot-api、Dockerfile、dist 等）。当前真实部署与运维以
+> **[`deployment-runbook.md`](./deployment-runbook.md)** 为准；本文仅作初装参考。
+
 > 目标：一台 ECS 上跑起**全部功能** —— 同传 + 分享页音频(Opus) + 会议/纪要 + 声纹识别(新 CAM++/sherpa-onnx) + 术语/热词 + 成本 + RAG 问答 + **Teams Bot**。
 > 架构：外部只暴露 443/80/22；Nginx(443) 反代到本机后端(8080)/Bot(3978)；MySQL(3306)/声纹(7000) 仅本机。
 
