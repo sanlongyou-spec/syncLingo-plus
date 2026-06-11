@@ -13,11 +13,11 @@ const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
   id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
 }
 const AUDIO_SAMPLE_RATE = 48000
-// 播放积压时加速追赶(变速变调 playbackRate, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.35x
+// 播放积压时加速追赶(变速变调 playbackRate, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.2x
 // 合成阶段不再加速(后端一律 1.0x 自然语速), 所有加速都在这里按积压驱动
 const CATCHUP_START_SEC = 1.0   // 积压超过此值开始加速
 const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
-const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 配合激进压缩 ratio≈1.27 时 1.35x 足够排空, 音调升高更轻)
+const CATCHUP_MAX_RATE = 1.2    // 最高播放速率(变调; 1.2x 音调升高更轻, 听感更自然)
 const catchupRate = (backlogSec: number): number => {
   if (backlogSec <= CATCHUP_START_SEC) return 1.0
   if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
@@ -136,6 +136,8 @@ export default function UserShareView() {
   const rttRef = useRef(0)
   const lastPingSentRef = useRef(0)
   const pingTimerRef = useRef<number | null>(null)
+  // 记录两次上报之间的"峰值倍速"(加速在句中才涨, 句首采样会漏掉, 故记峰值)
+  const maxRateRef = useRef(1.0)
 
   const reportLatency = (
     sessionId: string,
@@ -232,6 +234,7 @@ export default function UserShareView() {
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate
+        maxRateRef.current = Math.max(maxRateRef.current, rate)   // 句中峰值倍速
         const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
         pendingSourcesRef.current.add(source)
         source.onended = () => pendingSourcesRef.current.delete(source)
@@ -261,8 +264,9 @@ export default function UserShareView() {
             tailMs,
             outputLatencyMs,
             Math.round(backlogSec * 1000),
-            Math.round(rate * 1000),
+            Math.round(maxRateRef.current * 1000),   // 上报"上一段的峰值倍速", 反映真实加速(非句首瞬时)
           )
+          maxRateRef.current = rate   // 重置, 开始累计下一段的峰值
         }
       } catch (err) {
         console.warn('[UserShareView] audio render failed:', err)
