@@ -51,6 +51,8 @@ public class RealtimeInterpretationFacade {
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
     private static final int TTS_QUEUE_LIMIT = 6;
+    /** 阶段1 自适应压缩：无积压时, 印尼语说话超过此时长(ms)的长句也压缩(实测印尼语音频≈说话时长, 不压必积压) */
+    private static final long COMPRESS_MIN_SPEAKING_MS = 3000L;
 
     /** 翻译任务专用线程池，有界队列防止 OOM，CallerRunsPolicy 提供背压 */
     private static final Executor TRANSLATION_EXECUTOR = new ThreadPoolExecutor(
@@ -468,20 +470,27 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] translateAndStreamTts, sessionId={}, speakerId={}, textLen={}, {}→{}, voiceId={}",
                 sessionId, speakerId, text.length(), sourceLang, targetLang, voiceId);
 
-        // 阶段1 自适应压缩：本语言通道上一句还在放 = 有积压 → 压缩(能排空且压缩时间被上一句播放盖住)；
-        // 通道空闲 → 译音能自己排空(比值<1 那半), 不压, 直省 ~2s 首音。
-        boolean backlog = !reservation.previous().isDone();
-        AtomicLong qSize = sessionTtsQueueSize.get(sessionId);
-        log.info("[RealtimeInterpretationFacade] compress-decision, sessionId={}, taskId={}, lang={}, backlog={}, queueSize={}",
-                sessionId, reservation.taskId(), targetLang, backlog, qSize != null ? qSize.get() : 0);
-
         long translateStart = System.currentTimeMillis();
+        // 阶段1 自适应压缩(v2)：
+        //  - 有积压 → 压(压缩时间被上一句播放盖住);
+        //  - 无积压时, 印尼语长句也压: 实测印尼语音频≈说话时长(比值≈1), 不压必慢慢积压;
+        //    previous.isDone() 在比值≈1 时太钝(刚好放完误判空闲), 故对印尼语长句直接压, 不依赖它;
+        //  - 只有 短句(说话<阈值) 才跳过压缩省 ~2s 首音。
+        boolean backlog = !reservation.previous().isDone();
+        long speakingMs = translateStart - speechStartAtMs;
+        boolean isIndonesian = Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
+                || Constants.LANG_ID.equalsIgnoreCase(targetLang);
+        boolean wantCompress = backlog || (isIndonesian && speakingMs >= COMPRESS_MIN_SPEAKING_MS);
+        AtomicLong qSize = sessionTtsQueueSize.get(sessionId);
+        log.info("[RealtimeInterpretationFacade] compress-decision, sessionId={}, taskId={}, lang={}, backlog={}, speakingMs={}, wantCompress={}, queueSize={}",
+                sessionId, reservation.taskId(), targetLang, backlog, speakingMs, wantCompress, qSize != null ? qSize.get() : 0);
+
         String translated;
         try {
             Long userId = sessionService.getSession(sessionId)
                     .map(InterpretationSession::getUserId)
                     .orElse(1L);
-            translated = translationService.translate(text, sourceLang, targetLang, userId, backlog);
+            translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress);
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}, {}→{}", sessionId, sourceLang, targetLang, e);
             completeTtsReservation(reservation, "translate_failed");
