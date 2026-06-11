@@ -70,6 +70,24 @@ public class RealtimeInterpretationFacade {
             new ThreadPoolExecutor.CallerRunsPolicy()
     );
 
+    /**
+     * 声纹识别专用线程池：声纹是 1-2s 的网络阻塞调用，必须与翻译/TTS 隔离，否则会占满翻译线程、拖慢翻译。
+     * 限制并发(=CPU 核数)以免压垮单实例 speaker-service；声纹是尽力而为，队列满则丢弃(DiscardPolicy)，
+     * 该句仍用缓存/默认身份，不影响主流程。
+     */
+    private static final Executor SPEAKER_EXECUTOR = new ThreadPoolExecutor(
+            Runtime.getRuntime().availableProcessors(),
+            Runtime.getRuntime().availableProcessors(),
+            30L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(200),
+            runnable -> {
+                Thread thread = new Thread(runnable, "speaker-identify-" + System.nanoTime());
+                thread.setDaemon(true);
+                return thread;
+            },
+            new ThreadPoolExecutor.DiscardPolicy()
+    );
+
     /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
 
@@ -288,7 +306,7 @@ public class RealtimeInterpretationFacade {
             if (isPipelineActive(sessionId, "speaker_identify_async")) {
                 notifySpeakerIdentity(sessionId, full);
             }
-        }, TRANSLATION_EXECUTOR).exceptionally(ex -> {
+        }, SPEAKER_EXECUTOR).exceptionally(ex -> {
             log.warn("[RealtimeInterpretationFacade] speakerIdentify async error, sessionId={}, speakerId={}", sessionId, speakerId, ex);
             return null;
         });
