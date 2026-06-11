@@ -46,6 +46,14 @@ public class TranslationService {
     }
 
     public String translate(String text, String sourceLang, String targetLang, Long userId) {
+        return translate(text, sourceLang, targetLang, userId, true);
+    }
+
+    /**
+     * @param allowCompress 是否允许实时 LLM 压缩。false 时跳过压缩、直接返回 Google 译文(省 ~2s 首音)。
+     *                      由调用方按"该语言通道是否有播放积压"决定(见 RealtimeInterpretationFacade 阶段1)。
+     */
+    public String translate(String text, String sourceLang, String targetLang, Long userId, boolean allowCompress) {
         log.info("[TranslationService] translate start, textLen={}, sourceLang={}, targetLang={}",
                 text != null ? text.length() : 0, sourceLang, targetLang);
         if (text == null || text.isBlank()) {
@@ -64,7 +72,7 @@ public class TranslationService {
         log.info("[TranslationService] google translate done, sourceLang={}, targetLang={}, costMs={}",
                 sourceLang, targetLang, System.currentTimeMillis() - mtStart);
         result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
-        result = compressIfNeeded(text, sourceLang, targetLang, result, start);
+        result = compressIfNeeded(text, sourceLang, targetLang, result, start, allowCompress);
 
         log.info("[TranslationService] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
                 text.length(), targetLang, System.currentTimeMillis() - start, result != null ? result.length() : 0);
@@ -101,8 +109,14 @@ public class TranslationService {
             String sourceLang,
             String targetLang,
             String translatedText,
-            long requestStartMs
+            long requestStartMs,
+            boolean allowCompress
     ) {
+        if (!allowCompress) {
+            log.debug("[TranslationService] compress skipped (no backlog / channel idle), targetLang={}, textLen={}",
+                    targetLang, sourceText != null ? sourceText.length() : 0);
+            return translatedText;
+        }
         if (translatedText == null || translatedText.isBlank()
                 || !openAiProperties.isCompressionEnabled()
                 || !isCompressionDirection(sourceLang, targetLang)

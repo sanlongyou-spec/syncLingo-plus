@@ -468,13 +468,20 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] translateAndStreamTts, sessionId={}, speakerId={}, textLen={}, {}→{}, voiceId={}",
                 sessionId, speakerId, text.length(), sourceLang, targetLang, voiceId);
 
+        // 阶段1 自适应压缩：本语言通道上一句还在放 = 有积压 → 压缩(能排空且压缩时间被上一句播放盖住)；
+        // 通道空闲 → 译音能自己排空(比值<1 那半), 不压, 直省 ~2s 首音。
+        boolean backlog = !reservation.previous().isDone();
+        AtomicLong qSize = sessionTtsQueueSize.get(sessionId);
+        log.info("[RealtimeInterpretationFacade] compress-decision, sessionId={}, taskId={}, lang={}, backlog={}, queueSize={}",
+                sessionId, reservation.taskId(), targetLang, backlog, qSize != null ? qSize.get() : 0);
+
         long translateStart = System.currentTimeMillis();
         String translated;
         try {
             Long userId = sessionService.getSession(sessionId)
                     .map(InterpretationSession::getUserId)
                     .orElse(1L);
-            translated = translationService.translate(text, sourceLang, targetLang, userId);
+            translated = translationService.translate(text, sourceLang, targetLang, userId, backlog);
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}, {}→{}", sessionId, sourceLang, targetLang, e);
             completeTtsReservation(reservation, "translate_failed");

@@ -25,6 +25,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -74,7 +75,7 @@ class RealtimeInterpretationOrderTest {
 
         CountDownLatch firstTranslationStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstTranslation = new CountDownLatch(1);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong()))
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean()))
                 .thenAnswer(invocation -> {
                     String text = invocation.getArgument(0);
                     if ("first".equals(text)) {
