@@ -17,6 +17,7 @@ azure:
       segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:300}
       segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
       segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
+      force-segment-ms: ${AZURE_ASR_FORCE_SEGMENT_MS:0}
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:50}
       max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:50}

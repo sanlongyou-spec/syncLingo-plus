@@ -63,6 +63,8 @@ azure:
       segmentation-silence-timeout-ms: ${AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS:300}
       segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
       segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
+      # run-on 长句兜底：一段说话超过此 ms 仍无句末标点时，在最后一个逗号处强切(留尾余量防丢字)；0=关闭。
+      force-segment-ms: ${AZURE_ASR_FORCE_SEGMENT_MS:0}
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
       # 按字符数“硬切”长句默认关闭(=0)：该机制用字符偏移切 Azure 会改写的中间结果，会吞掉句首文字。
       # 仅保留句末标点分段(更安全)。如需重新启用长度切段，置为非 0。

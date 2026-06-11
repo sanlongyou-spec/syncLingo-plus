@@ -73,11 +73,12 @@ public class AzureAsrIntegration {
         if (asrProperties.getAsr().isDiarizeIntermediateResults()) {
             config.setProperty(PropertyId.SpeechServiceResponse_DiarizeIntermediateResults, "true");
         }
-        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}",
+        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, forceSegmentMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}",
                 asrProperties.getAsr().getEndSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationStrategy(),
                 asrProperties.getAsr().getSegmentationMaximumTimeMs(),
+                asrProperties.getAsr().getForceSegmentMs(),
                 asrProperties.getAsr().isSentenceSegmentationEnabled(),
                 asrProperties.getAsr().getMaxSegmentZhChars(),
                 asrProperties.getAsr().getMaxSegmentWords(),
@@ -180,11 +181,19 @@ public class AzureAsrIntegration {
         private static final int NO_SEGMENT = -1;
         private static final String ASCII_SENTENCE_END_PUNCTUATION = ".!?;";
         private static final String ASCII_CLOSING_PUNCTUATION = "\"')]}`";
+        /** 逗号类（run-on 兜底切点）：英文逗号/分号、中文逗号，、顿号、中文分号； */
+        private static final String SEGMENT_COMMA_PUNCTUATION = ",;，、；";
+        /** 强切时留在句尾不提交的字符数（Azure 会改写最近词，留余量防句首丢字） */
+        private static final int FORCE_TAIL_MARGIN_CHARS = 4;
         private final boolean sentenceSegmentationEnabled;
         private final int maxSegmentZhChars;
         private final int maxSegmentWords;
         /** 应用层强制切段阈值（字符数），0 = 不限制 */
         private final int maxSegmentChars;
+        /** run-on 长句兜底：一段说话超过此 ms 仍无句末标点时，在最后一个逗号处强切，0 = 关闭 */
+        private final long forceSegmentMs;
+        /** 当前未提交段落的开始时刻（ms）；emit 或 final 后重置，用于按时间强切 */
+        private final java.util.concurrent.atomic.AtomicLong segmentStartMs = new java.util.concurrent.atomic.AtomicLong(0);
         /** 已强制下发的文本长度，用于从 transcribed 结果中截取余下部分 */
         private final AtomicInteger forcedFinalLength = new AtomicInteger(0);
         /** 上一次 Azure 返回的有效 speakerId，用于补全 interim 阶段 Unknown 的强制分段 */
@@ -204,6 +213,7 @@ public class AzureAsrIntegration {
             this.maxSegmentZhChars = asrConfig.getMaxSegmentZhChars();
             this.maxSegmentWords = asrConfig.getMaxSegmentWords();
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
+            this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.hotwords = hotwords;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
@@ -217,6 +227,7 @@ public class AzureAsrIntegration {
             this.maxSegmentZhChars = asrConfig.getMaxSegmentZhChars();
             this.maxSegmentWords = asrConfig.getMaxSegmentWords();
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
+            this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.hotwords = hotwords;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
@@ -269,6 +280,7 @@ public class AzureAsrIntegration {
                 String text = result.getText();
                 if (text == null || text.isBlank()) return;
                 lastInterimAtMs.set(System.currentTimeMillis());
+                segmentStartMs.compareAndSet(0, System.currentTimeMillis());
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
                 if (emitForcedSegments(text, lang, speakerId)) return;
@@ -287,6 +299,7 @@ public class AzureAsrIntegration {
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
                 int alreadySent = forcedFinalLength.getAndSet(0);
+                segmentStartMs.set(0);
                 if (alreadySent > 0) {
                     // 已强制下发了前 N 个字符，只需下发剩余部分
                     if (text != null && text.length() > alreadySent) {
@@ -330,6 +343,14 @@ public class AzureAsrIntegration {
                     end = findLengthLimitSegmentEnd(text, start, lang);
                     reason = "length";
                 }
+                // run-on 长句兜底：超时仍无句末标点 → 在最后一个逗号处切(留尾余量)；连逗号都没有则不切(保留语义完整)
+                if (end == NO_SEGMENT && forceSegmentMs > 0) {
+                    long startedAt = segmentStartMs.get();
+                    if (startedAt > 0 && System.currentTimeMillis() - startedAt >= forceSegmentMs) {
+                        end = findCommaSegmentEnd(text, start);
+                        reason = "time-comma";
+                    }
+                }
                 if (end == NO_SEGMENT || end <= start) {
                     break;
                 }
@@ -341,11 +362,34 @@ public class AzureAsrIntegration {
                     continue;
                 }
                 emitted = true;
+                // 提交一段后，当前未提交部分从此刻重新计时(避免对正常短句过度切分)
+                segmentStartMs.set(System.currentTimeMillis());
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                 log.info("[AsrSession] force-segment by {}, len={}, lang={}, speakerId={}", reason, segment.length(), lang, resolvedSpeakerId);
                 callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
             return emitted;
+        }
+
+        /** run-on 兜底：返回 [startIndex, len-尾余量) 内"最后一个逗号"之后的位置；无逗号返回 NO_SEGMENT(不切)。 */
+        private int findCommaSegmentEnd(String text, int startIndex) {
+            int safeEnd = text.length() - FORCE_TAIL_MARGIN_CHARS;
+            if (safeEnd <= startIndex) {
+                return NO_SEGMENT;
+            }
+            int lastComma = NO_SEGMENT;
+            for (int i = startIndex; i < safeEnd; ) {
+                int codePoint = text.codePointAt(i);
+                int nextIndex = i + Character.charCount(codePoint);
+                if (SEGMENT_COMMA_PUNCTUATION.indexOf(codePoint) >= 0) {
+                    lastComma = nextIndex;
+                }
+                i = nextIndex;
+            }
+            if (lastComma == NO_SEGMENT) {
+                return NO_SEGMENT;
+            }
+            return consumeClosingPunctuationAndWhitespace(text, lastComma);
         }
 
         private int findSentenceSegmentEnd(String text, int startIndex) {
