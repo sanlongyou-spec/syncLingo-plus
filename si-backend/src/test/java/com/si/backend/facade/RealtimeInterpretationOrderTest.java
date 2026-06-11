@@ -88,8 +88,8 @@ class RealtimeInterpretationOrderTest {
         doAnswer(invocation -> {
             String text = invocation.getArgument(1);
             @SuppressWarnings("unchecked")
-            Consumer<byte[]> onChunk = invocation.getArgument(4);
-            Runnable onComplete = invocation.getArgument(5);
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
             onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2)});
             onComplete.run();
             return null;
@@ -98,6 +98,7 @@ class RealtimeInterpretationOrderTest {
                 anyString(),
                 anyInt(),
                 anyDouble(),
+                anyString(),
                 any(),
                 any(),
                 any()

@@ -581,6 +581,7 @@ public class RealtimeInterpretationFacade {
                     finalTranslated,
                     cartesiaProperties.getTts().getSampleRate(),
                     ttsSpeed,
+                    cartesiaLanguage(finalTargetLang),
                     pcm -> {
                         if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)) {
                             int chunkIndex = Math.toIntExact(chunkCounter.getAndIncrement());
@@ -847,6 +848,16 @@ public class RealtimeInterpretationFacade {
             return englishVoiceId;
         }
         return cartesiaProperties.getDefaultVoiceIdIndonesian();
+    }
+
+    /** 目标语种 → Cartesia TTS language 代码(id/en/zh)。让多语模型按目标语发音(尤其数字), 防数字读成中文。 */
+    private String cartesiaLanguage(String targetLang) {
+        if (targetLang == null) return null;
+        String lower = targetLang.toLowerCase();
+        if (lower.startsWith("id") || lower.startsWith("in")) return "id";
+        if (lower.startsWith(Constants.LANG_EN_SHORT)) return "en";
+        if (lower.startsWith("zh")) return "zh";
+        return null;
     }
 
     private double resolveTtsSpeed(String targetLang) {

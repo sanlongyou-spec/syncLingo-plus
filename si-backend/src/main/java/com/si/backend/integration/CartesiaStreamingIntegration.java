@@ -55,12 +55,13 @@ public class CartesiaStreamingIntegration {
             String text,
             int sampleRate,
             double speed,
+            String language,
             java.util.function.Consumer<byte[]> onChunk,
             Runnable onComplete,
             java.util.function.Consumer<String> onError
     ) {
-        log.info("[CartesiaStreamingIntegration] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}",
-                voiceId, text != null ? text.length() : 0, sampleRate, speed);
+        log.info("[CartesiaStreamingIntegration] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}, language={}",
+                voiceId, text != null ? text.length() : 0, sampleRate, speed, language);
 
         GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool();
 
@@ -82,6 +83,7 @@ public class CartesiaStreamingIntegration {
                     text,
                     sampleRate,
                     speed,
+                    language,
                     onChunk,
                     () -> {
                         returnClient(pool, clientHolder[0], voiceId);
@@ -251,6 +253,7 @@ public class CartesiaStreamingIntegration {
                 String text,
                 int sampleRate,
                 double speed,
+                String language,
                 java.util.function.Consumer<byte[]> onChunk,
                 Runnable onComplete,
                 java.util.function.Consumer<String> onError
@@ -262,7 +265,7 @@ public class CartesiaStreamingIntegration {
 
             String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
             String contextId = java.util.UUID.randomUUID().toString();
-            String payload = toJson(buildTtsRequest(text, sampleRate, speed, currentVoiceId, contextId));
+            String payload = toJson(buildTtsRequest(text, sampleRate, speed, language, currentVoiceId, contextId));
 
             okhttp3.WebSocket ws = this.webSocket;
             boolean reused = open && ws != null && safeSend(ws, payload);
@@ -398,11 +401,15 @@ public class CartesiaStreamingIntegration {
             }
         }
 
-        private Map<String, Object> buildTtsRequest(String text, int sampleRate, double speed,
+        private Map<String, Object> buildTtsRequest(String text, int sampleRate, double speed, String language,
                                                     String currentVoiceId, String contextId) {
             Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
             ttsMsg.put(Constants.CARTESIA_FIELD_TYPE, Constants.CARTESIA_MSG_TYPE_TTS_REQUEST);
             ttsMsg.put(Constants.CARTESIA_FIELD_MODEL_ID, properties.getTts().getModelId());
+            // 指定目标语种, 否则多语模型对数字等"语言无关"写法会按音色默认语言(常是中文)发音
+            if (language != null && !language.isBlank()) {
+                ttsMsg.put("language", language);
+            }
             ttsMsg.put(Constants.CARTESIA_FIELD_TRANSCRIPT, text);
             ttsMsg.put(Constants.CARTESIA_FIELD_VOICE, java.util.Map.of("id", currentVoiceId));
             ttsMsg.put(Constants.CARTESIA_FIELD_OUTPUT_FORMAT, java.util.Map.of(

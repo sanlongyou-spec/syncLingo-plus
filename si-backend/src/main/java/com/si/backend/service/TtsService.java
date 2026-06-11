@@ -40,17 +40,19 @@ public class TtsService {
             String text,
             int sampleRate,
             double speed,
+            String language,
             Consumer<byte[]> onChunk,
             Runnable onComplete,
             Consumer<String> onError
     ) {
-        log.info("[TtsService] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}",
-                voiceId, text != null ? text.length() : 0, sampleRate, speed);
+        log.info("[TtsService] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}, language={}",
+                voiceId, text != null ? text.length() : 0, sampleRate, speed, language);
         cartesiaStreamingIntegration.synthesizeStream(
                 voiceId,
                 text,
                 sampleRate,
                 speed,
+                language,
                 onChunk,
                 () -> {
                     log.info("[TtsService] synthesizeStream end, voiceId={}", voiceId);
