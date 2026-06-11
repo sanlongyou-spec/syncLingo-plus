@@ -677,11 +677,15 @@ public class RealtimeInterpretationFacade {
                         firstSentLogged = true;
                         long sentMs = System.currentTimeMillis();
                         long gen = firstChunkGenMs.get();
-                        // 真实"说话开始→首音实际发出"(含 生成→发送 的串行排队等待, 之前 latency-breakdown 漏掉的最大一块)
-                        log.info("[RealtimeInterpretationFacade] tts-first-chunk-sent, sessionId={}, taskId={}, sequence={}, captureToSentMs={}, sendQueueWaitMs={}",
+                        // 逐句完整归因：说话→首音实际发出, 拆成 说话/翻译(含压缩)/TTS生成/发送排队 各段, 便于定位延迟来源
+                        log.info("[RealtimeInterpretationFacade] tts-first-chunk-sent, sessionId={}, taskId={}, sequence={}, captureToSentMs={}, sendQueueWaitMs={}, speakMs={}, translateMs={}, ttsGenMs={}, compressed={}",
                                 sessionId, chunk.taskId(), chunk.sequence(),
                                 sentMs - speechStartAtMs,
-                                gen > 0 ? sentMs - gen : -1L);
+                                gen > 0 ? sentMs - gen : -1L,
+                                translateStart - speechStartAtMs,
+                                translateDoneMs - translateStart,
+                                gen > 0 ? gen - translateDoneMs : -1L,
+                                wantCompress ? 1 : 0);
                     }
                     lastChunkTimeNanos = chunk.createdAtNanos();
                     lastSendTimeNanos = System.nanoTime();

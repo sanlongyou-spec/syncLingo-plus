@@ -50,7 +50,8 @@ def main():
         "playbackRateMilli": [],
     }
     # 新埋点(阶段0): 首音"实际发送"口径 + 真实音频时长
-    sent = {"captureToSentMs": [], "sendQueueWaitMs": []}
+    sent = {"captureToSentMs": [], "sendQueueWaitMs": [], "speakMs": [], "translateMs": [], "ttsGenMs": []}
+    sent_rows = []  # 每句一行(逐句归因 + 按 compressed 分组)
     dur = {"audioDurationMs": [], "ratio": []}
     client_rows = []
     for line in sys.stdin:
@@ -61,10 +62,13 @@ def main():
                     bd[k].append(kv[k])
         elif "tts-first-chunk-sent" in line:
             kv = parse_kv(line)
-            if "captureToSentMs" in kv:
-                sent["captureToSentMs"].append(kv["captureToSentMs"])
+            for k in ("captureToSentMs", "speakMs", "translateMs", "ttsGenMs"):
+                if k in kv and kv[k] >= 0:
+                    sent[k].append(kv[k])
             if kv.get("sendQueueWaitMs", -1) >= 0:
                 sent["sendQueueWaitMs"].append(kv["sendQueueWaitMs"])
+            if kv.get("captureToSentMs", 0) > 0:
+                sent_rows.append(kv)
         elif "tts-audio-duration" in line:
             kv = parse_kv(line)
             ad = kv.get("audioDurationMs", -1)
@@ -147,6 +151,43 @@ def main():
             print(f"音频时长 / 说话窗口 比值: 样本={len(r)}  均值={sum(r)/len(r):.2f}  "
                   f"p50={pctile(r,50):.2f}  p90={pctile(r,90):.2f}  "
                   f"(>1 表示译音比说话还长→必然积压, 这是压缩目标的依据)")
+
+    # ── 延迟归因(逐句平均): 说话 / 翻译(含压缩) / TTS生成 / 发送排队 各占多少 ──
+    if sent_rows:
+        print()
+        print("=" * 78)
+        print("【延迟归因·逐句平均】 说话开始→首音发出 = 说话 + 翻译(含压缩) + TTS生成 + 发送排队")
+        print("=" * 78)
+        n = len(sent_rows)
+        def avg(key):
+            vals = [r[key] for r in sent_rows if key in r and r[key] >= 0]
+            return (sum(vals) / len(vals)) if vals else 0
+        speak = avg("speakMs"); trans = avg("translateMs"); ttsgen = avg("ttsGenMs"); sendq = avg("sendQueueWaitMs")
+        total = avg("captureToSentMs")
+        base = total if total > 0 else 1
+        print(f"样本={n}  总(说话→首音发出)均值={total/1000:.1f}s")
+        print(f"{'环节':<16}{'均值ms':>9}{'占比':>8}{'p50':>8}{'p90':>8}")
+        print("-" * 78)
+        for key, name in [("speakMs", "说话(含静音)"), ("translateMs", "翻译(含压缩)"),
+                          ("ttsGenMs", "TTS生成"), ("sendQueueWaitMs", "发送排队"),
+                          ("captureToSentMs", "合计→发出")]:
+            st = stats([r[key] for r in sent_rows if key in r and r[key] >= 0])
+            if not st:
+                continue
+            pct = (st["mean"] / base * 100) if key != "captureToSentMs" else 100
+            print(f"{name:<16}{st['mean']:>9.0f}{pct:>7.0f}%{st['p50']:>8.0f}{st['p90']:>8.0f}")
+        # 翻译耗时: 压缩 vs 不压(看压缩到底加了多少)
+        comp = [r["translateMs"] for r in sent_rows if r.get("compressed") == 1 and "translateMs" in r]
+        nocomp = [r["translateMs"] for r in sent_rows if r.get("compressed") == 0 and "translateMs" in r]
+        sc = stats(comp); snc = stats(nocomp)
+        print("-" * 78)
+        if sc:
+            print(f"翻译·压缩了 ({sc['n']}句):  均值={sc['mean']:.0f}ms  p50={sc['p50']:.0f}")
+        if snc:
+            print(f"翻译·没压缩({snc['n']}句):  均值={snc['mean']:.0f}ms  p50={snc['p50']:.0f}")
+        if sc and snc:
+            print(f"→ 压缩平均多花 {sc['mean']-snc['mean']:.0f}ms")
+        print("注: 客户端实听还要加上'播放积压'(见下表 backlog), 服务端首音发出只是到这一步。")
 
     print()
     print("=" * 78)
