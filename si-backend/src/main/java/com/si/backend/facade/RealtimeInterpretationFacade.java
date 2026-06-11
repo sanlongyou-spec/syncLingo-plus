@@ -475,16 +475,18 @@ public class RealtimeInterpretationFacade {
                 sessionId, speakerId, text.length(), sourceLang, targetLang, voiceId);
 
         long translateStart = System.currentTimeMillis();
-        // 阶段1 自适应压缩(v2)：
+        // 阶段1 自适应压缩(v2)：印尼语/英语一视同仁。
         //  - 有积压 → 压(压缩时间被上一句播放盖住);
-        //  - 无积压时, 印尼语长句也压: 实测印尼语音频≈说话时长(比值≈1), 不压必慢慢积压;
-        //    previous.isDone() 在比值≈1 时太钝(刚好放完误判空闲), 故对印尼语长句直接压, 不依赖它;
+        //  - 无积压时, 译音长句也压: 译文常比原话长, 不压必慢慢积压;
+        //    previous.isDone() 在比值≈1 时太钝(刚好放完误判空闲), 故长句直接压, 不依赖它;
         //  - 只有 短句(说话<阈值) 才跳过压缩省 ~2s 首音。
         boolean backlog = !reservation.previous().isDone();
         long speakingMs = translateStart - speechStartAtMs;
-        boolean isIndonesian = Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
-                || Constants.LANG_ID.equalsIgnoreCase(targetLang);
-        boolean wantCompress = backlog || (isIndonesian && speakingMs >= COMPRESS_MIN_SPEAKING_MS);
+        boolean isCompressTarget = Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
+                || Constants.LANG_ID.equalsIgnoreCase(targetLang)
+                || Constants.LANG_EN_SHORT.equalsIgnoreCase(targetLang)
+                || Constants.LANG_EN_US.equalsIgnoreCase(targetLang);
+        boolean wantCompress = backlog || (isCompressTarget && speakingMs >= COMPRESS_MIN_SPEAKING_MS);
         AtomicLong qSize = sessionTtsQueueSize.get(sessionId);
         log.info("[RealtimeInterpretationFacade] compress-decision, sessionId={}, taskId={}, lang={}, backlog={}, speakingMs={}, wantCompress={}, queueSize={}",
                 sessionId, reservation.taskId(), targetLang, backlog, speakingMs, wantCompress, qSize != null ? qSize.get() : 0);
