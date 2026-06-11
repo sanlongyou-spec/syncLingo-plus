@@ -40,6 +40,10 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
     /** 每个会话当前检测到的源语言，用于把原始麦克风音频路由给“选了源语言”的分享听众 */
     private final Map<String, String> sessionSourceLangMap = new ConcurrentHashMap<>();
+    /** 会话配置的源语言(handleStart 传入)：为具体语言时原声按它路由，避免随每句检测漂移导致串台 */
+    private final Map<String, String> sessionConfiguredSourceLangMap = new ConcurrentHashMap<>();
+    /** 上次原声路由到的语言：仅在变化时打一条诊断日志，不逐包刷屏 */
+    private final Map<String, String> sessionAudioRouteLangMap = new ConcurrentHashMap<>();
     private final Map<String, String> webSocketSessionBizSessionMap = new ConcurrentHashMap<>();
     private final Map<String, OutboundMessageSender> outboundSenderMap = new ConcurrentHashMap<>();
 
@@ -89,6 +93,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 sessionId, sourceLang, targetLang, msg.getVoiceId());
 
         sessionLangMap.put(sessionId, sourceLang + ":" + targetLang);
+        sessionConfiguredSourceLangMap.put(sessionId, sourceLang == null ? "" : sourceLang);
         webSocketSessionBizSessionMap.put(session.getId(), sessionId);
 
         realtimeFacade.startInterpretation(
@@ -188,10 +193,17 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         }
         byte[] pcm = java.util.Base64.getDecoder().decode(data);
         realtimeFacade.pushAudio(sessionId, pcm);
-        // 把原始麦克风音频（16kHz）转发给“选了当前源语言”的分享听众（编码为 Opus，仅有订阅者时才编码）
-        String sourceLang = sessionSourceLangMap.get(sessionId);
-        if (sourceLang != null) {
-            shareAudioWebSocketHandler.broadcastPcm(sessionId, sourceLang, pcm, Constants.DEFAULT_SAMPLE_RATE_ASR);
+        // 原始麦克风(16kHz)转发给“听该语言原声”的分享听众。会议指定了具体源语言时按它路由
+        // (避免随每句检测漂移/误判导致串台，如印尼语原声漏到中文频道)；仅 auto 时才用动态检测的源语言。
+        String configuredSource = sessionConfiguredSourceLangMap.get(sessionId);
+        String routeLang = isConcreteLang(configuredSource) ? configuredSource : sessionSourceLangMap.get(sessionId);
+        if (routeLang != null && !routeLang.isBlank()) {
+            String prev = sessionAudioRouteLangMap.put(sessionId, routeLang);
+            if (!routeLang.equals(prev)) {
+                log.info("[AsrWebSocketHandler] original-audio route lang, sessionId={}, routeLang={}, configured={}, detected={}",
+                        sessionId, routeLang, configuredSource, sessionSourceLangMap.get(sessionId));
+            }
+            shareAudioWebSocketHandler.broadcastPcm(sessionId, routeLang, pcm, Constants.DEFAULT_SAMPLE_RATE_ASR);
         }
     }
 
@@ -199,6 +211,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         String sessionId = msg.getSessionId();
         sessionLangMap.remove(sessionId);
         sessionSourceLangMap.remove(sessionId);
+        sessionConfiguredSourceLangMap.remove(sessionId);
+        sessionAudioRouteLangMap.remove(sessionId);
         webSocketSessionBizSessionMap.remove(session.getId());
         realtimeFacade.stopInterpretation(sessionId);
         shareAudioWebSocketHandler.closeSession(sessionId);
@@ -240,6 +254,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (bizSessionId != null) {
             sessionLangMap.remove(bizSessionId);
             sessionSourceLangMap.remove(bizSessionId);
+            sessionConfiguredSourceLangMap.remove(bizSessionId);
+            sessionAudioRouteLangMap.remove(bizSessionId);
             realtimeFacade.cleanupSession(bizSessionId);
             shareAudioWebSocketHandler.closeSession(bizSessionId);
         } else {
@@ -283,6 +299,15 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (sessionId != null) {
             shareWebSocketHandler.broadcast(sessionId, msg);
         }
+    }
+
+    /** 是否为具体语言(非空、非 auto)。用于决定原声是否按配置源语言固定路由。 */
+    private boolean isConcreteLang(String lang) {
+        if (lang == null) {
+            return false;
+        }
+        String l = lang.trim().toLowerCase();
+        return !l.isEmpty() && !"auto".equals(l);
     }
 
     private record OutboundMessage(String json, WsMessage source, boolean audio) {

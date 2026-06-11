@@ -70,6 +70,33 @@ class TerminologyMatchTest {
     }
 
     @Test
+    void mangledPlaceholderIsRestoredTolerantly() {
+        // 翻译/LLM 把 __SI_TERM_0__ 改成大小写/空格/下划线变体时，应仍能还原成目标术语
+        TerminologyService svc = serviceWith(List.of(term("卡塔西亚", "Kartesia", "Cartesia")));
+        String src = "We use Cartesia today";
+        TerminologyProtection p = svc.applyBeforeTranslate(UID, src, "en", "id");
+        assertEquals(1, p.getTargetTermByPlaceholder().size());
+
+        String mangled = "Kami memakai si term 0 hari ini";   // 占位符被改写
+        String after = svc.applyAfterTranslate(src, mangled, "en", "id", p, UID);
+        assertTrue(after.contains("Kartesia"), "被改写的占位符应被容错还原: " + after);
+        assertFalse(after.toLowerCase().contains("si term"), "不应残留占位符: " + after);
+        assertFalse(after.toLowerCase().contains("si_term"), "不应残留占位符: " + after);
+    }
+
+    @Test
+    void unmappedResidualPlaceholderIsScrubbed() {
+        // 还原失败/多余的占位符必须被兜底清除，绝不出现在最终译文
+        TerminologyService svc = serviceWith(List.of());
+        String src = "hello";
+        TerminologyProtection p = TerminologyProtection.empty(src);
+        String translated = "halo __SI_TERM_3__ dunia";
+        String after = svc.applyAfterTranslate(src, translated, "en", "id", p, UID);
+        assertFalse(after.contains("SI_TERM"), "残留占位符应被清除: " + after);
+        assertTrue(after.contains("halo") && after.contains("dunia"), after);
+    }
+
+    @Test
     void latinTermDoesNotMatchInsideAnotherWord() {
         // "AI" 不应命中 "raining" 内部
         TerminologyService svc = serviceWith(List.of(term("人工智能", "kecerdasan", "AI")));

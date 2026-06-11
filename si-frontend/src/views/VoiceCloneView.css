@@ -3,6 +3,7 @@
   flex: 1;
   min-height: 0;
   padding-top: 0.75rem;
+  overflow-y: auto;   /* 说话人/声纹多时整个主区域可滚动，避免被 si-root(100vh,overflow:hidden) 截断拉不动 */
 }
 
 .vc-panel--identity {

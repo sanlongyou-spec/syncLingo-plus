@@ -33,6 +33,11 @@ public class OpusStreamEncoder {
     private final short[] frameBuffer = new short[FRAME_SAMPLES];
     private int frameFill = 0;
 
+    // 跨块连续重采样状态：保留小数读取位置与上一块末样本，消除“逐块相位重置”导致的周期性突变(怪音/音乐声)
+    private int resampleRate = 0;      // 当前输入采样率；变化时重置相位
+    private double resamplePos = 0.0;  // 下一个输出样本在当前输入块中的读取位置(可为负，表示落在上一块末样本与本块首样本之间)
+    private short resamplePrev = 0;    // 上一块的末样本(作为 index=-1)
+
     public OpusStreamEncoder() throws OpusException {
         this.encoder = new OpusEncoder(OUTPUT_SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP);
         encoder.setBitrate(TARGET_BITRATE);
@@ -98,25 +103,42 @@ public class OpusStreamEncoder {
         return s;
     }
 
-    /** 线性插值重采样到 48k（逐块处理，块边界有微小不连续，对语音可接受）。 */
-    private static short[] resampleTo48k(short[] in, int inSampleRate) {
-        if (inSampleRate == OUTPUT_SAMPLE_RATE || in.length == 0) {
+    /**
+     * 线性插值重采样到 48k —— 跨调用保持连续相位：
+     * 用 {@link #resamplePos} 记录下一个输出在输入流中的连续位置、{@link #resamplePrev} 记录上一块末样本，
+     * 块与块之间不再各自从 0 相位起算，从而消除块边界突变（之前“诡异音乐声”的主因）。
+     * 输入采样率变化（如 16k 原声 与 24k TTS 混入同一编码器）时重置相位。
+     */
+    private short[] resampleTo48k(short[] in, int inSampleRate) {
+        if (in.length == 0) {
             return in;
         }
-        int outLen = (int) ((long) in.length * OUTPUT_SAMPLE_RATE / inSampleRate);
-        if (outLen <= 0) {
-            return new short[0];
+        if (inSampleRate == OUTPUT_SAMPLE_RATE) {
+            resampleRate = OUTPUT_SAMPLE_RATE;
+            resamplePrev = in[in.length - 1];
+            resamplePos = 0.0;
+            return in;
         }
-        short[] out = new short[outLen];
+        if (inSampleRate != resampleRate) {
+            resampleRate = inSampleRate;
+            resamplePos = 0.0;
+            resamplePrev = in[0];
+        }
         double step = (double) inSampleRate / OUTPUT_SAMPLE_RATE;
-        for (int i = 0; i < outLen; i++) {
-            double pos = i * step;
-            int idx = (int) pos;
-            double frac = pos - idx;
-            short a = in[Math.min(idx, in.length - 1)];
-            short b = in[Math.min(idx + 1, in.length - 1)];
-            out[i] = (short) Math.round(a + (b - a) * frac);
+        int maxOut = (int) Math.ceil((in.length - resamplePos) / step) + 1;
+        short[] tmp = new short[Math.max(maxOut, 0)];
+        int n = 0;
+        // 仅在 i0 与 i0+1 都可用(i0+1 ≤ in.length-1)时产出；落在块末与下一块首之间的样本留待下次(用 resamplePrev 衔接)
+        while (resamplePos < in.length - 1) {
+            int i0 = (int) Math.floor(resamplePos);
+            double f = resamplePos - i0;
+            int a = (i0 < 0) ? resamplePrev : in[i0];
+            int b = in[i0 + 1];
+            tmp[n++] = (short) Math.round(a + (b - a) * f);
+            resamplePos += step;
         }
-        return out;
+        resamplePrev = in[in.length - 1];
+        resamplePos -= in.length;   // 把剩余相位带入下一块(变为 [-1,0) 区间，下次用 resamplePrev 衔接)
+        return (n == tmp.length) ? tmp : java.util.Arrays.copyOf(tmp, n);
     }
 }

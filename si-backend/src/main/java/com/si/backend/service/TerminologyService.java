@@ -319,11 +319,20 @@ public class TerminologyService {
             for (Map.Entry<String, String> entry : protection.getTargetTermByPlaceholder().entrySet()) {
                 String placeholder = entry.getKey();
                 String targetTerm = entry.getValue();
+                // 先精确替换；再容错替换：翻译/LLM 常把 __SI_TERM_0__ 改成大小写/下划线/空格变体，按序号做宽松匹配
                 correctedText = correctedText
                         .replace(placeholder, targetTerm)
                         .replace(placeholder.toLowerCase(), targetTerm);
+                String idx = placeholder.replaceAll("\\D", "");
+                if (!idx.isEmpty()) {
+                    correctedText = tolerantPlaceholderPattern(idx).matcher(correctedText)
+                            .replaceAll(java.util.regex.Matcher.quoteReplacement(targetTerm));
+                }
             }
         }
+        // 兜底：清除任何残留的占位符(没还原成功的)，绝不让 SI_TERM_N 出现在最终译文/TTS
+        correctedText = RESIDUAL_PLACEHOLDER.matcher(correctedText).replaceAll("")
+                .replaceAll("\\s{2,}", " ").trim();
         for (Terminology terminology : terminologyMapper.findEnabled(userId)) {
             String sourceTerm = termByLang(terminology, sourceLang);
             String targetTerm = termByLang(terminology, targetLang);
@@ -362,6 +371,15 @@ public class TerminologyService {
         return java.util.regex.Pattern.compile(
                 "\\b" + java.util.regex.Pattern.quote(term) + "\\b",
                 java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CHARACTER_CLASS);
+    }
+
+    /** 残留占位符兜底清洗：匹配 SI_TERM_数字 的各种被改写变体(大小写/下划线/空格)。 */
+    private static final java.util.regex.Pattern RESIDUAL_PLACEHOLDER =
+            java.util.regex.Pattern.compile("(?i)_*si[_ ]*term[_ ]*[0-9]+_*");
+
+    /** 按序号宽松匹配某个占位符(容忍大小写/下划线/空格变体)。 */
+    private static java.util.regex.Pattern tolerantPlaceholderPattern(String idx) {
+        return java.util.regex.Pattern.compile("(?i)_*si[_ ]*term[_ ]*" + idx + "(?![0-9])_*");
     }
 
     /** 长度<2 的术语（单字母/单汉字）一律不匹配；拉丁文按单词边界，CJK 按子串。 */

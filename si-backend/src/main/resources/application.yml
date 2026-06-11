@@ -64,9 +64,11 @@ azure:
       segmentation-strategy: ${AZURE_ASR_SEGMENTATION_STRATEGY:}
       segmentation-maximum-time-ms: ${AZURE_ASR_SEGMENTATION_MAXIMUM_TIME_MS:0}
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
-      max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:50}
-      max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:50}
-      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:80}
+      # 按字符数“硬切”长句默认关闭(=0)：该机制用字符偏移切 Azure 会改写的中间结果，会吞掉句首文字。
+      # 仅保留句末标点分段(更安全)。如需重新启用长度切段，置为非 0。
+      max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:0}
+      max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:0}
+      max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:0}
       diarize-intermediate-results: ${AZURE_ASR_DIARIZE_INTERMEDIATE_RESULTS:true}
     tts:
       voice: zh-CN-XiaoxiaoMultilingualNeural
