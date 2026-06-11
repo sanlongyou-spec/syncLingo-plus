@@ -294,7 +294,7 @@ public class TerminologyService {
                     + placeholderIndex
                     + Constants.TERMINOLOGY_PLACEHOLDER_SUFFIX;
             protectedText = replaceTerm(protectedText, sourceTerm, placeholder);
-            targetTermByPlaceholder.put(placeholder, targetTerm);
+            targetTermByPlaceholder.put(placeholder, cleanTermValue(targetTerm));
             placeholderIndex++;
         }
         log.debug("[TerminologyService] applyBeforeTranslate end, changed={}, termCount={}",
@@ -370,6 +370,16 @@ public class TerminologyService {
     /** 按序号宽松匹配某个占位符(容忍大小写/下划线/空格变体)。 */
     private static java.util.regex.Pattern tolerantPlaceholderPattern(String idx) {
         return java.util.regex.Pattern.compile("(?i)_*si[_ ]*term[_ ]*" + idx + "(?![0-9])_*");
+    }
+
+    /** 清洗术语目标值：多候选(; ； 、)只取第一个, 去掉括号注释, 避免内联还原把 "A (B); C" 整串插入译文。 */
+    private String cleanTermValue(String term) {
+        if (term == null || term.isBlank()) {
+            return term;
+        }
+        String first = term.split("[;；、]", 2)[0];
+        first = first.replaceAll("\\s*[(（][^)）]*[)）]", "").trim();
+        return first.isBlank() ? term.trim() : first;
     }
 
     /** 长度<2 的术语（单字母/单汉字）一律不匹配；拉丁文按单词边界，CJK 按子串。 */
