@@ -13,11 +13,11 @@ const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
   id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
 }
 const AUDIO_SAMPLE_RATE = 48000
-// 播放积压时加速追赶(变速变调 playbackRate, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.2x
+// 播放积压时加速追赶(变速变调 playbackRate, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.3x
 // 合成阶段不再加速(后端一律 1.0x 自然语速), 所有加速都在这里按积压驱动
 const CATCHUP_START_SEC = 1.0   // 积压超过此值开始加速
 const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
-const CATCHUP_MAX_RATE = 1.2    // 最高播放速率(变调; 1.2x 音调升高更轻, 听感更自然)
+const CATCHUP_MAX_RATE = 1.3    // 最高播放速率(变调; 1.3x 平衡排空速度与音调升高)
 const catchupRate = (backlogSec: number): number => {
   if (backlogSec <= CATCHUP_START_SEC) return 1.0
   if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
