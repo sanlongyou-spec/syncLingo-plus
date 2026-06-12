@@ -223,10 +223,18 @@ const renderHighlightedText = (text: string, keyword: string): ReactNode => {
 }
 
 const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
-  const body = rows.map(item => `
-    <p>${escapeHtml(item.sourceText)}</p>
-    <p>${escapeHtml(item.translatedText || '')}</p><br/>
-  `).join('')
+  const body = rows.map(item => {
+    const speaker = item.speakerName || item.speakerId || ''
+    const speakerHtml = speaker
+      ? `<p style="font-weight:bold;color:#555;margin-bottom:2px;">${escapeHtml(speaker)}</p>`
+      : ''
+    return `
+    <div style="margin-bottom:12px;">
+      ${speakerHtml}
+      <p style="margin:0 0 2px 0;">${escapeHtml(item.sourceText)}</p>
+      <p style="margin:0;color:#333;">${escapeHtml(item.translatedText || '')}</p>
+    </div>`
+  }).join('')
   const html = `<html><head><meta charset="utf-8"/></head>
     <body style="font-family:Microsoft YaHei,Arial,sans-serif;line-height:1.8;font-size:12pt;">${body}</body></html>`
   const blob = new Blob(['﻿', html], { type: 'application/msword' })
