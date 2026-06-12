@@ -211,6 +211,10 @@ notification:
 teams:
   bot:
     default-user-id: ${TEAMS_BOT_DEFAULT_USER_ID:0}
+
+audio:
+  record:
+    dir: ${AUDIO_RECORD_DIR:/app/audio-records}
     max-sessions: ${TEAMS_BOT_MAX_SESSIONS:5}
     summary-preview-chars: ${TEAMS_BOT_SUMMARY_PREVIEW_CHARS:1200}
     api-secret: ${TEAMS_BOT_API_SECRET:}

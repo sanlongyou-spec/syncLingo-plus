@@ -15,9 +15,14 @@ import {
   sendTeamsSummaryToUsers,
   updateActionItemStatus,
   updateSpeakerSummary,
+  getAudioRecords,
+  renameAudioRecord,
+  deleteAudioRecord,
+  getAudioDownloadUrl,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
 import type {
+  AudioRecord,
   InterpretationResultItem,
   InterpretationStatus,
   Meeting,
@@ -261,7 +266,7 @@ export default function HistoryView() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [meetingsLoading, setMeetingsLoading] = useState(false)
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<'files' | 'transcript' | 'speakers' | 'summary' | 'attendance'>('files')
+  const [activeTab, setActiveTab] = useState<'files' | 'transcript' | 'speakers' | 'summary' | 'attendance' | 'audio'>('files')
 
   // ── Session within meeting ───────────────────────────────
   const [sessions, setSessions] = useState<InterpretationStatus[]>([])
@@ -303,6 +308,13 @@ export default function HistoryView() {
   const [actionItems, setActionItems] = useState<MeetingActionItem[]>([])
   const [actionItemsLoading, setActionItemsLoading] = useState(false)
   const [extractingActionItems, setExtractingActionItems] = useState(false)
+
+  // ── Audio tab ─────────────────────────────────────────────
+  const [audioRecords, setAudioRecords] = useState<AudioRecord[]>([])
+  const [audioLoading, setAudioLoading] = useState(false)
+  const [audioKeyword, setAudioKeyword] = useState('')
+  const [audioRenameId, setAudioRenameId] = useState<number | null>(null)
+  const [audioRenameDraft, setAudioRenameDraft] = useState('')
 
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
   const transcriptGroups = useMemo(() => {
@@ -472,6 +484,45 @@ export default function HistoryView() {
       setActionItems(res.data || [])
     } catch { /* ignore */ }
     finally { setExtractingActionItems(false) }
+  }
+
+  // ── Audio tab handlers ───────────────────────────────────
+  useEffect(() => {
+    if (activeTab !== 'audio') return
+    setAudioLoading(true)
+    getAudioRecords(userId, audioKeyword)
+      .then(res => setAudioRecords(res.data?.items ?? []))
+      .catch(() => setAudioRecords([]))
+      .finally(() => setAudioLoading(false))
+  }, [activeTab, audioKeyword, userId])
+
+  const handleAudioDelete = async (id: number) => {
+    if (!window.confirm('删除该录音文件？')) return
+    try {
+      await deleteAudioRecord(id, userId)
+      setAudioRecords(prev => prev.filter(r => r.id !== id))
+    } catch { /* ignore */ }
+  }
+
+  const handleAudioRenameCommit = async (id: number) => {
+    const name = audioRenameDraft.trim()
+    if (!name) { setAudioRenameId(null); return }
+    try {
+      await renameAudioRecord(id, userId, name)
+      setAudioRecords(prev => prev.map(r => r.id === id ? { ...r, name } : r))
+    } catch { /* ignore */ }
+    finally { setAudioRenameId(null) }
+  }
+
+  const formatDuration = (ms: number) => {
+    const s = Math.round(ms / 1000)
+    const m = Math.floor(s / 60)
+    return m > 0 ? `${m}分${s % 60}秒` : `${s}秒`
+  }
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
   const handleToggleActionItem = async (item: MeetingActionItem) => {
@@ -845,6 +896,7 @@ export default function HistoryView() {
                 <button className={`history-tab-btn${activeTab === 'transcript' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('transcript')}>文本记录</button>
                 <button className={`history-tab-btn${activeTab === 'speakers' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('speakers')}>发言摘要</button>
                 <button className={`history-tab-btn${activeTab === 'summary' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('summary')}>会议总结</button>
+                <button className={`history-tab-btn${activeTab === 'audio' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('audio')}>原声录音</button>
               </div>
 
               {/* ── 文件总结 Tab ── */}
@@ -1215,6 +1267,81 @@ export default function HistoryView() {
                   </div>
                 )
               })()}
+
+              {/* ── 原声录音 Tab ── */}
+              {activeTab === 'audio' && (
+                <div className="history-tab-content">
+                  <div className="history-audio-toolbar">
+                    <input
+                      className="history-audio-search"
+                      placeholder="搜索录音名称..."
+                      value={audioKeyword}
+                      onChange={e => setAudioKeyword(e.target.value)}
+                    />
+                  </div>
+                  {audioLoading && (
+                    <div className="history-summary-loading"><span className="history-summary-spinner" />加载中...</div>
+                  )}
+                  {!audioLoading && audioRecords.length === 0 && (
+                    <div className="si-tri-empty">
+                      {audioKeyword ? '无匹配录音' : '暂无录音（同传结束后自动生成）'}
+                    </div>
+                  )}
+                  {!audioLoading && audioRecords.length > 0 && (
+                    <ul className="history-audio-list">
+                      {audioRecords.map(rec => (
+                        <li key={rec.id} className="history-audio-item">
+                          <div className="history-audio-meta">
+                            {audioRenameId === rec.id ? (
+                              <input
+                                className="history-audio-rename-input"
+                                autoFocus
+                                value={audioRenameDraft}
+                                onChange={e => setAudioRenameDraft(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') void handleAudioRenameCommit(rec.id)
+                                  if (e.key === 'Escape') setAudioRenameId(null)
+                                }}
+                                onBlur={() => void handleAudioRenameCommit(rec.id)}
+                              />
+                            ) : (
+                              <span
+                                className="history-audio-name"
+                                title="双击重命名"
+                                onDoubleClick={() => { setAudioRenameId(rec.id); setAudioRenameDraft(rec.name) }}
+                              >{rec.name}</span>
+                            )}
+                            <span className="history-audio-info">
+                              {formatDuration(rec.durationMs)} · {formatBytes(rec.fileSizeBytes)} · {rec.createTime?.slice(0, 16).replace('T', ' ')}
+                            </span>
+                          </div>
+                          <audio
+                            className="history-audio-player"
+                            controls
+                            preload="none"
+                            src={getAudioDownloadUrl(rec.id, userId)}
+                          />
+                          <div className="history-audio-actions">
+                            <a
+                              className="history-audio-btn"
+                              href={getAudioDownloadUrl(rec.id, userId)}
+                              download={`${rec.name}.wav`}
+                            >下载</a>
+                            <button
+                              className="history-audio-btn"
+                              onClick={() => { setAudioRenameId(rec.id); setAudioRenameDraft(rec.name) }}
+                            >重命名</button>
+                            <button
+                              className="history-audio-btn history-audio-btn--danger"
+                              onClick={() => void handleAudioDelete(rec.id)}
+                            >删除</button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </>
           )}
         </section>

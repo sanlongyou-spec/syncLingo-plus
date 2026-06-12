@@ -37,6 +37,7 @@ import type {
   MeetingActionItem,
   CostRates,
   MonthlyCostSummary,
+  AudioRecord,
 } from '../types'
 
 const getApiErrorMessage = async (error: unknown, fallback: string): Promise<string> => {
@@ -596,3 +597,22 @@ export const updateActionItemStatus = (id: number, status: string): Promise<Resu
 
 export const deleteActionItem = (id: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/action-items/${id}`).then(r => r.data)
+
+export const getAudioRecords = (
+  userId: number,
+  keyword?: string,
+  page?: number,
+  size?: number,
+): Promise<Result<{ items: AudioRecord[]; total: number }>> =>
+  client.get<Result<{ items: AudioRecord[]; total: number }>>('/api/audio-records', {
+    params: { userId, keyword: keyword || '', page: page ?? 1, size: size ?? 50 },
+  }).then(r => r.data)
+
+export const renameAudioRecord = (id: number, userId: number, name: string): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/audio-records/${id}/name`, null, { params: { userId, name } }).then(r => r.data)
+
+export const deleteAudioRecord = (id: number, userId: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/audio-records/${id}`, { params: { userId } }).then(r => r.data)
+
+export const getAudioDownloadUrl = (id: number, userId: number): string =>
+  `/api/audio-records/${id}/download?userId=${userId}`

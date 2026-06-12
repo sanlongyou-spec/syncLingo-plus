@@ -4,6 +4,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
+import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SessionSpeakerVoiceService;
@@ -47,6 +48,7 @@ public class RealtimeInterpretationFacade {
     private final VoiceCloneService voiceCloneService;
     private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
     private final SpeakerIdentityService speakerIdentityService;
+    private final AudioRecordService audioRecordService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -167,6 +169,9 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionSpeakerVoiceService.startSession(sessionId);
         speakerIdentityService.startSession(sessionId);
+        Long audioUserId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(null);
+        Long audioMeetingId = sessionService.getSession(sessionId).map(InterpretationSession::getMeetingId).orElse(null);
+        audioRecordService.startRecording(sessionId, audioUserId, audioMeetingId);
 
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
@@ -210,6 +215,7 @@ public class RealtimeInterpretationFacade {
         }
         asrService.pushAudio(sessionId, pcmFrame);
         if (pcmFrame != null && pcmFrame.length > 0) {
+            audioRecordService.appendPcm(sessionId, pcmFrame);
             sessionSpeakerVoiceService.appendSessionAudio(sessionId, pcmFrame);
             long audioMs = Math.round((double) pcmFrame.length * 1000
                     / (Constants.DEFAULT_SAMPLE_RATE_ASR * Constants.AUDIO_CHANNELS_MONO * (Constants.BITS_PER_SAMPLE / 8)));
@@ -248,6 +254,7 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
+        audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);
@@ -895,6 +902,7 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
+        audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         sessionSpeakerVoiceService.cleanupSession(sessionId);
         speakerIdentityService.cleanupSession(sessionId);

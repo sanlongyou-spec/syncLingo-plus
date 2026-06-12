@@ -417,3 +417,17 @@ export interface MonthlyCostSummary {
   totalSummaryLlmOut?: number
   estimatedCostUsd: number
 }
+
+export interface AudioRecord {
+  id: number
+  sessionId: string
+  userId: number
+  meetingId?: number | null
+  name: string
+  filePath?: string
+  fileSizeBytes: number
+  durationMs: number
+  sampleRate: number
+  createTime: string
+}
+
