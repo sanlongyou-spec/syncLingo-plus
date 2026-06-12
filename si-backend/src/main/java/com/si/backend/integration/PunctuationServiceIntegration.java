@@ -101,7 +101,7 @@ public class PunctuationServiceIntegration {
                 if (punctuated == null || punctuated.isBlank()) return null;
                 return punctuated;
             }
-        } catch (java.net.SocketTimeoutException | java.io.InterruptedIOException e) {
+        } catch (java.io.InterruptedIOException e) {
             long cost = System.currentTimeMillis() - t0;
             log.warn("[PunctuationService] timeout after {}ms (budget={}ms), text='{}'",
                     cost, timeoutMs, abbrev(text));
