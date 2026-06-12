@@ -79,6 +79,14 @@ azure:
     key: ${AZURE_TRANSLATOR_KEY:}
     region: ${AZURE_TRANSLATOR_REGION:eastus}
     timeout-seconds: 30
+punctuation:
+  service:
+    # 标点还原服务开关（复用 speaker-service /punctuate 端点，sherpa-onnx CT-Transformer 推理）
+    enabled: ${PUNCTUATION_SERVICE_ENABLED:false}
+    url: ${PUNCTUATION_SERVICE_URL:http://localhost:7000}
+    # 超时 45ms（模型推理 ~10-20ms，留余量）；超时降级为原字符数分段
+    timeout-ms: ${PUNCTUATION_SERVICE_TIMEOUT_MS:45}
+
 speaker:
   service:
     enabled: ${SPEAKER_SERVICE_ENABLED:false}

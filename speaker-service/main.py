@@ -2,12 +2,14 @@
 Speaker recognition microservice using a pre-exported ONNX speaker-embedding
 model (3D-Speaker CAM++) via sherpa-onnx — no torch/speechbrain at runtime.
 Endpoints: POST /enroll, POST /identify, DELETE /enroll/{name}, GET /health
+           POST /punctuate (optional, requires sherpa-onnx CT-Transformer punct model)
 Embeddings are persisted to disk (embeddings.json) and loaded on startup.
 """
 import io
 import json
 import os
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,9 +22,19 @@ from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger("speaker-service")
+punc_log = logging.getLogger("speaker-service.punct")
 
 EMBEDDINGS_FILE = Path(os.environ.get("EMBEDDINGS_FILE", "embeddings.json"))
 MODEL_TAG_FILE = EMBEDDINGS_FILE.with_suffix(".model")
+
+# ── 标点还原模型（sherpa-onnx CT-Transformer, 可选）──────────────────────────
+# 下载：https://github.com/k2-fsa/sherpa-onnx/releases/tag/punctuation-models
+# 解压后将 model.onnx 放到此路径（或通过环境变量覆盖）
+PUNCT_MODEL_PATH = os.environ.get(
+    "PUNCT_MODEL_PATH",
+    "models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx"
+)
+PUNCT_NUM_THREADS = int(os.environ.get("PUNCT_NUM_THREADS", "1"))
 MIN_SCORE = float(os.environ.get("SPEAKER_MIN_SCORE", "0.5"))
 # Z-norm 门槛：最佳分数相对其他候选人（impostor cohort）的标准分，越高越严格；
 # 只在候选≥3 人时生效，仅用于"拒掉对所有人都像"的模糊匹配，默认偏宽松。
@@ -48,7 +60,7 @@ except Exception as _vad_err:  # noqa: BLE001
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global extractor
+    global extractor, punct_model
     log.info("Loading speaker ONNX model from %s ...", MODEL_PATH)
     cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
         model=MODEL_PATH, num_threads=NUM_THREADS, provider="cpu", debug=False
@@ -56,6 +68,30 @@ async def lifespan(app: FastAPI):
     extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)
     log.info("Model loaded, embedding dim=%d.", extractor.dim)
     load_embeddings()
+
+    # ── 标点模型（可选，文件不存在则降级为不加标点）────────────────────────────
+    punct_path = Path(PUNCT_MODEL_PATH)
+    if punct_path.exists():
+        try:
+            t0 = time.time()
+            punct_cfg = sherpa_onnx.OfflinePunctuationConfig(
+                model=sherpa_onnx.OfflinePunctuationModelConfig(
+                    ct_transformer=str(punct_path),
+                ),
+                num_threads=PUNCT_NUM_THREADS,
+            )
+            punct_model = sherpa_onnx.OfflinePunctuation(punct_cfg)
+            # 预热：第一次推理会触发 ONNX 图编译，后续正常
+            _ = punct_model.add_punctuation("今天开会讨论预算")
+            elapsed_ms = int((time.time() - t0) * 1000)
+            log.info("[punct] Model loaded and warmed up from %s, elapsed=%dms", punct_path, elapsed_ms)
+        except Exception as e:
+            log.warning("[punct] Failed to load punct model: %s — running without punctuation", e)
+            punct_model = None
+    else:
+        log.info("[punct] Model file not found at %s — /punctuate will echo input (degraded)", punct_path)
+        punct_model = None
+
     yield
 
 
@@ -63,6 +99,7 @@ app = FastAPI(title="Speaker Recognition Service", lifespan=lifespan)
 
 # Global state
 extractor: Optional["sherpa_onnx.SpeakerEmbeddingExtractor"] = None
+punct_model: Optional["sherpa_onnx.OfflinePunctuation"] = None
 # name -> list of embedding arrays (multiple enrollments per person)
 embedding_store: dict[str, list[list[float]]] = {}
 
@@ -310,9 +347,57 @@ async def delete_enrollment(name: str):
     return JSONResponse(status_code=404, content={"deleted": False, "name": name, "detail": "Speaker not found"})
 
 
+class PunctuateRequest(BaseModel):
+    text: str
+
+
+class PunctuateResponse(BaseModel):
+    punctuated: str
+    latency_ms: float
+    model_available: bool
+
+
+@app.post("/punctuate", response_model=PunctuateResponse)
+async def punctuate(req: PunctuateRequest):
+    """
+    为中文/中英混合文本添加标点。
+    - 模型可用时：CT-Transformer 推理（~5-20ms）
+    - 模型不可用时：原文原样返回（降级，model_available=false）
+    日志格式便于 analyze 脚本扫描：
+      [punct] in=... out=... latency=...ms chars_in=N chars_out=M
+    """
+    text = req.text.strip()
+    if not text:
+        return PunctuateResponse(punctuated="", latency_ms=0.0, model_available=punct_model is not None)
+
+    t0 = time.time()
+    if punct_model is not None:
+        try:
+            result = punct_model.add_punctuation(text)
+            latency_ms = (time.time() - t0) * 1000
+            punc_log.info(
+                "[punct] in=%r out=%r latency=%.1fms chars_in=%d chars_out=%d",
+                text, result, latency_ms, len(text), len(result)
+            )
+            return PunctuateResponse(punctuated=result, latency_ms=round(latency_ms, 2), model_available=True)
+        except Exception as e:
+            latency_ms = (time.time() - t0) * 1000
+            punc_log.warning("[punct] inference error after %.1fms: %s — returning original", latency_ms, e)
+            return PunctuateResponse(punctuated=text, latency_ms=round(latency_ms, 2), model_available=False)
+    else:
+        latency_ms = (time.time() - t0) * 1000
+        punc_log.debug("[punct] degraded (no model), echoing input, chars=%d", len(text))
+        return PunctuateResponse(punctuated=text, latency_ms=round(latency_ms, 2), model_available=False)
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "speakers": len(embedding_store), "model_loaded": extractor is not None}
+    return {
+        "status": "ok",
+        "speakers": len(embedding_store),
+        "model_loaded": extractor is not None,
+        "punct_model_loaded": punct_model is not None,
+    }
 
 
 if __name__ == "__main__":
