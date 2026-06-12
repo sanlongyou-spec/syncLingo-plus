@@ -5,15 +5,15 @@ import com.si.backend.dto.CreateMeetingRequest;
 import com.si.backend.dto.MeetingNotificationPreviewRequest;
 import com.si.backend.dto.MeetingNotificationSendRequest;
 import com.si.backend.dto.SpeakerSummaryRequest;
+import com.si.backend.dto.UpdateSpeakerSummaryRequest;
 import com.si.backend.entity.MeetingActionItem;
-import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.facade.MeetingNotificationFacade;
+import com.si.backend.facade.SpeakerSummaryFacade;
 import com.si.backend.service.MeetingActionItemService;
 import com.si.backend.service.MeetingInsightService;
 import com.si.backend.service.MeetingService;
 import com.si.backend.service.PreMeetingService;
-import com.si.backend.service.SpeakerSummaryService;
 import com.si.backend.vo.InterpretationSessionVo;
 import com.si.backend.vo.MeetingFileVo;
 import com.si.backend.vo.MeetingNotificationPreviewVo;
@@ -21,6 +21,7 @@ import com.si.backend.vo.MeetingNotificationRecipientVo;
 import com.si.backend.vo.MeetingNotificationSendVo;
 import com.si.backend.vo.MeetingVo;
 import com.si.backend.vo.PreMeetingSummaryVo;
+import com.si.backend.vo.SpeakerSummaryRecordVo;
 import com.si.backend.vo.SpeakerSummaryVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -44,7 +45,7 @@ import java.util.Map;
 public class MeetingController {
 
     private final MeetingService meetingService;
-    private final SpeakerSummaryService speakerSummaryService;
+    private final SpeakerSummaryFacade speakerSummaryFacade;
     private final InterpretationFacade interpretationFacade;
     private final MeetingActionItemService actionItemService;
     private final MeetingInsightService meetingInsightService;
@@ -164,19 +165,12 @@ public class MeetingController {
 
     @PostMapping("/speaker-summary")
     public Result<SpeakerSummaryVo> speakerSummary(@Valid @RequestBody SpeakerSummaryRequest request) {
-        log.info("[MeetingController] speakerSummary, sessionId={}, speaker={}, textLen={}",
-                request.getSessionId(), request.getSpeakerName(), request.getText().length());
-        String name = request.getSpeakerName() != null && !request.getSpeakerName().isBlank()
-                ? request.getSpeakerName()
-                : (request.getSpeakerId() != null ? request.getSpeakerId() : "未知发言人");
-        SpeakerSummaryVo vo = speakerSummaryService.summarize(
-                name, request.getText(), request.getSessionId(), request.getSpeakerId(), request.getRequirements());
-        return Result.ok(vo);
+        return Result.ok(speakerSummaryFacade.summarize(request));
     }
 
     @GetMapping("/speaker-summaries/{sessionId}")
-    public Result<List<SpeakerSummaryRecord>> getSpeakerSummaries(@PathVariable String sessionId) {
-        return Result.ok(speakerSummaryService.getBySession(sessionId));
+    public Result<List<SpeakerSummaryRecordVo>> getSpeakerSummaries(@PathVariable String sessionId) {
+        return Result.ok(speakerSummaryFacade.getBySession(sessionId));
     }
 
     @PostMapping("/speaker-summaries/{id}/regenerate")
@@ -185,7 +179,14 @@ public class MeetingController {
             @RequestBody(required = false) Map<String, String> body) {
         String requirements = body != null ? body.get("requirements") : null;
         log.info("[MeetingController] regenerateSpeakerSummary, id={}", id);
-        return Result.ok(speakerSummaryService.regenerate(id, requirements));
+        return Result.ok(speakerSummaryFacade.regenerate(id, requirements));
+    }
+
+    @PutMapping("/speaker-summaries/{id}")
+    public Result<SpeakerSummaryRecordVo> updateSpeakerSummary(
+            @PathVariable Long id,
+            @Valid @RequestBody UpdateSpeakerSummaryRequest request) {
+        return Result.ok(speakerSummaryFacade.update(id, request));
     }
 
     // ── 行动项接口 (A5) ────────────────────────────────────────────────────────

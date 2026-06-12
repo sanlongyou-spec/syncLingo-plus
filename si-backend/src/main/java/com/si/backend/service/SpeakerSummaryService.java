@@ -1,5 +1,7 @@
 package com.si.backend.service;
 
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.integration.LlmIntegration;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
@@ -18,6 +20,10 @@ public class SpeakerSummaryService {
 
     private static final long REFUSAL_RETRY_BASE_DELAY_MS = 2_000L;
     private static final long REFUSAL_RETRY_MAX_DELAY_MS = 10_000L;
+    private static final int SUMMARY_MAX_ATTEMPTS = 3;
+    private static final int MOJIBAKE_MIN_MARKERS = 4;
+    private static final double MOJIBAKE_MARKER_RATIO = 0.08;
+    private static final String MOJIBAKE_MARKERS = "ÃÂäåæçèéïð¤½¼¿º¦§©¢€™Œœž";
     /**
      * Safety cap on a single speaker's accumulated text (keeps the most recent). High enough to
      * effectively hold a whole meeting's worth of one person's speech — Claude's context is ~200k
@@ -58,8 +64,29 @@ public class SpeakerSummaryService {
                 || lower.contains("sorry, but i") || lower.contains("sorry, i cannot");
     }
 
-    private static boolean isUnusableSummary(String response) {
-        return response == null || response.isBlank() || isRefusal(response);
+    static boolean isUnusableSummary(String response) {
+        return response == null || response.isBlank() || isRefusal(response) || isMojibake(response);
+    }
+
+    private static boolean isMojibake(String response) {
+        if (response == null || response.isBlank()) {
+            return false;
+        }
+        int visibleChars = 0;
+        int markerCount = 0;
+        for (int codePoint : response.codePoints().toArray()) {
+            if (!Character.isWhitespace(codePoint)) {
+                visibleChars++;
+            }
+            if (codePoint == 0xFFFD || MOJIBAKE_MARKERS.indexOf(codePoint) >= 0) {
+                markerCount++;
+            }
+        }
+        if (response.indexOf('\uFFFD') >= 0) {
+            return true;
+        }
+        return markerCount >= MOJIBAKE_MIN_MARKERS
+                && markerCount / (double) Math.max(1, visibleChars) >= MOJIBAKE_MARKER_RATIO;
     }
 
     public SpeakerSummaryVo summarize(String speakerName, String text, String sessionId, String speakerId) {
@@ -157,14 +184,17 @@ public class SpeakerSummaryService {
     private String summarizeSpeakerUntilAccepted(String speakerName, String text, String requirements) throws Exception {
         int attempt = 1;
         String raw = llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements);
-        while (isUnusableSummary(raw)) {
-            log.warn("[SpeakerSummaryService] unusable LLM speaker summary detected, retrying, speaker={}, attempt={}",
-                    speakerName, attempt);
+        while (isUnusableSummary(raw) && attempt < SUMMARY_MAX_ATTEMPTS) {
+            log.warn("[SpeakerSummaryService] unusable LLM speaker summary detected, retrying, speaker={}, attempt={}, mojibake={}",
+                    speakerName, attempt, isMojibake(raw));
             sleepBeforeRetry(attempt);
             attempt++;
             raw = requirements != null && !requirements.isBlank()
                     ? llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements)
                     : llmIntegration.summarizeSpeakerSegmentRetry(speakerName, text);
+        }
+        if (isUnusableSummary(raw)) {
+            throw new IllegalStateException("发言摘要连续生成异常，请稍后重试");
         }
         return raw;
     }
@@ -193,11 +223,13 @@ public class SpeakerSummaryService {
                 : (record.getSpeakerId() != null ? record.getSpeakerId() : "未知发言人");
         try {
             log.info("[SpeakerSummaryService] regenerate, id={}, speaker={}, hasRequirements={}", id, speakerName, requirements != null && !requirements.isBlank());
-            String raw = llmIntegration.summarizeSpeakerSegment(speakerName, textSnippet, requirements);
+            String raw = summarizeSpeakerUntilAccepted(speakerName, textSnippet, requirements);
             String[] parts = parseTitleAndContent(raw);
             record.setTitle(parts[0]);
             record.setSummary(parts[1]);
             mapper.updateSummary(record);
+            contentEmbeddingService.asyncEmbedSpeakerSummary(
+                    record.getId(), record.getSessionId(), speakerName, parts[0], parts[1]);
             return SpeakerSummaryVo.builder()
                     .speakerId(record.getSpeakerId())
                     .speakerName(record.getSpeakerName())
@@ -214,6 +246,21 @@ public class SpeakerSummaryService {
         List<SpeakerSummaryRecord> records = mapper.findBySessionId(sessionId);
         records.forEach(this::refreshUnusableRecord);
         return records;
+    }
+
+    public SpeakerSummaryRecord update(Long id, String speakerName, String summary) {
+        log.info("[SpeakerSummaryService] update start, id={}, speaker={}", id, speakerName);
+        SpeakerSummaryRecord record = mapper.findById(id);
+        if (record == null) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "发言摘要记录不存在: " + id);
+        }
+        record.setSpeakerName(speakerName.trim());
+        record.setSummary(summary.trim());
+        mapper.updateEditableFields(record);
+        contentEmbeddingService.asyncEmbedSpeakerSummary(
+                record.getId(), record.getSessionId(), record.getSpeakerName(), record.getTitle(), record.getSummary());
+        log.info("[SpeakerSummaryService] update end, id={}, speaker={}", id, record.getSpeakerName());
+        return record;
     }
 
     private void refreshUnusableRecord(SpeakerSummaryRecord record) {
@@ -235,6 +282,8 @@ public class SpeakerSummaryService {
             record.setTitle(parts[0]);
             record.setSummary(parts[1]);
             mapper.updateSummary(record);
+            contentEmbeddingService.asyncEmbedSpeakerSummary(
+                    record.getId(), record.getSessionId(), speakerName, parts[0], parts[1]);
         } catch (Exception e) {
             log.warn("[SpeakerSummaryService] persisted speaker summary refresh failed, id={}", record.getId(), e);
         }

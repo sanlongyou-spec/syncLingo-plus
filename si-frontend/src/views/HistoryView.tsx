@@ -14,6 +14,7 @@ import {
   regenerateSpeakerSummary,
   sendTeamsSummaryToUsers,
   updateActionItemStatus,
+  updateSpeakerSummary,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
 import type {
@@ -287,6 +288,7 @@ export default function HistoryView() {
   const [speakerReqSaved, setSpeakerReqSaved] = useState(false)
   const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(new Set())
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
+  const [speakerSaveStatus, setSpeakerSaveStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
 
   // ── Action items tab ─────────────────────────────────────
@@ -379,6 +381,7 @@ export default function HistoryView() {
     setSelectedRecipients(new Set())
     setSelectedSpeakerRecipients(new Set())
     setSpeakerRegenStatus({})
+    setSpeakerSaveStatus({})
     setSpeakerPushStatus({})
     setTeamsPushStatus('idle')
     hasFetchedSummaryRef.current = false
@@ -561,6 +564,27 @@ export default function HistoryView() {
       setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'error' }))
       setTimeout(() => {
         setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
+      }, 3000)
+    }
+  }
+
+  const saveSpeakerRecord = async (record: SpeakerSummaryRecord, statusKey: string) => {
+    if (!record.id || !record.speakerName.trim() || !record.summary.trim()) return
+    setSpeakerSaveStatus(prev => ({ ...prev, [statusKey]: 'loading' }))
+    try {
+      const res = await updateSpeakerSummary(record.id, {
+        speakerName: record.speakerName.trim(),
+        summary: record.summary,
+      })
+      setSpeakerRecords(prev => prev.map(item => item.id === record.id ? res.data : item))
+      setSpeakerSaveStatus(prev => ({ ...prev, [statusKey]: 'done' }))
+      setTimeout(() => {
+        setSpeakerSaveStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
+      }, 1500)
+    } catch {
+      setSpeakerSaveStatus(prev => ({ ...prev, [statusKey]: 'error' }))
+      setTimeout(() => {
+        setSpeakerSaveStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
       }, 3000)
     }
   }
@@ -982,18 +1006,35 @@ export default function HistoryView() {
                     {selectedSessionId && !speakerLoading && speakerRecords.map((rec, idx) => {
                       const statusKey = String(rec.id ?? `${rec.sessionId || 'speaker'}-${idx}`)
                       const regenStatus = speakerRegenStatus[statusKey] || 'idle'
+                      const saveStatus = speakerSaveStatus[statusKey] || 'idle'
                       const pushStatus = speakerPushStatus[statusKey] || 'idle'
                       return (
                         <div key={statusKey} className="history-speaker-record">
                           <div className="history-speaker-record-header">
                             <div className="history-speaker-record-title-group">
-                              <span className="history-speaker-record-name">{rec.speakerName}</span>
+                              <input
+                                className="history-speaker-record-name-input"
+                                value={rec.speakerName}
+                                onChange={e => setSpeakerRecords(prev => prev.map((r, i) =>
+                                  i === idx ? { ...r, speakerName: e.target.value } : r
+                                ))}
+                                aria-label={`第 ${idx + 1} 位汇报人姓名`}
+                                placeholder="汇报人姓名"
+                                spellCheck={false}
+                              />
                               {rec.title && <span className="history-speaker-record-title">· {rec.title}</span>}
                               {rec.createTime && (
                                 <span className="history-speaker-record-time">{new Date(rec.createTime).toLocaleTimeString()}</span>
                               )}
                             </div>
                             <div className="history-speaker-record-actions">
+                              <button
+                                className="history-summary-regen-btn history-speaker-save-btn"
+                                onClick={() => { void saveSpeakerRecord(rec, statusKey) }}
+                                disabled={!rec.id || !rec.speakerName.trim() || !rec.summary.trim() || saveStatus === 'loading'}
+                              >
+                                {saveStatus === 'done' ? '已保存' : saveStatus === 'error' ? '保存失败' : saveStatus === 'loading' ? '保存中...' : '保存'}
+                              </button>
                               <button
                                 className="history-summary-regen-btn"
                                 onClick={() => { void regenerateSpeakerRecord(rec, statusKey) }}
@@ -1016,7 +1057,7 @@ export default function HistoryView() {
                             onChange={e => setSpeakerRecords(prev => prev.map((r, i) => i === idx ? { ...r, summary: e.target.value } : r))}
                             spellCheck={false}
                           />
-                          <div className="history-summary-edit-hint">可手动修改后点「发送到 Teams」以文本消息发送给所选 Teams 账号</div>
+                          <div className="history-summary-edit-hint">修改汇报人姓名和摘要正文后，点「保存」一次性保存全部修改；也可直接发送当前内容到 Teams</div>
                         </div>
                       )
                     })}

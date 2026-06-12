@@ -1164,3 +1164,65 @@ docker logs --since 30m si-backend 2>&1 \
 - 通过 / 不通过：本地代码级验证通过；服务器真人收听待验证。
 - 已执行：后端 `mvn.cmd clean test` 通过（79 项测试）；第二句先完成翻译和合成时，实际播放 sequence 仍为 `[1, 2]`。
 - 需回归项：连续快速短句、长短句交替、翻译服务瞬时失败、停止同传后重新开始。
+
+## 周度验证记录：2026-W24 发言摘要姓名可编辑与乱码防护
+
+### 对应优化范围
+
+- 对应 `docs/optimization-implementation-plan.md` 中的 `周度优化记录：2026-W24 发言摘要姓名可编辑与乱码防护`。
+
+### 验证目标
+
+- 验证汇报人姓名和摘要正文可持久化，且修改后同步刷新向量索引。
+- 验证常见 UTF-8 错解乱码、替换字符和拒答内容会被判为不可用摘要。
+- 验证读取已有乱码摘要时会基于原始发言文本自动刷新。
+
+### 优先通过日志 / 接口 / 数据库验证
+
+```powershell
+cd D:\data\syncLingo-++\si-backend
+mvn.cmd test
+
+cd D:\data\syncLingo-++\si-frontend
+npm.cmd run build
+
+git diff --check
+```
+
+重点自动化测试：
+
+- `SpeakerSummaryServiceTest.detectsCommonUtf8Mojibake`
+- `SpeakerSummaryServiceTest.persistsManualSpeakerNameAndSummaryCorrection`
+- `SpeakerSummaryServiceTest.refreshesPersistedMojibakeFromOriginalTranscript`
+
+接口回归：
+
+```http
+PUT /api/meetings/speaker-summaries/{id}
+Content-Type: application/json
+
+{
+  "speakerName": "修正后的姓名",
+  "summary": "修正后的摘要正文"
+}
+```
+
+通过标准：
+
+- 后端日志出现 `SpeakerSummaryService update start/end`，Mapper 更新姓名和摘要正文。
+- 乱码历史摘要读取时出现 `persisted speaker summary is unusable, regenerating`。
+- 更新、重新生成或自动刷新后调用 `asyncEmbedSpeakerSummary`。
+- 后端完整测试、前端生产构建和 `git diff --check` 通过。
+
+### 必要时再做人工判断
+
+- 在历史记录“发言摘要”页修改姓名和正文，点击“保存”，刷新页面确认两项修改均保留。
+- 确认姓名输入框、保存、重新生成和 Teams 发送按钮在常见桌面宽度下无重叠。
+- 直接发送未保存的当前编辑内容到 Teams，确认消息中的姓名和正文使用页面当前值。
+
+### 结果记录
+
+- 通过 / 不通过：代码级验证通过；真实历史数据页面端到端保存待本机数据库恢复后回归。
+- 已执行：后端 `mvn.cmd test` 通过（88 项测试）；前端 `npm.cmd run build` 通过；`git diff --check` 通过；本地前端可正常打开登录页。
+- 遗留问题：本机后端启动时 MySQL 连接被重置，无法进入真实历史摘要卡片完成保存点击验证。
+- 需回归项：姓名/正文保存后刷新、已有乱码摘要自动刷新、修改后跨会议检索姓名、Teams 发送当前编辑内容。

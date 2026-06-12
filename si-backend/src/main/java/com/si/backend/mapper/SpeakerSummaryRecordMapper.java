@@ -37,6 +37,9 @@ public interface SpeakerSummaryRecordMapper {
     @Update("UPDATE speaker_summary SET title = #{title}, summary = #{summary}, text_snippet = #{textSnippet}, speaker_id = #{speakerId} WHERE id = #{id}")
     int updateSummaryAndSnippet(SpeakerSummaryRecord record);
 
+    @Update("UPDATE speaker_summary SET speaker_name = #{speakerName}, summary = #{summary} WHERE id = #{id}")
+    int updateEditableFields(SpeakerSummaryRecord record);
+
     /** Latest summary record for a given speaker within a session — one summary per person. */
     @Select("SELECT * FROM speaker_summary WHERE session_id = #{sessionId} AND speaker_name = #{speakerName} ORDER BY id DESC LIMIT 1")
     SpeakerSummaryRecord findBySessionIdAndSpeakerName(@Param("sessionId") String sessionId, @Param("speakerName") String speakerName);

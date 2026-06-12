@@ -513,6 +513,12 @@ export const generateSpeakerSummary = (params: {
 export const getSpeakerSummaries = (sessionId: string): Promise<Result<SpeakerSummaryRecord[]>> =>
   client.get<Result<SpeakerSummaryRecord[]>>(`/api/meetings/speaker-summaries/${encodeURIComponent(sessionId)}`).then(r => r.data)
 
+export const updateSpeakerSummary = (
+  id: number,
+  params: Pick<SpeakerSummaryRecord, 'speakerName' | 'summary'>,
+): Promise<Result<SpeakerSummaryRecord>> =>
+  client.put<Result<SpeakerSummaryRecord>>(`/api/meetings/speaker-summaries/${id}`, params).then(r => r.data)
+
 export const regenerateSpeakerSummary = (
   id: number,
   requirements?: string,
