@@ -25,5 +25,10 @@ public class SpeakerServiceProperties {
      * current speaker is kept instead of switching.
      */
     private Double marginThreshold = 0.06D;
+    /**
+     * Azure "Unknown" 段是否继承"上一位已确认的说话人"。true=继承(连续性好但会把别人的段误标成上一位);
+     * false=不继承,认不出就保持 Unknown(前端回退显示 speakerId/Guest-N)。默认 false,避免误标。
+     */
+    private Boolean inheritUnknown = false;
     private Integer timeoutSeconds = 15;
 }

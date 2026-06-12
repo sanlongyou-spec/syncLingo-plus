@@ -185,9 +185,12 @@ public class SpeakerIdentityService {
                 return existing.toResolution();
             }
         }
-        SessionSpeakerIdentity last = sessionLastResolvedMap.get(sessionId);
-        if (last != null && last.getPersonName() != null && !last.getPersonName().isBlank()) {
-            return last.toResolution();
+        // 只有开启"继承上一位"时才回退到上一位已确认说话人; 否则未缓存/未识别 → Unknown(前端显示 speakerId)
+        if (Boolean.TRUE.equals(speakerServiceProperties.getInheritUnknown())) {
+            SessionSpeakerIdentity last = sessionLastResolvedMap.get(sessionId);
+            if (last != null && last.getPersonName() != null && !last.getPersonName().isBlank()) {
+                return last.toResolution();
+            }
         }
         return SpeakerResolution.unknown(sessionId, speakerId);
     }
@@ -267,7 +270,8 @@ public class SpeakerIdentityService {
      * tried first; this only applies when it cannot decide.
      */
     private SessionSpeakerIdentity unknownOutcome(String sessionId, String speakerId, boolean transientUnknownSpeaker) {
-        if (transientUnknownSpeaker) {
+        boolean inherit = Boolean.TRUE.equals(speakerServiceProperties.getInheritUnknown());
+        if (inherit && transientUnknownSpeaker) {
             SessionSpeakerIdentity last = sessionLastResolvedMap.get(sessionId);
             if (last != null && last.getPersonName() != null && !last.getPersonName().isBlank()) {
                 log.info("[SpeakerIdentityService] Unknown segment inherits last confirmed speaker, sessionId={}, personName={}",
