@@ -17,7 +17,7 @@ const AUDIO_SAMPLE_RATE = 48000
 // 合成阶段不再加速(后端一律 1.0x 自然语速), 所有加速都在这里按积压驱动
 const CATCHUP_START_SEC = 1.0   // 积压超过此值开始加速
 const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
-const CATCHUP_MAX_RATE = 1.3    // 最高播放速率(变调; 1.3x 平衡排空速度与音调升高)
+const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 1.35x 排空更快, 压客户端积压)
 const catchupRate = (backlogSec: number): number => {
   if (backlogSec <= CATCHUP_START_SEC) return 1.0
   if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
