@@ -205,15 +205,6 @@ public class InterpretationFacade {
         log.info("[InterpretationFacade] mapSessionSpeaker start, sessionId={}, speakerId={}, personName={}",
                 sessionId, speakerId, personName);
         SessionSpeakerIdentityVo identity = speakerIdentityService.mapSessionSpeaker(sessionId, speakerId, personName);
-        // If auto-clone already completed before the user mapped this speaker, bind the voiceId now.
-        com.si.backend.entity.SessionSpeakerVoice readyVoice =
-                sessionSpeakerVoiceService.findReadyVoice(sessionId, speakerId);
-        if (readyVoice != null) {
-            speakerIdentityService.bindCartesiaVoiceFromSessionSpeaker(
-                    sessionId, speakerId, readyVoice.getCartesiaVoiceId(), readyVoice.getLanguage());
-            log.info("[InterpretationFacade] bound existing cloned voice on mapping, sessionId={}, speakerId={}, voiceId={}",
-                    sessionId, speakerId, readyVoice.getCartesiaVoiceId());
-        }
         // Auto-enroll in speaker recognition service using accumulated session audio.
         byte[] speakerPcm = sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId);
         // 16000 Hz * 1 channel * 2 bytes/sample * 2 seconds = 64000 bytes minimum
@@ -224,7 +215,7 @@ public class InterpretationFacade {
             // 即使该人已注册过，也允许再绑定时追加样本（speaker-service 端有上限保护），
             // 让声纹随会议累积、越来越准。
             if (identityRecord != null && identityRecord.getId() != null) {
-                String locale = readyVoice != null ? readyVoice.getLanguage() : "zh";
+                String locale = "zh";
                 final byte[] pcmSnapshot = speakerPcm;
                 final String finalLocale = locale;
                 final String finalPersonName = personName.trim();

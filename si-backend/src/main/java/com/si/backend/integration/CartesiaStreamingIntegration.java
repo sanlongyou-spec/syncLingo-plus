@@ -235,6 +235,11 @@ public class CartesiaStreamingIntegration {
         private volatile String pendingPayload;
         private volatile boolean generationActive = false;
 
+        // 当前合成的延迟分析字段
+        private volatile long synthStartMs;
+        private volatile int chunkCount;
+        private volatile long totalPcmBytes;
+
         public CartesiaWsClient(CartesiaProperties properties, ObjectMapper objectMapper) {
             this.properties = properties;
             this.objectMapper = objectMapper;
@@ -262,6 +267,9 @@ public class CartesiaStreamingIntegration {
             this.curOnComplete = onComplete;
             this.curOnError = onError;
             this.generationActive = true;
+            this.synthStartMs = System.currentTimeMillis();
+            this.chunkCount = 0;
+            this.totalPcmBytes = 0;
 
             String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
             String contextId = java.util.UUID.randomUUID().toString();
@@ -324,8 +332,15 @@ public class CartesiaStreamingIntegration {
                 // 二进制帧：Cartesia 部分版本直接发原始 PCM 而非 base64 JSON
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
+                    byte[] pcm = bytes.toByteArray();
+                    int idx = ++chunkCount;
+                    totalPcmBytes += pcm.length;
+                    if (idx == 1) {
+                        log.debug("[CartesiaWsClient] first-chunk(bin) voiceId={} firstChunkMs={} bytes={}",
+                                voiceId, System.currentTimeMillis() - synthStartMs, pcm.length);
+                    }
                     java.util.function.Consumer<byte[]> cb = curOnChunk;
-                    if (cb != null) cb.accept(bytes.toByteArray());
+                    if (cb != null) cb.accept(pcm);
                 }
 
                 @Override
@@ -358,13 +373,25 @@ public class CartesiaStreamingIntegration {
                         String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
                         if (!audioData.isBlank()) {
                             byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
+                            int idx = ++chunkCount;
+                            totalPcmBytes += pcm.length;
+                            if (idx == 1) {
+                                log.debug("[CartesiaWsClient] first-chunk voiceId={} firstChunkMs={} bytes={}",
+                                        voiceId, System.currentTimeMillis() - synthStartMs, pcm.length);
+                            } else {
+                                log.debug("[CartesiaWsClient] chunk#{} voiceId={} bytes={} totalBytes={}",
+                                        idx, voiceId, pcm.length, totalPcmBytes);
+                            }
                             java.util.function.Consumer<byte[]> cb = curOnChunk;
                             if (cb != null) cb.accept(pcm);
                         }
                     }
-                    case Constants.CARTESIA_MSG_TYPE_DONE ->
+                    case Constants.CARTESIA_MSG_TYPE_DONE -> {
+                        log.debug("[CartesiaWsClient] done voiceId={} chunks={} totalBytes={} totalMs={}",
+                                voiceId, chunkCount, totalPcmBytes, System.currentTimeMillis() - synthStartMs);
                         // 不关连接：保留长连接给下一句复用（Cartesia 推荐）。
                         completeOnce(true, null);
+                    }
                     case Constants.CARTESIA_MSG_TYPE_FLUSH_DONE -> log.debug("[CartesiaWsClient] flush done");
                     case Constants.CARTESIA_MSG_TYPE_ERROR -> {
                         String errMsg = node.path(Constants.CARTESIA_FIELD_MESSAGE).asText(Constants.TTS_ERROR_UNKNOWN);

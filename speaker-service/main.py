@@ -277,11 +277,15 @@ async def enroll(req: EnrollRequest):
 @app.post("/identify", response_model=IdentifyResponse)
 async def identify(req: IdentifyRequest):
     import base64
+    t0 = time.time()
     wav_bytes = base64.b64decode(req.audio_base64)
     try:
         samples = wav_bytes_to_array(wav_bytes)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Invalid audio: {e}")
+
+    audio_dur_s = len(samples) / 16000.0
+    log.debug("[identify] audio=%.2fs candidates=%d", audio_dur_s, len(req.candidates) if req.candidates else -1)
 
     if not embedding_store:
         return IdentifyResponse(name=None, score=0.0, identified=False)
@@ -321,11 +325,13 @@ async def identify(req: IdentifyRequest):
         identified = False
         log.info("Rejected by margin, best='%s' %.4f vs '%s' %.4f margin=%.4f < %.4f",
                  best_name, best_score, second_name, second_score, margin, MIN_MARGIN)
+    latency_ms = (time.time() - t0) * 1000
     if identified:
-        log.info("Identified speaker '%s' score=%.4f (runner-up '%s' %.4f, margin %.4f)",
-                 best_name, best_score, second_name, second_score, margin)
+        log.info("Identified speaker '%s' score=%.4f (runner-up '%s' %.4f, margin %.4f) latency=%.1fms audio=%.2fs",
+                 best_name, best_score, second_name, second_score, margin, latency_ms, audio_dur_s)
     else:
-        log.info("No confident match, best='%s' score=%.4f threshold=%.4f", best_name, best_score, MIN_SCORE)
+        log.info("No confident match, best='%s' score=%.4f threshold=%.4f latency=%.1fms audio=%.2fs",
+                 best_name, best_score, MIN_SCORE, latency_ms, audio_dur_s)
     return IdentifyResponse(
         name=best_name if identified else None,
         score=best_score,

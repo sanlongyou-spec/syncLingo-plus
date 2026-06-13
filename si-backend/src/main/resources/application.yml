@@ -167,7 +167,6 @@ cartesia:
   default-voice-id-chinese: ${CARTESIA_DEFAULT_VOICE_ID_ZH:6eb8965c-e295-47bd-a9e4-3eeebb3abcff}
   default-voice-id-indonesian: ${CARTESIA_DEFAULT_VOICE_ID_ID:a053f6bc-7df4-40de-96d4-de026bc47ce8}
   default-voice-id-english: ${CARTESIA_DEFAULT_VOICE_ID_EN:default}
-  clone-enhance: ${CARTESIA_CLONE_ENHANCE:false}
   tts:
     model: sonic
     sample-rate: 24000

@@ -11,8 +11,6 @@ import com.si.backend.service.SessionSpeakerVoiceService;
 import com.si.backend.service.SpeakerIdentityService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
-import com.si.backend.service.VoiceCloneService;
-import com.si.backend.service.VoiceUsageRecordService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -44,8 +42,6 @@ public class RealtimeInterpretationFacade {
     private final InterpretationSessionService sessionService;
     private final CartesiaProperties cartesiaProperties;
     private final InterpretationRecordService recordService;
-    private final VoiceUsageRecordService voiceUsageRecordService;
-    private final VoiceCloneService voiceCloneService;
     private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
     private final SpeakerIdentityService speakerIdentityService;
     private final AudioRecordService audioRecordService;
@@ -230,10 +226,6 @@ public class RealtimeInterpretationFacade {
      */
     public void stopInterpretation(String sessionId) {
         log.info("[RealtimeInterpretationFacade] stopInterpretation, sessionId={}", sessionId);
-        // Capture userId before session is removed from active map
-        Long userId = sessionService.getSession(sessionId)
-                .map(s -> s.getUserId())
-                .orElse(null);
         try {
             asrService.stopRecognition(sessionId);
         } catch (Exception e) {
@@ -303,7 +295,6 @@ public class RealtimeInterpretationFacade {
 
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
-        sessionSpeakerVoiceService.collectAndCloneIfNeeded(sessionId, speakerId, sourceLang);
         // 声纹识别移出关键路径：本句立即用缓存/上一句/默认身份，不阻塞翻译；
         // 真正的网络声纹识别异步执行，结果更新缓存供后续语句使用（首次出现的说话人本句用默认音色）。
         SpeakerIdentityService.SpeakerResolution speakerResolution =
@@ -537,22 +528,7 @@ public class RealtimeInterpretationFacade {
             completeTtsReservation(reservation, "inactive_before_tts");
             return;
         }
-        String identityVoiceId = speakerResolution != null ? speakerResolution.getCartesiaVoiceId() : null;
-        if (identityVoiceId == null || identityVoiceId.isBlank()) {
-            identityVoiceId = speakerIdentityService.resolveVoiceId(sessionId, speakerId);
-        }
-        String speakerVoiceId = identityVoiceId != null ? identityVoiceId : sessionSpeakerVoiceService.findReadyVoiceId(sessionId, speakerId);
-        String authorizedVoiceId = speakerVoiceId != null ? speakerVoiceId : resolveVoiceId(voiceId, targetLang);
-        if (speakerVoiceId != null) {
-            log.info("[RealtimeInterpretationFacade] speaker voice resolved, sessionId={}, speakerId={}, voiceId={}",
-                    sessionId, speakerId, speakerVoiceId);
-        }
-        if (!voiceCloneService.isVoiceUsable(authorizedVoiceId)) {
-            log.warn("[RealtimeInterpretationFacade] voice disabled or unauthorized, fallback default, sessionId={}, voiceId={}",
-                    sessionId, authorizedVoiceId);
-            authorizedVoiceId = resolveVoiceId(null, targetLang);
-        }
-        final String resolvedVoiceId = authorizedVoiceId;
+        final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
         final long ttsSequence = reservation.sequence();
@@ -574,13 +550,6 @@ public class RealtimeInterpretationFacade {
                 return;
             }
             long ttsStart = System.currentTimeMillis();
-            voiceUsageRecordService.recordUsage(
-                    sessionId,
-                    sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(null),
-                    resolvedVoiceId,
-                    finalTargetLang,
-                    finalTranslated.length()
-            );
             AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
             AtomicLong chunkCounter = new AtomicLong(0);
             ttsService.synthesizeStream(

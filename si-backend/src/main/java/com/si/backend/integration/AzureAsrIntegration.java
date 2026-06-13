@@ -300,6 +300,9 @@ public class AzureAsrIntegration {
                 segmentStartMs.compareAndSet(0, System.currentTimeMillis());
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
+                log.debug("[AsrSession] transcribing textLen={} emittedLen={} lang={} speakerId={} text='{}'",
+                        text.length(), emittedLen, lang, speakerId,
+                        text.length() <= 40 ? text : text.substring(0, 37) + "...");
                 // 强切 + 取未发出的中间结果, 全程加锁 + emittedLen 单调推进(防失控刷段/竞态)
                 String interimText;
                 synchronized (segLock) {
@@ -307,6 +310,8 @@ public class AzureAsrIntegration {
                     interimText = text.substring(Math.min(emittedLen, text.length())).trim();
                 }
                 if (!interimText.isBlank()) {
+                    log.debug("[AsrSession] onRecognizing interim interimLen={} lang={} speakerId={}",
+                            interimText.length(), lang, speakerId);
                     callback.onRecognizing(interimText, lang, speakerId, false);
                 }
             });
@@ -367,6 +372,8 @@ public class AzureAsrIntegration {
             String working = text.substring(start);
             int stableInWorking = Math.max(0, stableAbs - start);
             int safe = Math.min(stableInWorking, working.length() - FORCE_TAIL_MARGIN_CHARS);
+            log.debug("[AsrSession] emitForcedSegments workingLen={} stable={} safe={} lang={} speakerId={}",
+                    working.length(), stableInWorking, safe, lang, speakerId);
             if (safe <= 0) {
                 return;
             }
