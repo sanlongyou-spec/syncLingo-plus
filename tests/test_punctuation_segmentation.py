@@ -1,386 +1,308 @@
 #!/usr/bin/env python3
 """
-标点还原 + 分段逻辑测试脚本
+标点还原 + 分段逻辑测试脚本 v3
 
-测试目标：
-  1. /punctuate 端点延迟（p50/p90/max）
-  2. 标点质量：输出是否含有意义的句末/子句标点
-  3. 分段决策模拟：对每句话，判断加标点后是否能触发"sentence"切段（vs 原来需要字数兜底）
-  4. 逐句日志：便于人工核查
+模拟真实 ASR 流式场景：
+  - 输入是"强切触发瞬间的部分文本"（62-90字），不是完整句子
+  - 包含真实会议口语特征：语气词(嗯/那个/就是)、重复、话题跳转
+  - stable = 85% * len（模拟：上一个 ASR 事件约少了 10-15 字，稳定前缀 ≈ 85%）
+  - 对比：有标点时在最后一个逗号切 vs 无标点时在第 60 字任意切
 
-用法（在服务器上运行，或配置 SPEAKER_SERVICE_URL 指向服务器）：
+关键假设：
+  - shouldForce() = True（len > MAX_CHARS=60），因为我们测的就是这种超长场景
+  - findCommaSegmentEnd：在 detectionText[0 : len-TAIL_MARGIN] 找最后逗号
+  - mapPunctuatedToOriginal：双指针，标点中多出的字符视为插入跳过
+
+用法：
   SPEAKER_SERVICE_URL=http://127.0.0.1:7000 python3 tests/test_punctuation_segmentation.py
-
-关键日志格式（供 grep/awk 分析）：
-  [result] idx=N in_chars=M out_chars=K latency_ms=X sentence_found=T/F comma_found=T/F
 """
-import os
-import sys
-import time
-import json
-import urllib.request
-import urllib.error
-import statistics
-from dataclasses import dataclass, field
+import os, sys, time, json, urllib.request, statistics
 from typing import Optional
 
 SPEAKER_SERVICE_URL = os.environ.get("SPEAKER_SERVICE_URL", "http://127.0.0.1:7000")
 PUNCTUATE_URL = f"{SPEAKER_SERVICE_URL}/punctuate"
 
-# 分段参数（与 application.yml 一致）
-MIN_CHARS        = 10   # PUNCT_MIN_CHARS（才调用标点服务）
-CLAUSE_THRESHOLD = 10   # 超过才看逗号
-MAX_CHARS        = 60   # 强切阈值（maxSegmentZhChars）
+MAX_CHARS        = 60   # maxSegmentZhChars
 FORCE_TAIL_MARGIN = 4   # FORCE_TAIL_MARGIN_CHARS
+# 流式 ASR 稳定前缀模拟：当前事件比上一事件多 ~10 字，稳定前缀 ≈ len-12
+# safe = min(len-12, len-4) = len-12
+TAIL_UNSTABLE = 12      # 末尾不稳定字符数（模拟流式 ASR 的尾部波动）
 
-# 句末标点（P1）
-P1_SENTENCE_END = set("。！？；.!?;…？！；…")
-# 子句标点（P2）
-P2_CLAUSE      = set("，、：——,，、：")
+P1 = set("。！？；.!?;…")
+P2 = set("，、：——,，、：")
+NO_SEG = -1
 
-# ── 100 句真实会议 ASR 文本（无标点，模拟 Azure zh-CN 输出）─────────────────
-# 来源：真实会议场景，涵盖预算/项目进展/人员安排/决策等主题，长度 15-80 字
-SENTENCES = [
-    # 预算/财务类
-    "今天这次会议主要是想跟大家分享一下我们项目的最新进展情况以及下一步的规划",
-    "关于预算方面我们需要重新评估一下整体的支出情况特别是在人力成本和运营费用上",
-    "根据财务部门的数据显示本季度的收入增长了百分之十五但是成本也相应上升了百分之八",
-    "我们需要在下个月底之前完成预算审批并且把最终的数字提交给董事会",
-    "对于这个项目的投资回报率我们预计在三年内可以实现盈亏平衡然后开始产生净利润",
-    "资金方面我们还有一些缺口大概是两百万左右需要通过融资或者其他渠道来补足",
-    "在成本控制方面建议我们从采购环节入手通过集中采购来降低单价",
-    "本季度的营收目标是五千万我们目前完成了大概百分之七十还有一些差距需要在最后一个月冲刺",
-    "关于年终奖的发放方案人力资源部已经准备了三个版本分别对应不同的业绩情况",
-    "我们的现金流状况目前比较紧张建议暂时放缓一些非紧急的支出计划",
-    # 项目进展类
-    "技术团队这边已经完成了第一阶段的开发工作正在进行内部测试预计下周可以提交给产品部门验收",
-    "目前遇到的主要问题是数据库的性能瓶颈在高并发情况下响应时间明显变长",
-    "前端部分的改版工作已经完成了百分之八十剩余的工作主要集中在移动端的适配上",
-    "我们计划在本月底发布新版本主要包括三个核心功能的升级和十几个小的问题修复",
-    "测试团队反馈了一些比较严重的bug其中有两个涉及到数据安全需要优先处理",
-    "关于接口的对接工作我们已经和第三方供应商确认了技术方案预计需要两周时间完成",
-    "产品经理那边提出了一些新的需求变更我们需要评估一下对现有开发计划的影响",
-    "服务器的扩容工作已经完成新增了三台高性能服务器集群的处理能力提升了百分之四十",
-    "代码审查发现了一些安全漏洞已经安排相关开发人员在本周内完成修复",
-    "我们的应用程序在上周进行了一次压力测试结果显示在五千并发用户的情况下系统运行稳定",
-    # 人员/团队类
-    "关于新员工的招聘计划我们希望在第三季度再补充十五名工程师主要集中在后端和算法岗位",
-    "张总监下周将前往上海出差主要目的是拜访几个重要客户同时也会参加行业峰会",
-    "研发部门的团队扩张计划已经得到了批准我们会从大学和行业内同步招聘",
-    "关于绩效考核的方式我们计划从下个季度开始引入OKR的管理模式",
-    "李工程师提出申请希望能够参加下个月在北京举办的技术大会公司决定支持并报销相关费用",
-    "目前团队的人员流失率有所上升主要集中在初级工程师这个层级我们需要分析原因并采取措施",
-    "新入职的三位产品经理已经完成了入职培训今天开始正式接手各自负责的业务线",
-    "关于远程办公的政策我们决定继续保持每周两天在家办公的安排但需要保证工作成果",
-    "人事部门正在梳理各部门的职级体系预计下个月会发布新的职级说明和薪资区间",
-    "团队建设活动计划在本季度末安排一次户外活动具体地点和时间会在下周确认",
-    # 决策/会议类
-    "经过讨论大家一致同意先推进第一期的试点项目等拿到数据之后再决定是否全面推广",
-    "关于供应商的选择问题我建议我们再多比较几家然后通过评分卡的方式做出最终决定",
-    "今天会议的主要决议有三点第一是确认项目启动时间第二是明确各方责任第三是建立周期性汇报机制",
-    "这个方案还需要法务部门审核一下主要是看看是否存在合规方面的风险",
-    "市场部门提出的这个营销方案创意不错但是执行成本比较高我们需要做一些取舍",
-    "对于竞争对手最近推出的新产品我们需要尽快分析其功能特点并评估对我们业务的潜在影响",
-    "合同谈判的进展比较顺利对方已经基本接受了我们的主要条款还有几个细节需要进一步确认",
-    "关于这次战略调整的时间表我们计划用六个月的时间完成整个过渡期",
-    "董事会对我们提交的年度计划总体表示认可但是要求我们在收入预测上更加保守一些",
-    "我们决定在本季度暂停一些边缘项目把资源集中到最核心的三个业务上",
-    # 客户/市场类
-    "这个客户的需求比较特殊我们需要针对他们的实际情况做一些定制化的开发",
-    "根据最新的市场调研数据我们的品牌认知度在目标人群中已经达到了百分之六十",
-    "客户反馈我们的售后服务响应速度有待提升建议增加客服人手或者引入智能客服系统",
-    "我们计划在下半年进入东南亚市场首先从印度尼西亚和越南开始试水",
-    "这次参加展会的效果不错共收集了大约三百个有效商业线索销售团队会在本周内跟进",
-    "对于高价值客户我们计划推出一个专属的服务包括专属客户经理和优先技术支持",
-    "社交媒体上关于我们产品的讨论量明显增加主要集中在新功能的体验反馈",
-    "我们的老客户续约率本季度达到了百分之八十五这说明产品的粘性在持续提升",
-    "针对中小企业客户的定价策略需要重新考虑因为现在的价格对他们来说可能偏高",
-    "销售团队反馈在一些地区竞争对手在打价格战这对我们的拓客工作造成了一定压力",
-    # 运营/流程类
-    "仓库管理系统的升级工作已经完成库存准确率从百分之九十二提升到了百分之九十八",
-    "物流配送的时效问题主要集中在最后一公里的配送环节我们正在和几家本地配送公司洽谈合作",
-    "生产线的良品率本月有所下降主要原因是原材料的质量不稳定已经向供应商提出改进要求",
-    "客户投诉处理的平均时长从三天缩短到了一天半主要得益于新的工单系统的上线",
-    "我们的采购流程存在一些冗余环节计划在下个季度完成流程再造预计可以节省百分之二十的时间",
-    "数据中心的能耗指标有所改善PUE值从一点五降到了一点三五这符合我们的绿色运营目标",
-    "供应链管理团队正在评估多元化采购策略以降低对单一供应商的依赖风险",
-    "内部审计发现费用报销流程中存在一些不规范的情况财务部门已经发布了新的报销规范",
-    "质量管理体系认证工作已经进入最后阶段预计下个月可以完成ISO认证的审核",
-    "生产计划调整之后每日产能提升了百分之十五但是需要加班来完成增量部分",
-    # 技术/产品类
-    "人工智能模型的训练工作已经完成在测试集上的准确率达到了百分之九十二",
-    "我们的移动应用最新版本在苹果应用商店的评分从三点八提升到了四点三",
-    "大数据平台的建设工作进入了第二阶段重点是数据治理和数据质量的提升",
-    "关于云迁移的方案我们决定采用混合云架构同时保留一部分敏感数据在本地服务器",
-    "网络安全团队完成了年度渗透测试发现了几个中等级别的漏洞已经全部修复",
-    "我们的API接口文档已经更新完成开发者可以在文档平台上查看最新版本",
-    "用户行为分析显示用户在完成注册之后平均有百分之三十五的人在三天内流失",
-    "新推出的AI助手功能用户使用率持续增长目前日活跃用户已经超过了五万",
-    "系统监控告警的误报率比较高导致运维团队投入了大量精力在排查假警报上",
-    "我们的推荐算法经过优化之后用户的点击率提升了百分之二十二转化率也有所改善",
-    # 合规/法律类
-    "数据隐私保护方面我们需要按照最新的法规要求对用户数据处理流程进行全面梳理",
-    "关于知识产权的保护我们已经申请了五项专利其中两项已经获得授权",
-    "劳动合同的续签工作本月要完成对于劳动合同即将到期的员工人事部门已经逐一沟通",
-    "我们的财务报告需要符合新的会计准则要求审计师已经开始了相关的审核工作",
-    "在环保合规方面工厂的排放数据已经达标但是废水处理能力需要进一步提升",
-    "公司治理委员会建议加强信息披露的及时性和准确性以提升投资者信心",
-    "关于这起侵权诉讼法务团队评估了之后认为我们的胜诉概率较高建议积极应诉",
-    "新版用户协议和隐私政策已经由法务审核完成计划在下周正式发布",
-    "对于这个市场我们需要提前了解当地的行业监管政策避免进入之后遇到合规障碍",
-    "商标注册在东南亚五个国家的申请已经全部提交等待审批结果",
-    # 跨部门协作类
-    "这个项目需要市场技术和运营三个部门紧密协作建议成立一个跨部门的项目小组",
-    "关于接口数据格式的标准化问题我们下周安排一次技术对齐会议把相关团队都拉进来",
-    "销售部门反映产品文档的更新不够及时经常出现客户拿到的是过期版本的情况",
-    "我们需要建立一个更顺畅的需求传递机制避免业务部门的诉求在传递过程中失真",
-    "市场活动的素材需求每次都很紧急建议提前建立一个内容素材库减少临时赶工的情况",
-    "各业务线的数据孤岛问题比较严重我们需要推进数据中台的建设把数据打通",
-    "关于项目优先级的排序问题各部门存在不同意见需要管理层来做最终决策",
-    "跨区域的业务拓展需要总部给予更多的支持特别是在资源调配和政策授权方面",
-    "我们的内部沟通效率有待提升会议过多有效决策少建议推行会议管理的最佳实践",
-    "OKR对齐会议建议每月一次确保各部门的工作方向和公司战略保持一致",
-    # 战略/规划类
-    "从长远来看我们需要在核心技术上建立自己的壁垒而不是单纯依赖商业化的解决方案",
-    "对于这个新兴市场我们的策略是先占据细分领域的头部地位然后再横向扩展",
-    "下一个五年规划的核心主题是数字化转型和生态系统建设这两个方向相互支撑",
-    "竞争格局正在发生变化一些新进入者凭借差异化的产品在某些细分市场取得了突破",
-    "我们的品牌定位需要进一步清晰化目前在客户心中的认知还比较模糊",
-    "关于并购机会我们有几个潜在标的正在进行初步的尽职调查",
-    "人才战略是我们中长期发展最重要的支撑之一需要从培养激励留用三个维度系统推进",
-    "我们计划在两年内将研发投入占营收的比例从百分之八提升到百分之十二",
-    "关于国际化的节奏我们决定采取稳健推进的策略而不是激进扩张避免资源分散",
-    "数字化转型不仅仅是技术问题更是组织文化和业务模式的全面升级",
+# ──────────────────────────────────────────────────────────────────────────────
+# 测试数据：真实会议口语，含语气词/重复/不完整，长度 62-90 字
+# 这些文本模拟"说话人一口气说了很长一段，Azure ASR 在 shouldForce 触发瞬间的输出"
+# ──────────────────────────────────────────────────────────────────────────────
+
+# A类：单一长话题（语气词+重复，62-80字）
+# 期望：CT-Transformer 在自然停顿处加逗号，比字符硬切效果好
+LONG_ORAL = [
+    # 1. 62字，含"那个"
+    "那个关于我们这个项目的进展情况呢就是说我们目前已经完成了第一阶段的工作正在进行第二阶段",
+    # 2. 65字，含"就是"重复
+    "就是我们这个预算方面我们需要重新评估一下整体的支出情况特别是在人力成本这块还有运营费用",
+    # 3. 63字，含"嗯"开头
+    "嗯对就是说我们的销售团队这边反馈说是在一些地区竞争对手在打价格战这对我们的拓客工作造成了",
+    # 4. 68字，含"这个这个"重复
+    "这个这个我们的技术方案我们已经和第三方供应商确认了主要的技术细节接下来还需要两周左右完成接口对接",
+    # 5. 66字，含"对对"
+    "对对我们上周进行了压力测试结果显示在五千并发用户的情况下系统还是比较稳定的但是响应时间有点",
+    # 6. 70字，含"然后"过渡
+    "我们采购流程这边存在一些冗余环节然后我们计划在下个季度完成流程再造预计可以节省百分之二十的时间成本",
+    # 7. 64字，含"那么"
+    "那么关于这次战略调整我们计划用六个月的时间完成整个过渡期需要做好充分的沟通确保各团队清楚新方向",
+    # 8. 72字，含"其实"
+    "其实我们的现金流状况目前比较紧张主要是因为这个季度市场推广费用增加了很多建议暂时放缓一些非紧急的支出",
+    # 9. 63字，含"另外"话题跳
+    "另外数据中心的PUE值从一点五降到了一点三五这个主要得益于新型散热系统的引入符合我们绿色运营的",
+    # 10. 67字，含"我觉得"
+    "我觉得关于供应商选择这个问题我们还是应该再多比较几家然后通过评分卡的方式来做决策不要急于下结论",
+    # 11. 65字，含"就是说"
+    "就是说我们的推荐算法经过优化之后用户的点击率提升了百分之二十二转化率也有所改善下一步要重点优化",
+    # 12. 71字，含"这个"
+    "这个关于云迁移的方案我们决定采用混合云架构一方面利用公有云的弹性另一方面保留核心敏感数据在本地",
+    # 13. 68字，含"然后然后"
+    "网络安全团队完成了年度渗透测试然后发现了几个中等级别的漏洞然后已经安排相关同学在本周内全部修复",
+    # 14. 63字，含"所以"
+    "所以说我们的老客户续约率本季度达到了百分之八十五这说明产品粘性在持续提升但是新客户获取这块还需要",
+    # 15. 76字，含口语化表达
+    "嗯嗯那个关于人才战略这个方向其实我们一直在讨论就是从培养激励留用三个维度来推进但是具体的落地方案还没有",
+    # 16. 64字，含"对吧"
+    "我们的移动应用在苹果应用商店的评分从三点八提升到了四点三对吧这个主要是因为这几个版本的优化工作",
+    # 17. 67字，含"还有就是"
+    "还有就是数据平台这边建设工作进入第二阶段重点是数据治理和数据质量的提升我们计划引入数据血缘管理",
+    # 18. 65字，含"其实这个"
+    "其实这个OKR对齐会议建议每月一次同时搭配每周的简短站会确保各部门的工作方向和公司战略保持一致",
+    # 19. 69字，含"我的意思是"
+    "我的意思是从长远来看我们需要在核心技术上建立自己的壁垒而不是单纯依赖商业化的方案这需要持续加大研发",
+    # 20. 72字，含"就是那个"
+    "就是那个我们的品牌定位需要进一步清晰化目前在客户心中的认知还比较模糊我们需要找到一个能够真正差异化",
 ]
 
-assert len(SENTENCES) == 100, f"需要100句，实际{len(SENTENCES)}句"
+# B类：话题切换型（说完一件事紧接着说第二件，62-80字）
+# 期望：CT-Transformer 识别出第一件事的句尾加 `。`，触发 sentence-punct 切
+TOPIC_SWITCH = [
+    # 21. 73字，两件事
+    "技术团队已经完成了第一阶段的开发工作正在进行内部测试预计下周提交验收关于接口对接我们已经和供应商确认了",
+    # 22. 70字
+    "本季度营收目标完成了百分之七十还有一些差距需要在最后一个月冲刺关于年终奖方案人力资源部已经准备好了",
+    # 23. 66字
+    "代码审查发现了几个安全漏洞已经安排开发人员本周内修复同时我们也在评估是否需要引入第三方安全审计",
+    # 24. 72字
+    "仓库系统升级工作已经完成库存准确率从百分之九十二提升到九十八物流配送这边我们正在和本地配送公司洽谈",
+    # 25. 68字
+    "质量认证工作进入最后阶段预计下个月完成ISO审核生产线良品率本月有所下降主要因为原材料质量不稳定",
+    # 26. 74字
+    "数据隐私保护方面我们需要对用户数据处理流程进行全面梳理另外关于知识产权保护我们已经申请了五项专利",
+    # 27. 69字
+    "销售团队反馈部分地区竞争对手在打价格战对拓客造成了一定压力对于高价值客户我们计划推出专属服务包",
+    # 28. 71字
+    "采购流程存在一些冗余环节计划下季度完成流程再造节省百分之二十时间生产计划调整后每日产能提升了十五个点",
+    # 29. 67字
+    "内部审计发现费用报销流程不规范财务部门已经发布新规范另外我们的OKR对齐会议建议改为每月一次",
+    # 30. 75字
+    "网络安全团队完成了渗透测试发现几个中级漏洞已全部修复系统监控告警误报率比较高导致运维团队浪费了大量精力",
+]
+
+ALL_CASES = (
+    [("A-长话题", s) for s in LONG_ORAL] +
+    [("B-话题切换", s) for s in TOPIC_SWITCH]
+)
+assert len(ALL_CASES) == 50, f"预期50句，实际{len(ALL_CASES)}"
 
 
-# ── 标点字符判断 ───────────────────────────────────────────────────────────────
+# ── 分段逻辑模拟（与 Java emitForcedSegments 对齐）────────────────────────────
 
-def has_sentence_end(text: str) -> bool:
-    """是否含句末标点（P1）"""
-    return any(c in P1_SENTENCE_END for c in text)
-
-
-def has_clause_punct(text: str) -> bool:
-    """是否含子句标点（P2）"""
-    return any(c in P2_CLAUSE for c in text)
-
-
-def find_last_sentence_end(text: str, safe: int) -> int:
-    """在 text[:safe] 中找最后一个句末标点的下标+1，未找到返回 -1"""
-    for i in range(min(safe, len(text)) - 1, -1, -1):
-        if text[i] in P1_SENTENCE_END:
+def find_first_sentence_end(text: str) -> int:
+    """Java findSentenceSegmentEnd：从头找第一个句末标点"""
+    for i, c in enumerate(text):
+        if c in P1:
             return i + 1
-    return -1
+    return NO_SEG
 
 
-def find_last_clause_punct(text: str, safe: int) -> int:
-    """在 text[:safe] 中找最后一个子句标点的下标+1，未找到返回 -1"""
-    for i in range(min(safe, len(text)) - 1, -1, -1):
-        if text[i] in P2_CLAUSE:
-            return i + 1
-    return -1
-
-
-def simulate_segmentation(original: str, punctuated: str) -> dict:
-    """
-    模拟 Java emitForcedSegments 分段决策。
-    safe = len - FORCE_TAIL_MARGIN (原始文本)
-    """
-    safe = max(0, len(original) - FORCE_TAIL_MARGIN)
-
-    # 用标点文本做判断
-    det = punctuated if punctuated else original
-
-    # P1: 句末标点
-    ep = find_last_sentence_end(det, len(det))
-    if ep > 0:
-        # 映射回原始下标
-        eo = map_to_original(original, punctuated, ep) if punctuated else ep
-        if 0 < eo <= safe:
-            cut_text = det[:ep].rstrip()
-            return {"trigger": "sentence-punct" if punctuated else "sentence",
-                    "cut_original": eo, "cut_text": cut_text, "safe": safe}
-
-    # P2: 子句（模拟 shouldForce = True，即已超过阈值）
-    if len(original) >= MAX_CHARS:
-        cp = find_last_clause_punct(det, len(det))
-        if cp > 0:
-            co = map_to_original(original, punctuated, cp) if punctuated else cp
-            if 0 < co <= safe:
-                cut_text = det[:cp].rstrip()
-                return {"trigger": "force-comma-punct" if punctuated else "force-comma",
-                        "cut_original": co, "cut_text": cut_text, "safe": safe}
-
-    # P3: 字符数强切
-    if len(original) >= MAX_CHARS:
-        return {"trigger": "force-boundary", "cut_original": safe,
-                "cut_text": original[:safe], "safe": safe}
-
-    return {"trigger": "no-cut", "cut_original": -1, "cut_text": "", "safe": safe}
+def find_last_comma(text: str, det_safe_end: int) -> int:
+    """Java findCommaSegmentEnd：在 [0, det_safe_end) 找最后一个逗号"""
+    last = NO_SEG
+    for i in range(min(det_safe_end, len(text))):
+        if text[i] in P2:
+            last = i + 1
+    return last
 
 
 def map_to_original(original: str, punctuated: str, punct_end: int) -> int:
-    """双指针：将标点文本位置映射回原始文本位置"""
+    """双指针：标点文本位置 → 原始文本位置"""
     orig_idx = 0
     p_idx = 0
     while p_idx < punct_end and orig_idx < len(original):
         if punctuated[p_idx] == original[orig_idx]:
-            p_idx += 1
-            orig_idx += 1
+            p_idx += 1; orig_idx += 1
         else:
-            p_idx += 1  # 插入标点，只推进 punctuated
+            p_idx += 1  # 插入标点
     return orig_idx
 
 
-# ── HTTP 调用 ─────────────────────────────────────────────────────────────────
+def simulate(original: str, punctuated: Optional[str]) -> dict:
+    """
+    模拟 emitForcedSegments（shouldForce=True，流式场景）。
+    safe = len - TAIL_UNSTABLE（模拟末尾 ~12 字不稳定）
+    """
+    n = len(original)
+    safe = n - TAIL_UNSTABLE   # 稳定前缀上界
+    if safe <= 0:
+        return {"trigger": "safe<=0", "cut_orig": -1, "cut_text": "", "safe": safe}
 
-def call_punctuate(text: str) -> tuple[Optional[str], float, bool]:
-    """返回 (punctuated_text, latency_ms, model_available)"""
-    payload = json.dumps({"text": text}).encode("utf-8")
-    req = urllib.request.Request(
-        PUNCTUATE_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    det = punctuated if punctuated else original
+    det_safe_end = len(det) - FORCE_TAIL_MARGIN  # findCommaSegmentEnd 内部边界
+
+    # P1：句末（第一个）
+    ep = find_first_sentence_end(det)
+    if ep != NO_SEG:
+        eo = map_to_original(original, punctuated, ep) if punctuated else ep
+        if 0 < eo <= safe:
+            txt = det[:ep].rstrip() if punctuated else original[:eo].rstrip()
+            return {"trigger": "sentence-punct" if punctuated else "sentence",
+                    "cut_orig": eo, "cut_text": txt, "safe": safe}
+
+    # P2：最后逗号（shouldForce=True 这里固定触发）
+    cp = find_last_comma(det, det_safe_end)
+    if cp != NO_SEG:
+        co = map_to_original(original, punctuated, cp) if punctuated else cp
+        if 0 < co <= safe:
+            txt = det[:cp].rstrip() if punctuated else original[:co].rstrip()
+            return {"trigger": "force-comma-punct" if punctuated else "force-comma",
+                    "cut_orig": co, "cut_text": txt, "safe": safe}
+
+    # P3：字符数强切
+    return {"trigger": "force-boundary", "cut_orig": safe,
+            "cut_text": original[:safe], "safe": safe}
+
+
+# ── HTTP ────────────────────────────────────────────────────────────────────────
+
+def call_punctuate(text: str):
+    payload = json.dumps({"text": text}).encode()
+    req = urllib.request.Request(PUNCTUATE_URL, data=payload,
+                                 headers={"Content-Type": "application/json"}, method="POST")
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            latency = (time.time() - t0) * 1000
-            data = json.loads(resp.read())
-            return data.get("punctuated"), latency, data.get("model_available", False)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            lat = (time.time() - t0) * 1000
+            d = json.loads(r.read())
+            return d.get("punctuated"), lat, d.get("model_available", False)
     except Exception as e:
-        latency = (time.time() - t0) * 1000
-        print(f"  [ERROR] call failed after {latency:.0f}ms: {e}", file=sys.stderr)
-        return None, latency, False
+        lat = (time.time() - t0) * 1000
+        print(f"  [ERROR] {lat:.0f}ms: {e}", file=sys.stderr)
+        return None, lat, False
 
 
-# ── 主测试逻辑 ────────────────────────────────────────────────────────────────
-
-@dataclass
-class Result:
-    idx: int
-    original: str
-    punctuated: Optional[str]
-    latency_ms: float
-    model_available: bool
-    seg_before: dict   # 不用标点的分段决策
-    seg_after: dict    # 用标点的分段决策
-
+# ── 主程序 ──────────────────────────────────────────────────────────────────────
 
 def main():
     print(f"[config] service={PUNCTUATE_URL}")
-    print(f"[config] sentences={len(SENTENCES)}")
-    print()
+    print(f"[config] cases={len(ALL_CASES)}  safe=len-{TAIL_UNSTABLE}  max_chars={MAX_CHARS}")
 
-    # 检查服务可用性
     try:
         with urllib.request.urlopen(f"{SPEAKER_SERVICE_URL}/health", timeout=3) as r:
             h = json.loads(r.read())
-            model_ok = h.get("punct_model_loaded", False)
             print(f"[health] {h}")
-            if not model_ok:
-                print("[WARN] punct_model_loaded=false — 模型未加载，测试无意义，请先下载模型", file=sys.stderr)
-                sys.exit(1)
+            if not h.get("punct_model_loaded"):
+                print("[WARN] punct_model_loaded=false", file=sys.stderr); sys.exit(1)
     except Exception as e:
-        print(f"[ERROR] 无法连接服务 {SPEAKER_SERVICE_URL}: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"[ERROR] {e}", file=sys.stderr); sys.exit(1)
 
-    print()
-    print("─" * 80)
+    print(); print("─" * 110)
 
-    results: list[Result] = []
-    latencies: list[float] = []
-    errors = 0
+    latencies = []
+    improved = 0
+    by_class: dict = {}
+    trigger_before: dict = {}
+    trigger_after: dict = {}
 
-    for i, sent in enumerate(SENTENCES):
-        punctuated, latency_ms, model_available = call_punctuate(sent)
+    for i, (cls, sent) in enumerate(ALL_CASES):
+        punc, lat, model_ok = call_punctuate(sent)
+        latencies.append(lat)
 
-        seg_before = simulate_segmentation(sent, None)
-        seg_after  = simulate_segmentation(sent, punctuated) if punctuated else seg_before
+        valid_punc = punc if (punc and punc != sent) else None
+        seg_b = simulate(sent, None)
+        seg_a = simulate(sent, valid_punc)
 
-        r = Result(
-            idx=i, original=sent, punctuated=punctuated,
-            latency_ms=latency_ms, model_available=model_available,
-            seg_before=seg_before, seg_after=seg_after,
-        )
-        results.append(r)
+        tb = seg_b["trigger"]
+        ta = seg_a["trigger"]
+        trigger_before[tb] = trigger_before.get(tb, 0) + 1
+        trigger_after[ta]  = trigger_after.get(ta, 0) + 1
 
-        if not model_available:
-            errors += 1
+        imp = (tb != ta and "punct" in ta)
+        if imp: improved += 1
+        bc = by_class.setdefault(cls, {"total": 0, "imp": 0})
+        bc["total"] += 1
+        if imp: bc["imp"] += 1
 
-        latencies.append(latency_ms)
+        flag = "★" if imp else " "
+        print(f"{flag}[{cls}] idx={i:2d} chars={len(sent):3d} safe={seg_a['safe']:2d} "
+              f"lat={lat:5.1f}ms  before={tb:<16} after={ta:<22}")
 
-        # 单句日志（便于分析）
-        s_end_before = seg_before["trigger"] in ("sentence", "sentence-punct")
-        s_end_after  = seg_after["trigger"] in ("sentence", "sentence-punct")
-        comma_after  = seg_after["trigger"] in ("force-comma", "force-comma-punct")
-        improved = (not s_end_before and s_end_after) or (
-            seg_before["trigger"] == "force-boundary" and seg_after["trigger"] in ("sentence-punct", "force-comma-punct"))
+        if valid_punc:
+            cut = seg_a.get("cut_text", "")
+            cut_b = seg_b.get("cut_text", "")
+            if imp and cut:
+                print(f"  原始切点({len(cut_b)}字): 「{cut_b[:45]}」")
+                print(f"  标点切点({len(cut)}字): 「{cut[:55]}」")
+            elif not imp:
+                new_p = [c for c in valid_punc if c not in sent and c in (P1 | P2)]
+                print(f"  标点插入: {''.join(new_p[:6])}  | {valid_punc[:60]}{'…' if len(valid_punc)>60 else ''}")
 
-        print(
-            f"[result] idx={i:3d} chars={len(sent):3d} "
-            f"latency={latency_ms:6.1f}ms "
-            f"model={str(model_available):<5} "
-            f"before={seg_before['trigger']:<16} "
-            f"after={seg_after['trigger']:<20} "
-            f"improved={improved}"
-        )
-        if punctuated:
-            # 显示有意义的标点差异
-            new_puncts = [c for c in punctuated if c not in sent and c in (P1_SENTENCE_END | P2_CLAUSE)]
-            if new_puncts:
-                print(f"         inserted={''.join(new_puncts)} | out={punctuated[:60]}{'…' if len(punctuated) > 60 else ''}")
-
-    print()
-    print("─" * 80)
+    print(); print("─" * 110)
     print("【延迟统计】")
-    if latencies:
-        latencies.sort()
-        n = len(latencies)
-        print(f"  样本数: {n}")
-        print(f"  mean  : {statistics.mean(latencies):.1f}ms")
-        print(f"  median: {statistics.median(latencies):.1f}ms")
-        print(f"  p90   : {latencies[int(n * 0.9)]:.1f}ms")
-        print(f"  p95   : {latencies[int(n * 0.95)]:.1f}ms")
-        print(f"  max   : {latencies[-1]:.1f}ms")
-        budget_ok = sum(1 for l in latencies if l <= 45)
-        print(f"  ≤45ms : {budget_ok}/{n} ({100*budget_ok/n:.0f}%)  ← 我们的超时预算")
+    lat_s = sorted(latencies)
+    n = len(lat_s)
+    print(f"  n={n}  mean={statistics.mean(lat_s):.1f}ms  median={statistics.median(lat_s):.1f}ms  "
+          f"p90={lat_s[int(n*.9)]:.1f}ms  p95={lat_s[int(n*.95)]:.1f}ms  max={lat_s[-1]:.1f}ms")
+    ok45 = sum(1 for l in lat_s if l <= 45)
+    print(f"  ≤45ms: {ok45}/{n} ({100*ok45/n:.0f}%)  ← 超时预算")
 
     print()
     print("【分段改善统计】")
-    before_triggers = {}
-    after_triggers = {}
-    improved_count = 0
-    for r in results:
-        before_triggers[r.seg_before["trigger"]] = before_triggers.get(r.seg_before["trigger"], 0) + 1
-        after_triggers[r.seg_after["trigger"]]   = after_triggers.get(r.seg_after["trigger"], 0) + 1
-        bt = r.seg_before["trigger"]
-        at = r.seg_after["trigger"]
-        if bt != at and at in ("sentence-punct", "force-comma-punct"):
-            improved_count += 1
-
-    print("  加标点前分段类型:")
-    for k, v in sorted(before_triggers.items(), key=lambda x: -x[1]):
-        print(f"    {k:<22}: {v}")
-    print("  加标点后分段类型:")
-    for k, v in sorted(after_triggers.items(), key=lambda x: -x[1]):
-        print(f"    {k:<22}: {v}")
-    print(f"  因标点改善分段决策: {improved_count}/{len(results)} 句")
+    print(f"  总改善: {improved}/{len(ALL_CASES)} 句")
+    for cls, d in by_class.items():
+        print(f"  {cls}: {d['imp']}/{d['total']}")
+    print()
+    print("  加标点前触发类型:")
+    for k, v in sorted(trigger_before.items(), key=lambda x: -x[1]):
+        print(f"    {k:<24}: {v}")
+    print("  加标点后触发类型:")
+    for k, v in sorted(trigger_after.items(), key=lambda x: -x[1]):
+        print(f"    {k:<24}: {v}")
 
     print()
-    print("【标点质量抽查（前10句详细对比）】")
-    for r in results[:10]:
-        print(f"  [{r.idx}] 原文: {r.original[:50]}{'…' if len(r.original)>50 else ''}")
-        print(f"       标点: {(r.punctuated or '(无)')[:60]}{'…' if r.punctuated and len(r.punctuated)>60 else ''}")
-        print()
+    print("【问题句分析（标点后仍 force-boundary 的句子）】")
+    problem = []
+    for i, (cls, sent) in enumerate(ALL_CASES):
+        punc, _, _ = call_punctuate(sent)
+        valid_punc = punc if (punc and punc != sent) else None
+        seg_a = simulate(sent, valid_punc)
+        if seg_a["trigger"] == "force-boundary":
+            problem.append((i, cls, sent, valid_punc, seg_a))
 
-    if errors > 0:
-        print(f"[WARN] {errors} 句模型未返回结果 (model_available=false)")
-    print(f"[done] 全部 {len(results)} 句处理完成")
+    if not problem:
+        print("  无（所有句子均找到自然切点）✓")
+    else:
+        for i, cls, sent, punc, seg in problem[:5]:
+            print(f"  [{i}][{cls}] chars={len(sent)} safe={seg['safe']}")
+            print(f"    原文: {sent[:60]}…")
+            print(f"    标点: {(punc or '无')[:65]}{'…' if punc and len(punc)>65 else ''}")
+            # 分析：标点里有没有逗号，以及逗号位置是否超出 safe
+            if punc:
+                commas = [(j, c) for j, c in enumerate(punc) if c in P2]
+                det_safe = len(punc) - FORCE_TAIL_MARGIN
+                last_in = [(j, c) for j, c in commas if j < det_safe]
+                print(f"    det_safe={det_safe}  逗号位置: {[(j,c) for j,c in commas[:8]]}  "
+                      f"det_safe内逗号: {last_in[-3:] if last_in else '无'}")
+
+    print(f"\n[done] 全部 {len(ALL_CASES)} 句处理完成")
 
 
 if __name__ == "__main__":
