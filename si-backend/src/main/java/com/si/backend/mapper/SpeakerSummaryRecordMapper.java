@@ -1,4 +1,4 @@
-﻿package com.si.backend.mapper;
+package com.si.backend.mapper;
 
 import com.si.backend.entity.SpeakerSummaryRecord;
 import org.apache.ibatis.annotations.*;

@@ -1,4 +1,4 @@
-﻿package com.si.backend.vo;
+package com.si.backend.vo;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;

@@ -1,4 +1,4 @@
-﻿package com.si.backend.service;
+package com.si.backend.service;
 
 import com.si.backend.mapper.InterpretationResultMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
