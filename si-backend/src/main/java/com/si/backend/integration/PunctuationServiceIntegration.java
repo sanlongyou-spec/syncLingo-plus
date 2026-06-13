@@ -48,7 +48,7 @@ public class PunctuationServiceIntegration {
                 env.getProperty("punctuation.service.timeout-ms", "45"));
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(1, TimeUnit.SECONDS)
-                .readTimeout(timeoutMs + 5L, TimeUnit.MILLISECONDS) // 比 timeout 多 5ms 余量
+                .readTimeout(timeoutMs + 10L, TimeUnit.MILLISECONDS) // 比 timeout 多 10ms 余量
                 .writeTimeout(200, TimeUnit.MILLISECONDS)
                 .retryOnConnectionFailure(false)
                 .build();

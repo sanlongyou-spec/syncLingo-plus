@@ -84,8 +84,8 @@ punctuation:
     # 标点还原服务开关（复用 speaker-service /punctuate 端点，sherpa-onnx CT-Transformer 推理）
     enabled: ${PUNCTUATION_SERVICE_ENABLED:false}
     url: ${PUNCTUATION_SERVICE_URL:http://localhost:7000}
-    # 超时 45ms（模型推理 ~10-20ms，留余量）；超时降级为原字符数分段
-    timeout-ms: ${PUNCTUATION_SERVICE_TIMEOUT_MS:45}
+    # 超时 60ms（真实 working ~60-70字推理约 48ms，留 12ms 余量）；超时降级为原字符数分段
+    timeout-ms: ${PUNCTUATION_SERVICE_TIMEOUT_MS:60}
 
 speaker:
   service:
