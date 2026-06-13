@@ -160,20 +160,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     }
                     shareAudioWebSocketHandler.broadcastPcm(sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS);
                 },
-                // onSpeakerIdentity
-                (speakerId, speakerName, speakerProfileId, cartesiaVoiceId, status, source) -> {
-                    WsMessage out = new WsMessage();
-                    out.setType(Constants.WS_MSG_TYPE_SPEAKER_IDENTITY);
-                    out.setSessionId(sessionId);
-                    out.setSpeakerId(speakerId);
-                    out.setSpeakerName(speakerName);
-                    out.setSpeakerProfileId(speakerProfileId);
-                    out.setVoiceId(cartesiaVoiceId);
-                    out.setSpeakerIdentityStatus(status);
-                    out.setSpeakerIdentitySource(source);
-                    sendMessage(session, out);
-                    shareWebSocketHandler.broadcast(sessionId, out);
-                },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)
         );

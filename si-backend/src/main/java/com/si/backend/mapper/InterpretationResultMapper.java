@@ -1,4 +1,4 @@
-package com.si.backend.mapper;
+﻿package com.si.backend.mapper;
 
 import com.si.backend.dto.CrossMeetingSnippet;
 import com.si.backend.entity.InterpretationResult;
@@ -45,6 +45,12 @@ public interface InterpretationResultMapper {
 
     @Select("SELECT * FROM interpretation_result WHERE session_id = #{sessionId} ORDER BY id ASC")
     List<InterpretationResult> findBySessionId(String sessionId);
+
+    @Update("UPDATE interpretation_result SET speaker_name = #{speakerName} WHERE session_id = #{sessionId} AND speaker_id = #{speakerId}")
+    int updateSpeakerName(@Param("sessionId") String sessionId, @Param("speakerId") String speakerId, @Param("speakerName") String speakerName);
+
+    @Select("SELECT DISTINCT speaker_id FROM interpretation_result WHERE session_id = #{sessionId} AND speaker_id IS NOT NULL AND speaker_id <> '' ORDER BY speaker_id")
+    List<String> findDistinctSpeakerIds(String sessionId);
 
     @Select("""
             SELECT r.session_id, r.source_text, r.translated_text,

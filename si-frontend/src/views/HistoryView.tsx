@@ -9,7 +9,9 @@ import {
   getMeetingNotificationRecipients,
   getMeetingSummary,
   getPublicInterpretationResults,
+  getSessionSpeakerIdentities,
   getSpeakerSummaries,
+  mapSessionSpeakerIdentity,
   regenerateMeetingSummary,
   regenerateSpeakerSummary,
   sendTeamsSummaryToUsers,
@@ -316,6 +318,11 @@ export default function HistoryView() {
   const [audioRenameId, setAudioRenameId] = useState<number | null>(null)
   const [audioRenameDraft, setAudioRenameDraft] = useState('')
 
+  // ── Speaker rename (transcript tab) ──────────────────────────
+  const [speakerMappings, setSpeakerMappings] = useState<Record<string, string>>({})
+  const [speakerRenameInputs, setSpeakerRenameInputs] = useState<Record<string, string>>({})
+  const [speakerRenameSaving, setSpeakerRenameSaving] = useState<Record<string, boolean>>({})
+
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
   const transcriptGroups = useMemo(() => {
     const groups: TranscriptGroup[] = []
@@ -404,6 +411,9 @@ export default function HistoryView() {
     setSpeakerSaveStatus({})
     setSpeakerPushStatus({})
     setTeamsPushStatus('idle')
+    setSpeakerMappings({})
+    setSpeakerRenameInputs({})
+    setSpeakerRenameSaving({})
     hasFetchedSummaryRef.current = false
 
     getMeetingSessions(selectedMeetingId)
@@ -442,6 +452,28 @@ export default function HistoryView() {
       .then(res => setResults(res.data || []))
       .catch(() => setResults([]))
       .finally(() => setResultsLoading(false))
+  }, [activeTab, selectedSessionId])
+
+  useEffect(() => {
+    if (!selectedSessionId) return
+    if (activeTab !== 'transcript') return
+    setSpeakerMappings({})
+    setSpeakerRenameInputs({})
+    setSpeakerRenameSaving({})
+    getSessionSpeakerIdentities(selectedSessionId)
+      .then(res => {
+        const map: Record<string, string> = {}
+        const inputs: Record<string, string> = {}
+        ;(res.data || []).forEach(item => {
+          if (item.speakerId && item.personName) {
+            map[item.speakerId] = item.personName
+            inputs[item.speakerId] = item.personName
+          }
+        })
+        setSpeakerMappings(map)
+        setSpeakerRenameInputs(inputs)
+      })
+      .catch(() => { /* ignore */ })
   }, [activeTab, selectedSessionId])
 
   useEffect(() => {
@@ -512,6 +544,20 @@ export default function HistoryView() {
       setAudioRecords(prev => prev.map(r => r.id === id ? { ...r, name } : r))
     } catch { /* ignore */ }
     finally { setAudioRenameId(null) }
+  }
+
+  const handleSpeakerRename = async (speakerId: string) => {
+    if (!selectedSessionId) return
+    const personName = (speakerRenameInputs[speakerId] || '').trim()
+    setSpeakerRenameSaving(prev => ({ ...prev, [speakerId]: true }))
+    try {
+      await mapSessionSpeakerIdentity(selectedSessionId, speakerId, personName)
+      setSpeakerMappings(prev => ({ ...prev, [speakerId]: personName }))
+      // Reload results so transcript display reflects the updated name
+      const res = await getPublicInterpretationResults(selectedSessionId)
+      setResults(res.data || [])
+    } catch { /* ignore */ }
+    finally { setSpeakerRenameSaving(prev => ({ ...prev, [speakerId]: false })) }
   }
 
   const formatDuration = (ms: number) => {
@@ -963,11 +1009,42 @@ export default function HistoryView() {
                           disabled={results.length === 0}
                         >导出 Word</button>
                       </div>
+                      {/* ── 说话人重命名 ── */}
+                      {(() => {
+                        const uniqueSpeakerIds = Array.from(new Set(
+                          transcriptGroups.map(g => g.speakerId).filter((id): id is string => !!id)
+                        ))
+                        if (uniqueSpeakerIds.length === 0) return null
+                        return (
+                          <div className="history-speaker-rename-section">
+                            <div className="history-speaker-rename-title">说话人</div>
+                            {uniqueSpeakerIds.map(speakerId => (
+                              <div key={speakerId} className="history-speaker-rename-row">
+                                <span className="history-speaker-rename-id">{speakerId}</span>
+                                <span className="history-speaker-rename-arrow">→</span>
+                                <input
+                                  className="history-speaker-rename-input"
+                                  value={speakerRenameInputs[speakerId] ?? ''}
+                                  onChange={e => setSpeakerRenameInputs(prev => ({ ...prev, [speakerId]: e.target.value }))}
+                                  placeholder={speakerId}
+                                />
+                                <button
+                                  className="history-speaker-rename-btn"
+                                  disabled={speakerRenameSaving[speakerId]}
+                                  onClick={() => { void handleSpeakerRename(speakerId) }}
+                                >
+                                  {speakerRenameSaving[speakerId] ? '保存中...' : '保存'}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
                       <div className="si-tri-transcript-dock history-transcripts">
                         <div className="si-tri-transcript-dock-inner">
                           {results.length === 0 && <div className="si-tri-empty">暂无文本记录</div>}
                           {transcriptGroups.map((g, groupIndex) => {
-                              const speaker = g.speakerName || g.speakerId || null
+                              const speaker = speakerMappings[g.speakerId || ''] || g.speakerName || g.speakerId || null
                               const matchKind = transcriptMatchByGroupIndex.get(groupIndex) ?? null
                               const isMatched = matchKind !== null
                               const isActiveMatch = transcriptMatchIndexes[activeTranscriptMatchIndex] === groupIndex

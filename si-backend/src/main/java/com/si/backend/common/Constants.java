@@ -100,8 +100,6 @@ public final class Constants {
     public static final String WS_MSG_TYPE_ERROR = "error";
     public static final String WS_MSG_TYPE_TRANSLATE_TEXT = "translate_text";
     public static final String WS_MSG_TYPE_TTS_AUDIO = "tts_audio";
-    /** Speaker identity mapping update. */
-    public static final String WS_MSG_TYPE_SPEAKER_IDENTITY = "speaker_identity";
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 错误码
@@ -177,30 +175,6 @@ public final class Constants {
     public static final String TTS_ERROR_UNKNOWN = "unknown error";
     /** TTS 单段链路最大等待时间，超过后释放串行链，避免后续任务永久阻塞 */
     public static final int TTS_STREAM_TIMEOUT_SECONDS = 30;
-    /** 自动音色克隆每个说话人目标采样秒数（越长克隆越像，20s 比 8s 明显更准） */
-    public static final int SPEAKER_VOICE_TARGET_SAMPLE_SECONDS = 20;
-    /** 声纹自动注册触发秒数（积累到此秒数时自动提交注册；越长样本质量越好） */
-    public static final int SPEAKER_VOICE_ENROLL_SAMPLE_SECONDS = 30;
-    /** 自动音色克隆每个说话人最大采样秒数（用于 Cartesia 克隆与声纹注册，留余量供多样本切分） */
-    public static final int SPEAKER_VOICE_MAX_SAMPLE_SECONDS = 45;
-    /** 声纹注册时把累计音频切成多条样本，每条秒数（多样本 → 质心更稳、识别更准） */
-    public static final int SPEAKER_VOICE_ENROLL_CHUNK_SECONDS = 10;
-    /** 声纹注册一次最多切几条样本（限制对 speaker-service 的调用次数） */
-    public static final int SPEAKER_VOICE_ENROLL_MAX_CHUNKS = 4;
-    /** 每次 final recognition 归集到说话人缓冲的最近音频秒数（每轮追加块；过大会增加重叠/串音，保持较小） */
-    public static final int SPEAKER_VOICE_RECENT_AUDIO_SECONDS = 8;
-    /** 声纹识别时取的语音窗口秒数（仅用于识别，与上面的归集块解耦；越长嵌入越稳、分数越高） */
-    public static final int SPEAKER_VOICE_IDENTIFY_WINDOW_SECONDS = 12;
-/** 说话人音色克隆状态：采样中 */
-    public static final String SPEAKER_VOICE_STATUS_COLLECTING = "COLLECTING";
-    /** 说话人音色克隆状态：克隆中 */
-    public static final String SPEAKER_VOICE_STATUS_CLONING = "CLONING";
-    /** 说话人音色克隆状态：可用 */
-    public static final String SPEAKER_VOICE_STATUS_READY = "READY";
-    /** 说话人音色克隆状态：失败 */
-    public static final String SPEAKER_VOICE_STATUS_FAILED = "FAILED";
-    /** Cartesia 音色克隆 enhance 参数：false 可获得更高相似度 */
-    public static final String CARTESIA_ENHANCE_DISABLED = "false";
     /** 默认音色 ID（当用户未克隆音色时使用） */
     public static final String VOICE_ID_DEFAULT = "default";
     /** PCM 编码格式（Cartesia 协议） */

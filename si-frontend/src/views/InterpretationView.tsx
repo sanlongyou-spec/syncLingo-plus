@@ -6,7 +6,6 @@ import {
   getMeetings,
   getUserLanguagePreference,
   saveUserLanguagePreference,
-  getUserVoice,
   saveInterpretationResult,
   startInterpretation,
   stopInterpretation,
@@ -34,17 +33,6 @@ interface TranscriptItem {
   timestamp: number
 }
 
-
-function IconLightbulb() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M9 21h6v-1H9v1zm3-19a6 6 0 00-3 11.17V17h6v-3.83A6 6 0 0012 2zm0 10a4 4 0 110-8 4 4 0 010 8z"
-        fill="currentColor"
-      />
-    </svg>
-  )
-}
 
 function IconPlay() {
   return (
@@ -85,10 +73,6 @@ const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
 
 const MIN_SPEAKER_CHANGE_CHARS = 30
-// A candidate new speaker (name-based) must sustain this many chars before the turn
-// is committed, so a brief mid-speech misidentification is folded back to the
-// current speaker instead of cutting their turn short / triggering a stray summary.
-const MIN_NAME_CHANGE_CHARS = 30
 
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
@@ -131,15 +115,6 @@ export default function InterpretationView() {
   const speakerNameMapRef = useRef<Record<string, string>>({})
   // Candidate new speaker accumulates here until MIN_SPEAKER_CHANGE_CHARS; prevents misidentification
   const pendingSpeakerRef = useRef<{ speakerId: string; buffer: string } | null>(null)
-  // Name-based tracking for Unknown speakers resolved via Pyannote (in translated messages)
-  const nameBufferRef = useRef<Record<string, string>>({})
-  const prevResolvedNameRef = useRef('')
-  // Candidate new speaker (name-based) accumulates here until MIN_NAME_CHANGE_CHARS;
-  // rejects brief mid-speech misidentifications before committing a turn change.
-  const pendingNameRef = useRef<{ name: string; buffer: string } | null>(null)
-  // (4) Text whose speaker is not yet resolved by voiceprint; re-attributed to the
-  // speaker once their identity resolves, instead of being dropped from the summary.
-  const provisionalNameTextRef = useRef('')
 
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -149,12 +124,6 @@ export default function InterpretationView() {
     getMeetings(userId)
       .then(res => setMeetings(res.data || []))
       .catch((err: unknown) => console.warn('[InterpretationView] getMeetings failed:', err))
-
-    getUserVoice(userId)
-      .then(res => {
-        if (res.data?.voiceId) setVoiceId(res.data.voiceId)
-      })
-      .catch((err: unknown) => console.warn('[InterpretationView] getUserVoice failed:', err))
 
     getAsrHotwords(userId, '', true)
       .then(res => {
@@ -359,110 +328,8 @@ export default function InterpretationView() {
             },
           ]
         })
-        // Name-based speaker turn detection for voiceprint-resolved speakers.
-        // Drives the per-speaker-turn summary off the resolved NAME (the reliable
-        // signal) instead of the diarization id. Active whenever the diarization id
-        // is missing or still "Unknown" — i.e. the speaker was resolved by voiceprint
-        // (name) but Azure did not assign a stable distinct id. When a genuine known
-        // id IS present, the id-based path above handles turn detection instead.
-        const isResolved = (n: string) => !!n && n !== 'Unknown' && !n.startsWith('Unknown ')
-        const nameTrackingActive = !messageSpeakerId || isUnknownSpeakerId(messageSpeakerId)
-        if (nameTrackingActive && originalText) {
-          if (isResolved(messageSpeakerName)) {
-            const speaker = messageSpeakerName
-            // (4) Async re-attribution: fold in any text that arrived before this
-            // speaker's identity was resolved — it is attributed once the name is known.
-            const incoming = provisionalNameTextRef.current
-              ? (provisionalNameTextRef.current + ' ' + originalText).trim()
-              : originalText
-            provisionalNameTextRef.current = ''
-            const prevName = prevResolvedNameRef.current
-            if (!isResolved(prevName)) {
-              // First resolved speaker of the session — adopt directly.
-              nameBufferRef.current[speaker] =
-                ((nameBufferRef.current[speaker] || '') + ' ' + incoming).trim()
-              prevResolvedNameRef.current = speaker
-              pendingNameRef.current = null
-            } else if (speaker === prevName) {
-              // Same confirmed speaker — fold back any pending candidate (it was a
-              // brief misidentification) and append to the current speaker's buffer.
-              const pending = pendingNameRef.current
-              if (pending) {
-                nameBufferRef.current[speaker] =
-                  ((nameBufferRef.current[speaker] || '') + ' ' + pending.buffer).trim()
-                pendingNameRef.current = null
-              }
-              nameBufferRef.current[speaker] =
-                ((nameBufferRef.current[speaker] || '') + ' ' + incoming).trim()
-            } else {
-              // Different speaker — buffer as a candidate until it sustains enough
-              // text, so a one-off mid-speech misidentification does not switch turns.
-              const pending = pendingNameRef.current
-              if (pending?.name === speaker) {
-                pending.buffer = (pending.buffer + ' ' + incoming).trim()
-                if (pending.buffer.length >= MIN_NAME_CHANGE_CHARS) {
-                  // Sustained — commit the turn change and summarize the previous speaker.
-                  const prevText = nameBufferRef.current[prevName] || ''
-                  console.debug('[InterpretationView] speaker turn change (name-based):',
-                    { from: prevName, to: speaker, prevTextLen: prevText.length })
-                  if (prevText.length >= 30 && sessionIdRef.current) {
-                    void triggerSpeakerSummary('', prevName, prevText, sessionIdRef.current)
-                  }
-                  delete nameBufferRef.current[prevName]
-                  nameBufferRef.current[speaker] =
-                    ((nameBufferRef.current[speaker] || '') + ' ' + pending.buffer).trim()
-                  prevResolvedNameRef.current = speaker
-                  pendingNameRef.current = null
-                }
-              } else {
-                // New candidate — discard the prior unconfirmed candidate by folding it
-                // back to the current speaker (it never sustained), then start fresh.
-                if (pending) {
-                  nameBufferRef.current[prevName] =
-                    ((nameBufferRef.current[prevName] || '') + ' ' + pending.buffer).trim()
-                }
-                pendingNameRef.current = { name: speaker, buffer: incoming }
-              }
-            }
-          } else {
-            // (4) Name not resolved yet — stash text so it can be attributed to the
-            // speaker once the voiceprint resolves the identity (instead of dropping it).
-            provisionalNameTextRef.current =
-              (provisionalNameTextRef.current
-                ? provisionalNameTextRef.current + ' ' + originalText
-                : originalText).trim()
-          }
-        }
         break
       }
-      case 'speaker_identity':
-        if (msg.speakerId) {
-          const identitySpeakerId = normalizeVoiceCode(msg.speakerId)
-          const displayName = msg.speakerName?.trim() || ''
-          if (!identitySpeakerId) break
-          setCurrentSpeakerId(identitySpeakerId)
-          currentSpeakerIdRef.current = identitySpeakerId
-          if (displayName) {
-            if (isUnknownSpeakerId(identitySpeakerId)) {
-              setTranscripts(prev => {
-                const matchedIndex = [...prev].reverse().findIndex(item =>
-                  isUnknownSpeakerId(item.speakerId) && !item.speakerName,
-                )
-                if (matchedIndex < 0) return prev
-                const index = prev.length - 1 - matchedIndex
-                return prev.map((item, itemIndex) =>
-                  itemIndex === index ? { ...item, speakerName: displayName } : item,
-                )
-              })
-            } else {
-              setSpeakerNameMap(prev => prev[identitySpeakerId] === displayName ? prev : { ...prev, [identitySpeakerId]: displayName })
-              setTranscripts(prev => prev.map(item =>
-                item.speakerId === identitySpeakerId ? { ...item, speakerName: displayName } : item,
-              ))
-            }
-          }
-        }
-        break
       case 'started':
         setIsRunning(true)
         setError('')
@@ -476,10 +343,6 @@ export default function InterpretationView() {
         speakerBufferRef.current = {}
         prevFinalSpeakerRef.current = ''
         pendingSpeakerRef.current = null
-        nameBufferRef.current = {}
-        prevResolvedNameRef.current = ''
-        pendingNameRef.current = null
-        provisionalNameTextRef.current = ''
         break
       case 'stopped':
         setIsRunning(false)
@@ -598,44 +461,6 @@ export default function InterpretationView() {
     speakerBufferRef.current = {}
     prevFinalSpeakerRef.current = ''
     pendingSpeakerRef.current = null
-    // Resolve any pending name candidate before the final name-based flush.
-    const pendingName = pendingNameRef.current
-    if (pendingName) {
-      const prevName = prevResolvedNameRef.current
-      if (pendingName.buffer.length >= MIN_NAME_CHANGE_CHARS) {
-        // Sustained at end of session — commit the change and summarize the previous speaker.
-        if (prevName && prevName !== 'Unknown' && !prevName.startsWith('Unknown ')) {
-          const prevText = nameBufferRef.current[prevName] || ''
-          if (prevText.length >= 30) void triggerSpeakerSummary('', prevName, prevText, sid)
-          delete nameBufferRef.current[prevName]
-        }
-        nameBufferRef.current[pendingName.name] =
-          ((nameBufferRef.current[pendingName.name] || '') + ' ' + pendingName.buffer).trim()
-        prevResolvedNameRef.current = pendingName.name
-      } else if (prevName) {
-        // Too short — fold back to the current speaker (mid-speech misidentification).
-        nameBufferRef.current[prevName] =
-          ((nameBufferRef.current[prevName] || '') + ' ' + pendingName.buffer).trim()
-      }
-      pendingNameRef.current = null
-    }
-    // (4) Attribute any leftover unresolved text to the current speaker before flushing.
-    if (provisionalNameTextRef.current && prevResolvedNameRef.current) {
-      const cur = prevResolvedNameRef.current
-      nameBufferRef.current[cur] =
-        ((nameBufferRef.current[cur] || '') + ' ' + provisionalNameTextRef.current).trim()
-    }
-    provisionalNameTextRef.current = ''
-    // Flush last Pyannote-resolved speaker's buffer (skip if still "Unknown")
-    const lastResolvedName = prevResolvedNameRef.current
-    const lastNameText = nameBufferRef.current[lastResolvedName] || ''
-    if (lastResolvedName && lastResolvedName !== 'Unknown' && !lastResolvedName.startsWith('Unknown ') && lastNameText.length >= 30) {
-      void triggerSpeakerSummary('', lastResolvedName, lastNameText, sessionId)
-    }
-    nameBufferRef.current = {}
-    prevResolvedNameRef.current = ''
-    pendingNameRef.current = null
-    provisionalNameTextRef.current = ''
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null
@@ -692,10 +517,6 @@ export default function InterpretationView() {
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TEAMS_BOT }}>
             <span className="si-side-action-icon">T</span>
             <span>Teams Bot</span>
-          </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.VOICE_CLONE }}>
-            <IconLightbulb />
-            <span>音色克隆</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
             <span className="si-side-action-icon">H</span>

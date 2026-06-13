@@ -3,32 +3,26 @@ package com.si.backend.facade;
 import com.si.backend.dto.SaveInterpretationResultRequest;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.InterpretationRecord;
-import com.si.backend.entity.SessionSpeakerVoice;
-import com.si.backend.entity.VoiceUsageRecord;
 import com.si.backend.dto.StartInterpretationRequest;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationResultService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.MeetingSummaryService;
-import com.si.backend.service.SessionSpeakerVoiceService;
-import com.si.backend.service.SpeakerIdentityService;
+import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.UserLanguagePreferenceService;
-import com.si.backend.service.VoiceUsageRecordService;
-import java.util.concurrent.CompletableFuture;
 import com.si.backend.vo.InterpretationRecordVo;
 import com.si.backend.vo.InterpretationResultItemVo;
 import com.si.backend.vo.InterpretationSessionVo;
-import com.si.backend.vo.SessionSpeakerVoiceVo;
-import com.si.backend.vo.SessionSpeakerIdentityVo;
-import com.si.backend.vo.SpeakerIdentityVo;
-import com.si.backend.vo.VoiceUsageRecordVo;
+import com.si.backend.vo.SessionSpeakerMappingVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.UUID;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 同传会话门面层，协调会话管理与翻译流程。
@@ -42,9 +36,7 @@ public class InterpretationFacade {
     private final UserLanguagePreferenceService userLanguagePreferenceService;
     private final InterpretationResultService resultService;
     private final InterpretationRecordService recordService;
-    private final VoiceUsageRecordService voiceUsageRecordService;
-    private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
-    private final SpeakerIdentityService speakerIdentityService;
+    private final SessionSpeakerNameService sessionSpeakerNameService;
     private final MeetingSummaryService meetingSummaryService;
 
     @Transactional
@@ -71,9 +63,9 @@ public class InterpretationFacade {
         return sessionId;
     }
 
-    public java.util.Map<String, Object> stopInterpretation(String sessionId) {
+    public Map<String, Object> stopInterpretation(String sessionId) {
         log.info("[InterpretationFacade] stopInterpretation, sessionId={}", sessionId);
-        java.util.Map<String, Object> result = sessionService.stopSession(sessionId);
+        Map<String, Object> result = sessionService.stopSession(sessionId);
         CompletableFuture.runAsync(() -> meetingSummaryService.generateAndSaveAsync(sessionId));
         return result;
     }
@@ -93,9 +85,7 @@ public class InterpretationFacade {
     public com.si.backend.vo.PublicSessionInfoVo getPublicSessionInfo(String sessionId) {
         InterpretationSession session = sessionService.getSession(sessionId)
                 .orElseGet(() -> sessionService.getSessionHistory(sessionId));
-        if (session == null) {
-            return null;
-        }
+        if (session == null) return null;
         List<String> enabledLanguages = parseEnabledLanguages(session.getEnabledLanguages());
         return com.si.backend.vo.PublicSessionInfoVo.builder()
                 .sessionId(sessionId)
@@ -173,68 +163,19 @@ public class InterpretationFacade {
         return records;
     }
 
-    public List<VoiceUsageRecordVo> getVoiceUsage(String sessionId) {
-        log.info("[InterpretationFacade] getVoiceUsage start, sessionId={}", sessionId);
-        String meetingTitle = resolveSessionTitle(sessionId);
-        List<VoiceUsageRecordVo> records = voiceUsageRecordService.getSessionUsage(sessionId).stream()
-                .map(this::toVo)
+    public List<SessionSpeakerMappingVo> getSessionSpeakerMappings(String sessionId) {
+        log.info("[InterpretationFacade] getSessionSpeakerMappings, sessionId={}", sessionId);
+        Map<String, String> mappings = sessionSpeakerNameService.getSessionMappings(sessionId);
+        return mappings.entrySet().stream()
+                .map(e -> new SessionSpeakerMappingVo(e.getKey(), e.getValue()))
                 .toList();
-        records.forEach(record -> record.setMeetingTitle(meetingTitle));
-        log.info("[InterpretationFacade] getVoiceUsage end, sessionId={}, count={}", sessionId, records.size());
-        return records;
     }
 
-    public List<SessionSpeakerVoiceVo> getSpeakerVoices(String sessionId) {
-        log.info("[InterpretationFacade] getSpeakerVoices start, sessionId={}", sessionId);
-        List<SessionSpeakerVoiceVo> voices = sessionSpeakerVoiceService.getSessionSpeakerVoices(sessionId).stream()
-                .map(this::toVo)
-                .toList();
-        log.info("[InterpretationFacade] getSpeakerVoices end, sessionId={}, count={}", sessionId, voices.size());
-        return voices;
-    }
-
-    public List<SessionSpeakerIdentityVo> getSessionSpeakerIdentities(String sessionId) {
-        log.info("[InterpretationFacade] getSessionSpeakerIdentities start, sessionId={}", sessionId);
-        List<SessionSpeakerIdentityVo> identities = speakerIdentityService.listSessionMappings(sessionId);
-        log.info("[InterpretationFacade] getSessionSpeakerIdentities end, sessionId={}, count={}",
-                sessionId, identities.size());
-        return identities;
-    }
-
-    public SessionSpeakerIdentityVo mapSessionSpeaker(String sessionId, String speakerId, String personName) {
-        log.info("[InterpretationFacade] mapSessionSpeaker start, sessionId={}, speakerId={}, personName={}",
+    public SessionSpeakerMappingVo mapSessionSpeaker(String sessionId, String speakerId, String personName) {
+        log.info("[InterpretationFacade] mapSessionSpeaker, sessionId={}, speakerId={}, personName={}",
                 sessionId, speakerId, personName);
-        SessionSpeakerIdentityVo identity = speakerIdentityService.mapSessionSpeaker(sessionId, speakerId, personName);
-        // Auto-enroll in speaker recognition service using accumulated session audio.
-        byte[] speakerPcm = sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId);
-        // 16000 Hz * 1 channel * 2 bytes/sample * 2 seconds = 64000 bytes minimum
-        int minEnrollBytes = 16000 * 2 * 2;
-        if (speakerPcm.length >= minEnrollBytes) {
-            SpeakerIdentityVo identityRecord =
-                    speakerIdentityService.findIdentityByName(personName.trim());
-            // 即使该人已注册过，也允许再绑定时追加样本（speaker-service 端有上限保护），
-            // 让声纹随会议累积、越来越准。
-            if (identityRecord != null && identityRecord.getId() != null) {
-                String locale = "zh";
-                final byte[] pcmSnapshot = speakerPcm;
-                final String finalLocale = locale;
-                final String finalPersonName = personName.trim();
-                CompletableFuture.runAsync(() -> {
-                    try {
-                        // 多样本注册（切分累计音频），与会中自动注册同一逻辑，避免单样本顶掉多样本。
-                        speakerIdentityService.enrollSamplesByPersonName(finalPersonName, pcmSnapshot, finalLocale);
-                        log.info("[InterpretationFacade] auto-enrolled speaker from session audio, " +
-                                "sessionId={}, speakerId={}, personName={}, bytes={}",
-                                sessionId, speakerId, personName, pcmSnapshot.length);
-                    } catch (Exception e) {
-                        log.warn("[InterpretationFacade] auto-enroll failed, speakerId={}, reason={}",
-                                speakerId, e.getMessage());
-                    }
-                });
-            }
-        }
-        log.info("[InterpretationFacade] mapSessionSpeaker end, sessionId={}, speakerId={}", sessionId, speakerId);
-        return identity;
+        sessionSpeakerNameService.bulkRename(sessionId, speakerId, personName);
+        return new SessionSpeakerMappingVo(speakerId, personName);
     }
 
     private InterpretationSessionVo toVo(InterpretationSession session) {
@@ -276,33 +217,6 @@ public class InterpretationFacade {
                 .targetText(record.getTargetText())
                 .spokenAt(record.getSpokenAt())
                 .createTime(record.getCreateTime())
-                .build();
-    }
-
-    private VoiceUsageRecordVo toVo(VoiceUsageRecord record) {
-        return VoiceUsageRecordVo.builder()
-                .id(record.getId())
-                .sessionId(record.getSessionId())
-                .userId(record.getUserId())
-                .voiceId(record.getVoiceId())
-                .targetLang(record.getTargetLang())
-                .textLen(record.getTextLen())
-                .usedAt(record.getUsedAt())
-                .build();
-    }
-
-    private SessionSpeakerVoiceVo toVo(SessionSpeakerVoice voice) {
-        return SessionSpeakerVoiceVo.builder()
-                .id(voice.getId())
-                .sessionId(voice.getSessionId())
-                .speakerId(voice.getSpeakerId())
-                .cartesiaVoiceId(voice.getCartesiaVoiceId())
-                .cloneStatus(voice.getCloneStatus())
-                .audioSeconds(voice.getAudioSeconds())
-                .language(voice.getLanguage())
-                .errorMessage(voice.getErrorMessage())
-                .createTime(voice.getCreateTime())
-                .updateTime(voice.getUpdateTime())
                 .build();
     }
 }

@@ -85,29 +85,12 @@ const upsertTranslation = (
   return { ...item, translations: [...item.translations, translation], isStreaming: false }
 }
 
-const normalizeSpeakerId = (speakerId?: string | null) => {
-  const trimmed = speakerId?.trim()
-  if (!trimmed) return ''
-  const lower = trimmed.toLowerCase()
-  if (lower === 'undefined' || lower === 'null') return ''
-  return trimmed
-}
-
-const isUnknownSpeakerId = (speakerId?: string | null) =>
-  speakerId?.trim().toLowerCase() === 'unknown'
-
-const mappedSpeakerName = (speakerId: string | undefined, nameMap: Record<string, string>) =>
-  speakerId && !isUnknownSpeakerId(speakerId) ? nameMap[speakerId] : ''
-
 export default function UserShareView() {
   const { userId = '' } = useParams()
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [items, setItems] = useState<DisplayShareItem[]>([])
   const [currentRecognizing, setCurrentRecognizing] = useState('')
   const [currentLanguage, setCurrentLanguage] = useState('')
-  const [currentSpeakerId, setCurrentSpeakerId] = useState('')
-  const [currentSpeakerName, setCurrentSpeakerName] = useState('')
-  const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
   const [isWaiting, setIsWaiting] = useState(true)
   const {
     scrollRef: bodyRef,
@@ -116,7 +99,6 @@ export default function UserShareView() {
   } = useSmartAutoScroll<HTMLDivElement>([items, currentRecognizing])
   const wsRef = useRef<WebSocket | null>(null)
   const liveIdRef = useRef(-1)
-  const speakerNameMapRef = useRef<Record<string, string>>({})
   const activeSessionIdRef = useRef<string | null>(null)
   const wsStoppedRef = useRef(false)
 
@@ -335,10 +317,6 @@ export default function UserShareView() {
   }
 
   useEffect(() => {
-    speakerNameMapRef.current = speakerNameMap
-  }, [speakerNameMap])
-
-  useEffect(() => {
     activeSessionIdRef.current = activeSessionId
   }, [activeSessionId])
 
@@ -346,45 +324,21 @@ export default function UserShareView() {
     setItems([])
     setCurrentRecognizing('')
     setCurrentLanguage('')
-    setCurrentSpeakerId('')
-    setCurrentSpeakerName('')
-    setSpeakerNameMap({})
-    speakerNameMapRef.current = {}
     liveIdRef.current = -1
   }, [])
 
-  const resolveSpeakerName = (speakerId?: string, speakerName?: string | null) => {
-    const displayName = speakerName?.trim()
-    if (displayName) return displayName
-    return mappedSpeakerName(speakerId, speakerNameMapRef.current)
-  }
-
-  const rememberSpeakerName = (speakerId?: string, speakerName?: string | null) => {
-    const displayName = speakerName?.trim()
-    if (!speakerId || !displayName || isUnknownSpeakerId(speakerId)) return
-    setSpeakerNameMap(prev => prev[speakerId] === displayName ? prev : { ...prev, [speakerId]: displayName })
-  }
-
   const handleWsMessage = (msg: WsMessage) => {
-    const sid = normalizeSpeakerId(msg.speakerId)
-    const sname = resolveSpeakerName(sid, msg.speakerName)
     addAudioLang(msg.language)
     addAudioLang(msg.targetLanguage)
     switch (msg.type) {
       case 'recognizing':
         setCurrentRecognizing(msg.text || '')
         setCurrentLanguage(msg.language || '')
-        if (sid) setCurrentSpeakerId(sid)
-        setCurrentSpeakerName(sname || '')
-        if (sname) rememberSpeakerName(sid, sname)
         break
       case 'recognized': {
         if (!msg.text) return
         setCurrentRecognizing('')
         setCurrentLanguage(msg.language || '')
-        if (sid) setCurrentSpeakerId(sid)
-        setCurrentSpeakerName(sname || '')
-        if (sname) rememberSpeakerName(sid, sname)
         const id = liveIdRef.current--
         setItems(prev => [...prev, {
           id,
@@ -393,8 +347,8 @@ export default function UserShareView() {
           displaySourceText: msg.text || '',
           translations: [],
           isStreaming: true,
-          speakerId: sid || undefined,
-          speakerName: sname || undefined,
+          speakerId: msg.speakerId || undefined,
+          speakerName: msg.speakerName || undefined,
         }])
         break
       }
@@ -402,9 +356,6 @@ export default function UserShareView() {
         const sourceText = msg.text || ''
         const translatedText = msg.translatedText || ''
         if (!sourceText && !translatedText) return
-        if (sid) setCurrentSpeakerId(sid)
-        setCurrentSpeakerName(sname || '')
-        if (sname) rememberSpeakerName(sid, sname)
         setItems(prev => {
           const translation: DisplayShareTranslation = {
             id: liveIdRef.current--,
@@ -412,17 +363,12 @@ export default function UserShareView() {
             targetLang: msg.targetLanguage,
             displayTranslatedText: translatedText,
           }
-          const mergeSpk = (item: DisplayShareItem): DisplayShareItem => ({
-            ...item,
-            speakerId: item.speakerId || sid || undefined,
-            speakerName: sname || item.speakerName,
-          })
           const matchedIdx = sourceText
             ? [...prev].reverse().findIndex(item => item.sourceText === sourceText)
             : -1
           if (matchedIdx >= 0) {
             const index = prev.length - 1 - matchedIdx
-            return prev.map((item, i) => i === index ? upsertTranslation(mergeSpk(item), translation) : item)
+            return prev.map((item, i) => i === index ? upsertTranslation(item, translation) : item)
           }
           return [...prev, {
             id: liveIdRef.current--,
@@ -430,35 +376,10 @@ export default function UserShareView() {
             displaySourceText: sourceText,
             translations: [translation],
             isStreaming: false,
-            speakerId: sid || undefined,
-            speakerName: sname || undefined,
+            speakerId: msg.speakerId || undefined,
+            speakerName: msg.speakerName || undefined,
           }]
         })
-        break
-      }
-      case 'speaker_identity': {
-        const identitySid = normalizeSpeakerId(msg.speakerId)
-        const displayName = msg.speakerName?.trim() || ''
-        if (!identitySid) break
-        setCurrentSpeakerId(identitySid)
-        setCurrentSpeakerName(displayName || '')
-        if (displayName) {
-          if (isUnknownSpeakerId(identitySid)) {
-            setItems(prev => {
-              const idx = [...prev].reverse().findIndex(item =>
-                isUnknownSpeakerId(item.speakerId) && !item.speakerName,
-              )
-              if (idx < 0) return prev
-              const index = prev.length - 1 - idx
-              return prev.map((item, i) => i === index ? { ...item, speakerName: displayName } : item)
-            })
-          } else {
-            rememberSpeakerName(identitySid, displayName)
-            setItems(prev => prev.map(item =>
-              item.speakerId === identitySid ? { ...item, speakerName: displayName } : item,
-            ))
-          }
-        }
         break
       }
       case 'started':
@@ -466,8 +387,6 @@ export default function UserShareView() {
         break
       case 'stopped':
         setCurrentRecognizing('')
-        setCurrentSpeakerId('')
-        setCurrentSpeakerName('')
         break
     }
   }
@@ -648,31 +567,23 @@ export default function UserShareView() {
                   <div className="si-tri-empty">等待同传文本...</div>
                 )}
 
-                {items.map(item => {
-                  const rawId = isUnknownSpeakerId(item.speakerId) ? null : (item.speakerId || null)
-                  const currSpeaker = item.speakerName || mappedSpeakerName(item.speakerId, speakerNameMap) || rawId
-                  return (
-                    <div key={item.id} className={`si-tri-block ${item.isStreaming ? 'si-tri-block--partial' : ''}`}>
-                      <div className="si-tri-share-line">
-                        {currSpeaker
-                          ? <span className="si-tri-line-lang-badge">{currSpeaker}</span>
-                          : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>
-                        }
-                        {item.displaySourceText}
-                      </div>
-                      {item.translations.length === 0 && (
-                        <div className="si-tri-share-line si-tri-share-line--translated">
-                          翻译中...
-                        </div>
-                      )}
-                      {item.translations.map(translation => (
-                        <div key={translation.id} className="si-tri-share-line si-tri-share-line--translated">
-                          {translation.displayTranslatedText}
-                        </div>
-                      ))}
+                {items.map(item => (
+                  <div key={item.id} className={`si-tri-block ${item.isStreaming ? 'si-tri-block--partial' : ''}`}>
+                    <div className="si-tri-share-line">
+                      {item.displaySourceText}
                     </div>
-                  )
-                })}
+                    {item.translations.length === 0 && (
+                      <div className="si-tri-share-line si-tri-share-line--translated">
+                        翻译中...
+                      </div>
+                    )}
+                    {item.translations.map(translation => (
+                      <div key={translation.id} className="si-tri-share-line si-tri-share-line--translated">
+                        {translation.displayTranslatedText}
+                      </div>
+                    ))}
+                  </div>
+                ))}
 
                 {currentRecognizing && (
                   <div className="si-tri-block si-tri-block--partial">
@@ -680,13 +591,6 @@ export default function UserShareView() {
                       <span>实时识别中</span>
                     </div>
                     <div className="si-tri-share-line">
-                      {(() => {
-                        const rawCurrId = isUnknownSpeakerId(currentSpeakerId) ? '' : currentSpeakerId
-                        const label = currentSpeakerName || mappedSpeakerName(currentSpeakerId, speakerNameMap) || rawCurrId
-                        return label
-                          ? <span className="si-tri-line-lang-badge">{label}</span>
-                          : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>
-                      })()}
                       {currentRecognizing}
                     </div>
                     {currentLanguage && (

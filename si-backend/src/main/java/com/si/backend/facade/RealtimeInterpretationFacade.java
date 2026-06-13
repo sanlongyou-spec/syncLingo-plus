@@ -7,8 +7,7 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
-import com.si.backend.service.SessionSpeakerVoiceService;
-import com.si.backend.service.SpeakerIdentityService;
+import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
 import lombok.RequiredArgsConstructor;
@@ -26,11 +25,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * 实时同传门面层，协调 ASR、翻译、TTS 的实时处理流程。
- * 所有业务逻辑委托给 AsrService / TtsService，禁止直接调用 Integration 层。
- * TTS/原始音频经服务器 Opus 编码后由 ShareAudioWebSocketHandler 按听众所选语言分发到分享页。
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -42,21 +36,14 @@ public class RealtimeInterpretationFacade {
     private final InterpretationSessionService sessionService;
     private final CartesiaProperties cartesiaProperties;
     private final InterpretationRecordService recordService;
-    private final SessionSpeakerVoiceService sessionSpeakerVoiceService;
-    private final SpeakerIdentityService speakerIdentityService;
+    private final SessionSpeakerNameService sessionSpeakerNameService;
     private final AudioRecordService audioRecordService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
     private static final int TTS_QUEUE_LIMIT = 6;
-    /**
-     * 阶段1 自适应压缩：无积压时, 印尼语说话超过此时长(ms)的句子也压缩。
-     * 实测印尼语音频≈说话时长×1.74, 不压则即使 1.5x 加速也排不空(1.74/1.5>1)→ 积压。
-     * 故调激进到 1.5s: 基本都压、把 ratio 压下来让 1.5x 能排空; 只豁免极短句(压不动也不积压)。
-     */
     private static final long COMPRESS_MIN_SPEAKING_MS = 1500L;
 
-    /** 翻译任务专用线程池，有界队列防止 OOM，CallerRunsPolicy 提供背压 */
     private static final Executor TRANSLATION_EXECUTOR = new ThreadPoolExecutor(
             Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER,
             Runtime.getRuntime().availableProcessors() * TRANSLATION_THREAD_MULTIPLIER,
@@ -65,7 +52,6 @@ public class RealtimeInterpretationFacade {
             new ThreadPoolExecutor.CallerRunsPolicy()
     );
 
-    /** TTS 串行链专用线程池，与翻译线程池隔离，防止互相阻塞 */
     private static final Executor TTS_EXECUTOR = new ThreadPoolExecutor(
             Runtime.getRuntime().availableProcessors() * TTS_THREAD_MULTIPLIER,
             Runtime.getRuntime().availableProcessors() * TTS_THREAD_MULTIPLIER,
@@ -74,88 +60,26 @@ public class RealtimeInterpretationFacade {
             new ThreadPoolExecutor.CallerRunsPolicy()
     );
 
-    /**
-     * 声纹识别专用线程池：声纹是 1-2s 的网络阻塞调用，必须与翻译/TTS 隔离，否则会占满翻译线程、拖慢翻译。
-     * 限制并发(=CPU 核数)以免压垮单实例 speaker-service；声纹是尽力而为，队列满则丢弃(DiscardPolicy)，
-     * 该句仍用缓存/默认身份，不影响主流程。
-     */
-    private static final Executor SPEAKER_EXECUTOR = new ThreadPoolExecutor(
-            Runtime.getRuntime().availableProcessors(),
-            Runtime.getRuntime().availableProcessors(),
-            30L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(200),
-            runnable -> {
-                Thread thread = new Thread(runnable, "speaker-identify-" + System.nanoTime());
-                thread.setDaemon(true);
-                return thread;
-            },
-            new ThreadPoolExecutor.DiscardPolicy()
-    );
-
-    /** 缓存每个会话的翻译结果回调，用于将译文推送给前端 */
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
-
-    /** 缓存每个会话的 TTS 音频回调，用于将 PCM 数据推送给前端 */
     private final ConcurrentHashMap<String, TtsAudioCallback> sessionTtsAudioCallbackMap = new ConcurrentHashMap<>();
-
-    /** 缓存每个会话的错误回调，用于将异步管道错误推送给前端 */
     private final ConcurrentHashMap<String, AsrErrorCallback> sessionErrorCallbackMap = new ConcurrentHashMap<>();
-
-    /** Speaker identity update callbacks for the UI. */
-    private final ConcurrentHashMap<String, SpeakerIdentityCallback> sessionSpeakerIdentityCallbackMap = new ConcurrentHashMap<>();
-
-    /** 每个会话每种目标语言最后一个 TTS 播放任务的 Future；key = sessionId::targetLang，同语言串行，跨语言并行 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
-
-    /** 每个会话的 final 识别初始化链，保证按 ASR final 到达顺序预留 TTS 播放位置。 */
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionFinalRecognitionChain = new ConcurrentHashMap<>();
-
     private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, null, -1L, -1, -1L);
-
-    /** 每个会话上一次检测到的源语言，用于判断是否发生了语言切换 */
     private final ConcurrentHashMap<String, String> sessionLastSourceLang = new ConcurrentHashMap<>();
-
-    /** Session-level requested target language; auto means translating to the other two languages. */
     private final ConcurrentHashMap<String, String> sessionTargetLangMap = new ConcurrentHashMap<>();
-
-    /** 每个会话当前排队 TTS 数量，用于积压控制 */
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsQueueSize = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsSequence = new ConcurrentHashMap<>();
-
-    /** 每个会话当前这句的"开始被收音"时刻（第一帧 recognizing），0=当前无进行中的句子。用于端到端延迟统计。 */
     private final ConcurrentHashMap<String, AtomicLong> sessionUtteranceStartMs = new ConcurrentHashMap<>();
 
     // ---------- WebSocket session lifecycle ----------
 
-    /**
-     * 启动实时 ASR 识别与翻译。
-     *
-     * @param sessionId      WebSocket 会话 ID
-     * @param sourceLang     源语言（传 "auto" 启用自动检测）
-     * @param targetLang     目标语言
-     * @param voiceId        音色 ID（可为空）
-     * @param onRecognizing  识别回调（isFinal=false）
-     * @param onRecognized   最终识别回调（isFinal=true）
-     * @param onTranslated   翻译结果回调
-     * @param onTtsAudio     TTS 音频块回调（将 PCM 推送给前端）
-     * @param onError        错误回调
-     */
     public void startInterpretation(
-            String sessionId,
-            String sourceLang,
-            String targetLang,
-            String voiceId,
-            AsrRecognitionCallback onRecognizing,
-            AsrRecognitionCallback onRecognized,
-            TranslationResultCallback onTranslated,
-            TtsAudioCallback onTtsAudio,
-            SpeakerIdentityCallback onSpeakerIdentity,
-            AsrErrorCallback onError
-    ) {
+            String sessionId, String sourceLang, String targetLang, String voiceId,
+            AsrRecognitionCallback onRecognizing, AsrRecognitionCallback onRecognized,
+            TranslationResultCallback onTranslated, TtsAudioCallback onTtsAudio, AsrErrorCallback onError) {
         log.info("[RealtimeInterpretationFacade] startInterpretation, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
-
-        // 重置 TTS 链：清除该会话所有语言的旧链，防止 WS 重连时旧 Future 阻塞新任务
         sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
@@ -163,17 +87,12 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionUtteranceStartMs.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
-        sessionSpeakerVoiceService.startSession(sessionId);
-        speakerIdentityService.startSession(sessionId);
         Long audioUserId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(null);
         Long audioMeetingId = sessionService.getSession(sessionId).map(InterpretationSession::getMeetingId).orElse(null);
         audioRecordService.startRecording(sessionId, audioUserId, audioMeetingId);
-
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
-        sessionSpeakerIdentityCallbackMap.put(sessionId, onSpeakerIdentity);
         sessionErrorCallbackMap.put(sessionId, onError);
-
         asrService.startRecognition(
                 sessionId,
                 sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L),
@@ -181,61 +100,37 @@ public class RealtimeInterpretationFacade {
                 sessionService.getSession(sessionId).map(InterpretationSession::getHotwordIds).orElse(null),
                 sessionService.getSession(sessionId).map(InterpretationSession::getEnabledLanguages).orElse(null),
                 (text, lang, speakerId) -> {
-                    // 记录"该句开始被收音"的时刻：本句第一帧 recognizing（上一句 final 后第一次）
                     sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
                             .compareAndSet(0, System.currentTimeMillis());
                     onRecognizing.accept(text, lang, speakerId);
                 },
                 (text, lang, speakerId) -> {
                     onRecognized.accept(text, lang, speakerId);
-                    // 端到端延迟起点：该句"开始被收音"的时刻；取出并清零，下一帧 recognizing 开启新一句
-                    long startedMs = sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
-                            .getAndSet(0);
+                    long startedMs = sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0)).getAndSet(0);
                     long speechStartAtMs = startedMs > 0 ? startedMs : System.currentTimeMillis();
                     enqueueFinalRecognition(text, lang, speakerId, sessionId, voiceId, speechStartAtMs);
                 },
-                errorMessage -> onError.accept(errorMessage)
-        );
+                errorMessage -> onError.accept(errorMessage));
         log.info("[RealtimeInterpretationFacade] startInterpretation done, sessionId={}", sessionId);
     }
 
-    /**
-     * 推送音频帧到 ASR。
-     *
-     * @param sessionId WebSocket 会话 ID
-     * @param pcmFrame  PCM 音频帧
-     */
     public void pushAudio(String sessionId, byte[] pcmFrame) {
-        if (!sessionService.isSessionActive(sessionId)) {
-            return;
-        }
+        if (!sessionService.isSessionActive(sessionId)) return;
         asrService.pushAudio(sessionId, pcmFrame);
         if (pcmFrame != null && pcmFrame.length > 0) {
             audioRecordService.appendPcm(sessionId, pcmFrame);
-            sessionSpeakerVoiceService.appendSessionAudio(sessionId, pcmFrame);
             long audioMs = Math.round((double) pcmFrame.length * 1000
                     / (Constants.DEFAULT_SAMPLE_RATE_ASR * Constants.AUDIO_CHANNELS_MONO * (Constants.BITS_PER_SAMPLE / 8)));
             sessionService.addAsrAudioMs(sessionId, audioMs);
         }
     }
 
-    /**
-     * 停止实时 ASR 识别。
-     *
-     * @param sessionId WebSocket 会话 ID
-     */
     public void stopInterpretation(String sessionId) {
         log.info("[RealtimeInterpretationFacade] stopInterpretation, sessionId={}", sessionId);
-        try {
-            asrService.stopRecognition(sessionId);
-        } catch (Exception e) {
-            log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e);
-        }
-        try {
-            sessionService.stopSession(sessionId);
-        } catch (Exception e) {
-            log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e);
-        }
+        try { asrService.stopRecognition(sessionId); }
+        catch (Exception e) { log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e); }
+        try { sessionService.stopSession(sessionId); }
+        catch (Exception e) { log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e); }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
         sessionErrorCallbackMap.remove(sessionId);
@@ -248,22 +143,15 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
-        sessionSpeakerVoiceService.cleanupSession(sessionId);
-        speakerIdentityService.cleanupSession(sessionId);
-        sessionSpeakerIdentityCallbackMap.remove(sessionId);
+        sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 
-    // ---------- Recognition → Translation → TTS pipeline ----------
+    // ---------- Recognition -> Translation -> TTS pipeline ----------
 
     private void enqueueFinalRecognition(
-            String text,
-            String detectedLang,
-            String speakerId,
-            String sessionId,
-            String voiceId,
-            long speechStartAtMs
-    ) {
+            String text, String detectedLang, String speakerId,
+            String sessionId, String voiceId, long speechStartAtMs) {
         sessionFinalRecognitionChain.compute(sessionId, (key, previous) -> {
             CompletableFuture<Void> ready = previous == null
                     ? CompletableFuture.completedFuture(null)
@@ -274,76 +162,48 @@ public class RealtimeInterpretationFacade {
             ).exceptionally(ex -> {
                 log.error("[RealtimeInterpretationFacade] processFinalRecognition async error, sessionId={}", sessionId, ex);
                 AsrErrorCallback errCb = sessionErrorCallbackMap.get(sessionId);
-                if (errCb != null) {
-                    errCb.accept("翻译处理失败: " + ex.getMessage());
-                }
+                if (errCb != null) errCb.accept("Translation processing failed: " + ex.getMessage());
                 return null;
             });
         });
     }
 
-    /**
-     * 处理最终识别结果：根据检测到的语种自动选择翻译方向，然后 TTS 播报。
-     */
     public void processFinalRecognition(String text, String detectedLang, String speakerId, String sessionId, String voiceId) {
         processFinalRecognition(text, detectedLang, speakerId, sessionId, voiceId, System.currentTimeMillis());
     }
 
-    public void processFinalRecognition(String text, String detectedLang, String speakerId, String sessionId, String voiceId, long speechStartAtMs) {
+    public void processFinalRecognition(String text, String detectedLang, String speakerId,
+            String sessionId, String voiceId, long speechStartAtMs) {
         if (text == null || text.isBlank()) return;
         if (!isPipelineActive(sessionId, "process_final_start")) return;
 
+        String speakerName = sessionSpeakerNameService.getName(sessionId, speakerId);
+        log.debug("[RealtimeInterpretationFacade] speaker lookup sessionId={} speakerId={} speakerName={}",
+                sessionId, speakerId, speakerName != null ? speakerName : "not mapped");
+
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
-        // 声纹识别移出关键路径：本句立即用缓存/上一句/默认身份，不阻塞翻译；
-        // 真正的网络声纹识别异步执行，结果更新缓存供后续语句使用（首次出现的说话人本句用默认音色）。
-        SpeakerIdentityService.SpeakerResolution speakerResolution =
-                speakerIdentityService.resolveCached(sessionId, speakerId);
-        notifySpeakerIdentity(sessionId, speakerResolution);
-        final byte[] speakerIdentityPcm = resolveSpeakerIdentityPcm(sessionId, speakerId);
-        CompletableFuture.runAsync(() -> {
-            long identifyStart = System.currentTimeMillis();
-            SpeakerIdentityService.SpeakerResolution full =
-                    speakerIdentityService.resolveOrIdentify(sessionId, speakerId, speakerIdentityPcm);
-            log.info("[RealtimeInterpretationFacade] speakerIdentify async done, sessionId={}, speakerId={}, personName={}, speakerIdentifyMs={}",
-                    sessionId, speakerId, full.getPersonName(), System.currentTimeMillis() - identifyStart);
-            if (isPipelineActive(sessionId, "speaker_identify_async")) {
-                notifySpeakerIdentity(sessionId, full);
-            }
-        }, SPEAKER_EXECUTOR).exceptionally(ex -> {
-            log.warn("[RealtimeInterpretationFacade] speakerIdentify async error, sessionId={}, speakerId={}", sessionId, speakerId, ex);
-            return null;
-        });
-
         log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, speakerId={}, speakerName={}, detected={}, sourceLang={}, targetLangs={}",
-                sessionId, speakerId, speakerResolution.getPersonName(), detectedLang, sourceLang, targetLangs);
+                sessionId, speakerId, speakerName, detectedLang, sourceLang, targetLangs);
 
-        // 检测语言切换时只记录，不重置 TTS 链，避免已排队音频被跳过。
         String prevLang = sessionLastSourceLang.put(sessionId, sourceLang);
         if (prevLang != null && !prevLang.equals(sourceLang)) {
-            log.info("[RealtimeInterpretationFacade] lang switch {}->{}, keep queued TTS to avoid skip, sessionId={}",
-                    prevLang, sourceLang, sessionId);
+            log.info("[RealtimeInterpretationFacade] lang switch {}->{}, sessionId={}", prevLang, sourceLang, sessionId);
         }
 
         String resolvedVoiceId = voiceId;
         if (resolvedVoiceId == null || resolvedVoiceId.isBlank()) {
-            resolvedVoiceId = sessionService.getSession(sessionId)
-                    .map(InterpretationSession::getVoiceId)
-                    .orElse(null);
+            resolvedVoiceId = sessionService.getSession(sessionId).map(InterpretationSession::getVoiceId).orElse(null);
         }
         final String finalVoiceId = resolvedVoiceId;
+        final String finalSpeakerName = speakerName;
 
-        // Each target language is translated and TTS'd in parallel:
-        // - text arrives at the frontend for all languages at roughly the same time
-        // - each language has its own TTS chain, so audio plays independently per channel
         targetLangs.forEach(targetLang -> {
             if (!isPipelineActive(sessionId, "before_target_translate")) return;
             TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang);
             CompletableFuture.runAsync(
-                    () -> translateAndStreamTts(
-                            text, sourceLang, targetLang, finalVoiceId, sessionId, speakerId,
-                            speakerResolution, speechStartAtMs, reservation
-                    ),
+                    () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId,
+                            sessionId, speakerId, finalSpeakerName, speechStartAtMs, reservation),
                     TRANSLATION_EXECUTOR
             ).exceptionally(ex -> {
                 completeTtsReservation(reservation, "parallel_translate_error");
@@ -367,8 +227,7 @@ public class RealtimeInterpretationFacade {
         String requestedTargetLang = sessionTargetLangMap.getOrDefault(sessionId, Constants.LANG_AUTO);
         if (!isAutoTargetLang(requestedTargetLang)) {
             if (isSameLanguage(sourceLang, requestedTargetLang)) {
-                log.info("[RealtimeInterpretationFacade] fixed target equals source, skip translation, sessionId={}, lang={}",
-                        sessionId, sourceLang);
+                log.info("[RealtimeInterpretationFacade] fixed target equals source, skip, sessionId={}, lang={}", sessionId, sourceLang);
                 return List.of();
             }
             return List.of(requestedTargetLang);
@@ -385,9 +244,7 @@ public class RealtimeInterpretationFacade {
     }
 
     private String normalizeTargetLang(String targetLang) {
-        if (targetLang == null || targetLang.isBlank() || Constants.LANG_AUTO.equalsIgnoreCase(targetLang)) {
-            return Constants.LANG_AUTO;
-        }
+        if (targetLang == null || targetLang.isBlank() || Constants.LANG_AUTO.equalsIgnoreCase(targetLang)) return Constants.LANG_AUTO;
         return normalizeAsrLang(targetLang);
     }
 
@@ -408,41 +265,19 @@ public class RealtimeInterpretationFacade {
 
     // ---------- Translation + TTS ----------
 
-    /**
-     * 翻译文本并流式合成 TTS 音频，通过回调推送给前端。
-     */
     public void translateAndStreamTts(
-            String text,
-            String sourceLang,
-            String targetLang,
-            String voiceId,
-            String sessionId,
-            String speakerId,
-            SpeakerIdentityService.SpeakerResolution speakerResolution
-    ) {
-        translateAndStreamTts(
-                text, sourceLang, targetLang, voiceId, sessionId, speakerId, speakerResolution,
-                System.currentTimeMillis()
-        );
+            String text, String sourceLang, String targetLang, String voiceId,
+            String sessionId, String speakerId, String speakerName) {
+        translateAndStreamTts(text, sourceLang, targetLang, voiceId, sessionId, speakerId, speakerName, System.currentTimeMillis());
     }
 
     public void translateAndStreamTts(
-            String text,
-            String sourceLang,
-            String targetLang,
-            String voiceId,
-            String sessionId,
-            String speakerId,
-            SpeakerIdentityService.SpeakerResolution speakerResolution,
-            long speechStartAtMs
-    ) {
+            String text, String sourceLang, String targetLang, String voiceId,
+            String sessionId, String speakerId, String speakerName, long speechStartAtMs) {
         if (text == null || text.isBlank()) return;
         TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang);
         try {
-            translateAndStreamTts(
-                    text, sourceLang, targetLang, voiceId, sessionId, speakerId,
-                    speakerResolution, speechStartAtMs, reservation
-            );
+            translateAndStreamTts(text, sourceLang, targetLang, voiceId, sessionId, speakerId, speakerName, speechStartAtMs, reservation);
         } catch (RuntimeException e) {
             completeTtsReservation(reservation, "translate_pipeline_exception");
             throw e;
@@ -450,16 +285,9 @@ public class RealtimeInterpretationFacade {
     }
 
     private void translateAndStreamTts(
-            String text,
-            String sourceLang,
-            String targetLang,
-            String voiceId,
-            String sessionId,
-            String speakerId,
-            SpeakerIdentityService.SpeakerResolution speakerResolution,
-            long speechStartAtMs,
-            TtsPlaybackReservation reservation
-    ) {
+            String text, String sourceLang, String targetLang, String voiceId,
+            String sessionId, String speakerId, String speakerName, long speechStartAtMs,
+            TtsPlaybackReservation reservation) {
         if (text == null || text.isBlank()) {
             completeTtsReservation(reservation, "blank_text");
             return;
@@ -468,16 +296,10 @@ public class RealtimeInterpretationFacade {
             completeTtsReservation(reservation, "inactive_translate_start");
             return;
         }
-
-        log.info("[RealtimeInterpretationFacade] translateAndStreamTts, sessionId={}, speakerId={}, textLen={}, {}→{}, voiceId={}",
+        log.info("[RealtimeInterpretationFacade] translateAndStreamTts, sessionId={}, speakerId={}, textLen={}, {}->>{}, voiceId={}",
                 sessionId, speakerId, text.length(), sourceLang, targetLang, voiceId);
 
         long translateStart = System.currentTimeMillis();
-        // 阶段1 自适应压缩(v2)：印尼语/英语一视同仁。
-        //  - 有积压 → 压(压缩时间被上一句播放盖住);
-        //  - 无积压时, 译音长句也压: 译文常比原话长, 不压必慢慢积压;
-        //    previous.isDone() 在比值≈1 时太钝(刚好放完误判空闲), 故长句直接压, 不依赖它;
-        //  - 只有 短句(说话<阈值) 才跳过压缩省 ~2s 首音。
         boolean backlog = !reservation.previous().isDone();
         long speakingMs = translateStart - speechStartAtMs;
         boolean isCompressTarget = Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang)
@@ -491,12 +313,10 @@ public class RealtimeInterpretationFacade {
 
         String translated;
         try {
-            Long userId = sessionService.getSession(sessionId)
-                    .map(InterpretationSession::getUserId)
-                    .orElse(1L);
+            Long userId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L);
             translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress);
         } catch (Exception e) {
-            log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}, {}→{}", sessionId, sourceLang, targetLang, e);
+            log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}", sessionId, e);
             completeTtsReservation(reservation, "translate_failed");
             return;
         }
@@ -521,7 +341,7 @@ public class RealtimeInterpretationFacade {
 
         TranslationResultCallback onTranslated = sessionTranslatedCallbackMap.get(sessionId);
         if (onTranslated != null && isPipelineActive(sessionId, "before_translated_callback")) {
-            onTranslated.accept(text, translated, sourceLang, targetLang, speakerId, speakerResolution.getPersonName());
+            onTranslated.accept(text, translated, sourceLang, targetLang, speakerId, speakerName);
         }
 
         if (!isPipelineActive(sessionId, "before_tts_queue")) {
@@ -533,16 +353,15 @@ public class RealtimeInterpretationFacade {
         final String finalTargetLang = targetLang;
         final long ttsSequence = reservation.sequence();
         final String ttsTaskId = reservation.taskId();
+        final double ttsSpeed = resolveTtsSpeed(targetLang);
+        final int ttsSampleRate = cartesiaProperties.getTts().getSampleRate();
 
         log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, textLen={}, voiceId={}, prevDone={}",
                 sessionId, ttsTaskId, ttsSequence, finalTranslated.length(), resolvedVoiceId, reservation.previous().isDone());
 
-        final double ttsSpeed = resolveTtsSpeed(targetLang);
-
         BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
-        final AtomicLong firstChunkGenMs = new AtomicLong(0);  // 首块"生成"时刻：度量 生成→实际发送 的排队等待
-        final AtomicLong totalPcmBytes = new AtomicLong(0);     // 整句 TTS PCM 字节累计：算真实音频时长
-        final int ttsSampleRate = cartesiaProperties.getTts().getSampleRate();
+        final AtomicLong firstChunkGenMs = new AtomicLong(0);
+        final AtomicLong totalPcmBytes = new AtomicLong(0);
 
         CompletableFuture.runAsync(() -> {
             if (!isPipelineActive(sessionId, "before_tts_synth")) {
@@ -553,11 +372,8 @@ public class RealtimeInterpretationFacade {
             AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
             AtomicLong chunkCounter = new AtomicLong(0);
             ttsService.synthesizeStream(
-                    resolvedVoiceId,
-                    finalTranslated,
-                    cartesiaProperties.getTts().getSampleRate(),
-                    ttsSpeed,
-                    cartesiaLanguage(finalTargetLang),
+                    resolvedVoiceId, finalTranslated, cartesiaProperties.getTts().getSampleRate(),
+                    ttsSpeed, cartesiaLanguage(finalTargetLang),
                     pcm -> {
                         if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)) {
                             int chunkIndex = Math.toIntExact(chunkCounter.getAndIncrement());
@@ -567,10 +383,8 @@ public class RealtimeInterpretationFacade {
                                 firstChunkGenMs.set(firstChunkMs);
                                 log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, costMs={}, bytes={}",
                                         sessionId, ttsTaskId, ttsSequence, firstChunkMs - ttsStart, pcm.length);
-                                // 端到端(服务端口径)：该句开始被收音 → 该句该语言 TTS 首音从服务器发出
                                 log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
                                         sessionId, finalTargetLang, firstChunkMs - speechStartAtMs, finalTranslated.length());
-                                // 分段耗时：asr(含说话时长+静音判定) / 翻译 / 排队 / TTS首音(生成口径)；带 taskId/sequence 便于按句去重
                                 log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, taskId={}, sequence={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
                                         sessionId, ttsTaskId, ttsSequence, finalTargetLang,
                                         translateStart - speechStartAtMs,
@@ -587,10 +401,8 @@ public class RealtimeInterpretationFacade {
                         try {
                             log.info("[RealtimeInterpretationFacade] TTS synth complete, sessionId={}, taskId={}, sequence={}, chunks={}, costMs={}",
                                     sessionId, ttsTaskId, ttsSequence, chunkCounter.get(), System.currentTimeMillis() - ttsStart);
-                            // 真实音频时长(按 PCM 字节算, 不是字符) + 说话窗口, 用于压缩目标的 时长口径 度量
                             long audioDurationMs = ttsSampleRate > 0
-                                    ? totalPcmBytes.get() * 1000L / ((long) ttsSampleRate * 2L)
-                                    : -1L;
+                                    ? totalPcmBytes.get() * 1000L / ((long) ttsSampleRate * 2L) : -1L;
                             log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, lang={}, audioDurationMs={}, sourceSpeechWindowMs={}, textLen={}",
                                     sessionId, ttsTaskId, finalTargetLang, audioDurationMs,
                                     translateStart - speechStartAtMs, finalTranslated.length());
@@ -605,8 +417,7 @@ public class RealtimeInterpretationFacade {
                         } finally {
                             audioQueue.offer(TTS_END);
                         }
-                    }
-            );
+                    });
         }, TTS_EXECUTOR).exceptionally(ex -> {
             log.error("[RealtimeInterpretationFacade] TTS synth task error, sessionId={}", sessionId, ex);
             audioQueue.offer(TTS_END);
@@ -622,8 +433,7 @@ public class RealtimeInterpretationFacade {
                 while (true) {
                     TtsBufferedChunk chunk = audioQueue.poll(Constants.TTS_STREAM_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                     if (chunk == null) {
-                        log.warn("[RealtimeInterpretationFacade] TTS playback timeout waiting chunk, sessionId={}, timeoutSeconds={}",
-                                sessionId, Constants.TTS_STREAM_TIMEOUT_SECONDS);
+                        log.warn("[RealtimeInterpretationFacade] TTS playback timeout, sessionId={}", sessionId);
                         completeTtsReservation(reservation, "playback_timeout");
                         return;
                     }
@@ -633,19 +443,14 @@ public class RealtimeInterpretationFacade {
                         completeTtsReservation(reservation, "stream_complete");
                         return;
                     }
-
                     if (!isPipelineActive(sessionId, "before_tts_send")) {
                         completeTtsReservation(reservation, "inactive_before_send");
                         return;
                     }
-
                     if (lastChunkTimeNanos > 0) {
                         long chunkGapNanos = chunk.createdAtNanos() - lastChunkTimeNanos;
-                        if (chunkGapNanos > 0) {
-                            sleepUntil(lastSendTimeNanos + chunkGapNanos);
-                        }
+                        if (chunkGapNanos > 0) sleepUntil(lastSendTimeNanos + chunkGapNanos);
                     }
-
                     TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
                     if (onTtsAudio != null) {
                         onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(), speechStartAtMs);
@@ -654,7 +459,6 @@ public class RealtimeInterpretationFacade {
                         firstSentLogged = true;
                         long sentMs = System.currentTimeMillis();
                         long gen = firstChunkGenMs.get();
-                        // 逐句完整归因：说话→首音实际发出, 拆成 说话/翻译(含压缩)/TTS生成/发送排队 各段, 便于定位延迟来源
                         log.info("[RealtimeInterpretationFacade] tts-first-chunk-sent, sessionId={}, taskId={}, sequence={}, captureToSentMs={}, sendQueueWaitMs={}, speakMs={}, translateMs={}, ttsGenMs={}, compressed={}",
                                 sessionId, chunk.taskId(), chunk.sequence(),
                                 sentMs - speechStartAtMs,
@@ -683,9 +487,7 @@ public class RealtimeInterpretationFacade {
     }
 
     private TtsPlaybackReservation reserveTtsPlayback(String sessionId, String targetLang) {
-        long sequence = sessionTtsSequence
-                .computeIfAbsent(sessionId, key -> new AtomicLong(0))
-                .incrementAndGet();
+        long sequence = sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).incrementAndGet();
         String taskId = sessionId + "-" + sequence;
         CompletableFuture<Void> completion = new CompletableFuture<>();
         @SuppressWarnings("unchecked")
@@ -695,24 +497,14 @@ public class RealtimeInterpretationFacade {
             previousHolder[0] = previous != null ? previous : CompletableFuture.completedFuture(null);
             return completion;
         });
-        long queueSize = sessionTtsQueueSize
-                .computeIfAbsent(sessionId, key -> new AtomicLong(0))
-                .incrementAndGet();
+        long queueSize = sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).incrementAndGet();
         if (queueSize > TTS_QUEUE_LIMIT) {
-            log.warn("[RealtimeInterpretationFacade] TTS queue backlog high, keep queue to avoid skip, sessionId={}, queueSize={}, warnLimit={}",
+            log.warn("[RealtimeInterpretationFacade] TTS queue backlog high, sessionId={}, queueSize={}, warnLimit={}",
                     sessionId, queueSize, TTS_QUEUE_LIMIT);
         }
         log.info("[RealtimeInterpretationFacade] TTS order reserved, sessionId={}, lang={}, taskId={}, sequence={}, prevDone={}",
                 sessionId, targetLang, taskId, sequence, previousHolder[0].isDone());
-        return new TtsPlaybackReservation(
-                sessionId,
-                targetLang,
-                taskId,
-                sequence,
-                previousHolder[0],
-                completion,
-                new AtomicBoolean(false)
-        );
+        return new TtsPlaybackReservation(sessionId, targetLang, taskId, sequence, previousHolder[0], completion, new AtomicBoolean(false));
     }
 
     private void completeTtsReservation(TtsPlaybackReservation reservation, String reason) {
@@ -726,87 +518,38 @@ public class RealtimeInterpretationFacade {
 
     private void sleepUntil(long targetTimeNanos) throws InterruptedException {
         long remainingNanos = targetTimeNanos - System.nanoTime();
-        if (remainingNanos > 0) {
-            TimeUnit.NANOSECONDS.sleep(remainingNanos);
-        }
+        if (remainingNanos > 0) TimeUnit.NANOSECONDS.sleep(remainingNanos);
     }
 
     private void decrementTtsQueue(String sessionId) {
         AtomicLong queueSize = sessionTtsQueueSize.get(sessionId);
         if (queueSize != null) {
             long currentSize = queueSize.updateAndGet(value -> Math.max(0, value - 1));
-            log.debug("[RealtimeInterpretationFacade] TTS queue decremented, sessionId={}, queueSize={}",
-                    sessionId, currentSize);
+            log.debug("[RealtimeInterpretationFacade] TTS queue decremented, sessionId={}, queueSize={}", sessionId, currentSize);
         }
-    }
-
-    private void notifySpeakerIdentity(String sessionId, SpeakerIdentityService.SpeakerResolution resolution) {
-        SpeakerIdentityCallback callback = sessionSpeakerIdentityCallbackMap.get(sessionId);
-        if (callback == null || resolution == null) {
-            return;
-        }
-        callback.accept(
-                resolution.getSpeakerId(),
-                resolution.getPersonName(),
-                resolution.getSpeakerProfileId(),
-                resolution.getCartesiaVoiceId(),
-                resolution.getStatus(),
-                resolution.getSource()
-        );
-    }
-
-    private byte[] resolveSpeakerIdentityPcm(String sessionId, String speakerId) {
-        if (isUnknownSpeakerId(speakerId)) {
-            return sessionSpeakerVoiceService.getRecentSessionPcm(sessionId, Constants.SPEAKER_VOICE_IDENTIFY_WINDOW_SECONDS);
-        }
-        return sessionSpeakerVoiceService.getSpeakerAudioPcm(sessionId, speakerId);
-    }
-
-    private boolean isUnknownSpeakerId(String speakerId) {
-        return speakerId != null && Constants.SPEAKER_ID_UNKNOWN.equalsIgnoreCase(speakerId.trim());
     }
 
     private boolean isPipelineActive(String sessionId, String stage) {
         boolean active = sessionService.isSessionActive(sessionId);
-        if (!active) {
-            log.info("[RealtimeInterpretationFacade] skip inactive session pipeline, sessionId={}, stage={}",
-                    sessionId, stage);
-        }
+        if (!active) log.info("[RealtimeInterpretationFacade] skip inactive session pipeline, sessionId={}, stage={}", sessionId, stage);
         return active;
     }
 
     private boolean isCompressionDirection(String sourceLang, String targetLang) {
-        return Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang)
-                && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang);
+        return Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang) && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang);
     }
 
     private long estimateTokens(String text) {
-        if (text == null || text.isBlank()) {
-            return 0L;
-        }
+        if (text == null || text.isBlank()) return 0L;
         return Math.max(1L, Math.round(text.length() / 2.0));
     }
 
     private record TtsBufferedChunk(
-            byte[] pcm,
-            String lang,
-            String taskId,
-            long sequence,
-            int chunkIndex,
-            long createdAtNanos
-    ) {
-    }
+            byte[] pcm, String lang, String taskId, long sequence, int chunkIndex, long createdAtNanos) {}
 
     private record TtsPlaybackReservation(
-            String sessionId,
-            String lang,
-            String taskId,
-            long sequence,
-            CompletableFuture<Void> previous,
-            CompletableFuture<Void> completion,
-            AtomicBoolean released
-    ) {
-    }
+            String sessionId, String lang, String taskId, long sequence,
+            CompletableFuture<Void> previous, CompletableFuture<Void> completion, AtomicBoolean released) {}
 
     private String resolveVoiceId(String voiceId, String targetLang) {
         if (voiceId != null && !voiceId.isBlank()) return voiceId;
@@ -826,7 +569,6 @@ public class RealtimeInterpretationFacade {
         return cartesiaProperties.getDefaultVoiceIdIndonesian();
     }
 
-    /** 目标语种 → Cartesia TTS language 代码(id/en/zh)。让多语模型按目标语发音(尤其数字), 防数字读成中文。 */
     private String cartesiaLanguage(String targetLang) {
         if (targetLang == null) return null;
         String lower = targetLang.toLowerCase();
@@ -837,27 +579,17 @@ public class RealtimeInterpretationFacade {
     }
 
     private double resolveTtsSpeed(String targetLang) {
-        // 合成阶段一律用自然语速(1.0)：加速只在前端按播放积压驱动(变调 playbackRate, 最高 1.5x)，
-        // 避免无积压时也把译音说得很赶。targetLang 暂保留以便将来按语种微调。
         return Constants.TTS_SPEED_DEFAULT;
     }
 
     // ---------- Cleanup ----------
 
-    /**
-     * 清理指定 WebSocket 会话的资源。
-     */
     public void cleanupSession(String sessionId) {
         log.info("[RealtimeInterpretationFacade] cleanupSession, sessionId={}", sessionId);
+        try { asrService.stopRecognition(sessionId); }
+        catch (Exception e) { log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e); }
         try {
-            asrService.stopRecognition(sessionId);
-        } catch (Exception e) {
-            log.error("[RealtimeInterpretationFacade] stopRecognition failed, sessionId={}", sessionId, e);
-        }
-        try {
-            if (sessionService.isSessionActive(sessionId)) {
-                sessionService.stopSession(sessionId);
-            }
+            if (sessionService.isSessionActive(sessionId)) sessionService.stopSession(sessionId);
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e);
         }
@@ -873,20 +605,14 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
-        sessionSpeakerVoiceService.cleanupSession(sessionId);
-        speakerIdentityService.cleanupSession(sessionId);
-        sessionSpeakerIdentityCallbackMap.remove(sessionId);
+        sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
     }
 
-    /** Returns the resolved personName for a speakerId if already known for this session, null otherwise. */
     public String getCachedSpeakerName(String sessionId, String speakerId) {
-        return speakerIdentityService.getCachedSpeakerName(sessionId, speakerId);
+        return sessionSpeakerNameService.getName(sessionId, speakerId);
     }
 
-    /**
-     * 纯文本翻译（不触发 TTS），供 WebSocket 翻译文本消息使用。
-     */
     public String translateText(String text, String targetLang) {
         if (text == null || text.isBlank()) return "";
         log.info("[RealtimeInterpretationFacade] translateText, textLen={}, targetLang={}", text.length(), targetLang);
@@ -918,10 +644,5 @@ public class RealtimeInterpretationFacade {
     @FunctionalInterface
     public interface TtsAudioCallback {
         void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex, long speechStartAtMs);
-    }
-
-    @FunctionalInterface
-    public interface SpeakerIdentityCallback {
-        void accept(String speakerId, String speakerName, String speakerProfileId, String cartesiaVoiceId, String status, String source);
     }
 }

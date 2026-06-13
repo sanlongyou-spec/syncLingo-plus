@@ -3,7 +3,6 @@
  */
 import { HashRouter, Routes, Route, useLocation } from 'react-router-dom'
 import InterpretationView from './views/InterpretationView'
-import VoiceCloneView from './views/VoiceCloneView'
 import LoginView from './views/LoginView'
 import UserShareView from './views/UserShareView'
 import HistoryView from './views/HistoryView'
@@ -27,11 +26,6 @@ function AuthenticatedWorkspace() {
   return (
     <>
       <InterpretationView />
-      {location.pathname === '/voice-clone' && (
-        <div className="route-overlay" role="dialog" aria-modal="true">
-          <VoiceCloneView />
-        </div>
-      )}
       {location.pathname === '/history' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
           <HistoryView />

@@ -14,7 +14,6 @@ export const STORAGE_KEYS = {
 export const ROUTES = {
   LOGIN: '#/login',
   HOME: '#/',
-  VOICE_CLONE: '#/voice-clone',
   HISTORY: '#/history',
   TERMINOLOGY: '#/terminology',
   TEAMS_BOT: '#/teams-bot',

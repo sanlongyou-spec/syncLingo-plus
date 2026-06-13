@@ -10,9 +10,7 @@ import com.si.backend.dto.UpdateSessionTitleRequest;
 import com.si.backend.vo.InterpretationRecordVo;
 import com.si.backend.vo.InterpretationResultItemVo;
 import com.si.backend.vo.InterpretationSessionVo;
-import com.si.backend.vo.SessionSpeakerVoiceVo;
-import com.si.backend.vo.SessionSpeakerIdentityVo;
-import com.si.backend.vo.VoiceUsageRecordVo;
+import com.si.backend.vo.SessionSpeakerMappingVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +26,7 @@ import org.springframework.web.bind.annotation.*;
 public class InterpretationController {
 
     private final InterpretationFacade facade;
+
     @PostMapping("/start")
     public Result<String> startInterpretation(@Valid @RequestBody StartInterpretationRequest request) {
         log.info("[InterpretationController] startInterpretation start, userId={}, sourceLang={}, targetLang={}",
@@ -141,40 +140,24 @@ public class InterpretationController {
         return Result.ok(records);
     }
 
-    @GetMapping("/voice-usage/{sessionId}")
-    public Result<java.util.List<VoiceUsageRecordVo>> getVoiceUsage(@PathVariable String sessionId) {
-        log.info("[InterpretationController] getVoiceUsage start, sessionId={}", sessionId);
-        java.util.List<VoiceUsageRecordVo> records = facade.getVoiceUsage(sessionId);
-        log.info("[InterpretationController] getVoiceUsage end, sessionId={}, count={}", sessionId, records.size());
-        return Result.ok(records);
-    }
-
-    @GetMapping("/speaker-voices/{sessionId}")
-    public Result<java.util.List<SessionSpeakerVoiceVo>> getSpeakerVoices(@PathVariable String sessionId) {
-        log.info("[InterpretationController] getSpeakerVoices start, sessionId={}", sessionId);
-        java.util.List<SessionSpeakerVoiceVo> speakerVoices = facade.getSpeakerVoices(sessionId);
-        log.info("[InterpretationController] getSpeakerVoices end, sessionId={}, count={}", sessionId, speakerVoices.size());
-        return Result.ok(speakerVoices);
-    }
-
     @GetMapping("/session-speakers/{sessionId}")
-    public Result<java.util.List<SessionSpeakerIdentityVo>> getSessionSpeakerIdentities(@PathVariable String sessionId) {
-        log.info("[InterpretationController] getSessionSpeakerIdentities start, sessionId={}", sessionId);
-        java.util.List<SessionSpeakerIdentityVo> identities = facade.getSessionSpeakerIdentities(sessionId);
-        log.info("[InterpretationController] getSessionSpeakerIdentities end, sessionId={}, count={}", sessionId, identities.size());
-        return Result.ok(identities);
+    public Result<java.util.List<SessionSpeakerMappingVo>> getSessionSpeakerMappings(@PathVariable String sessionId) {
+        log.info("[InterpretationController] getSessionSpeakerMappings start, sessionId={}", sessionId);
+        java.util.List<SessionSpeakerMappingVo> mappings = facade.getSessionSpeakerMappings(sessionId);
+        log.info("[InterpretationController] getSessionSpeakerMappings end, sessionId={}, count={}", sessionId, mappings.size());
+        return Result.ok(mappings);
     }
 
     @PutMapping("/session-speakers/{sessionId}/{speakerId}")
-    public Result<SessionSpeakerIdentityVo> mapSessionSpeaker(
+    public Result<SessionSpeakerMappingVo> mapSessionSpeaker(
             @PathVariable String sessionId,
             @PathVariable String speakerId,
             @Valid @RequestBody MapSessionSpeakerRequest request
     ) {
         log.info("[InterpretationController] mapSessionSpeaker start, sessionId={}, speakerId={}, personName={}",
                 sessionId, speakerId, request.getPersonName());
-        SessionSpeakerIdentityVo identity = facade.mapSessionSpeaker(sessionId, speakerId, request.getPersonName());
+        SessionSpeakerMappingVo mapping = facade.mapSessionSpeaker(sessionId, speakerId, request.getPersonName());
         log.info("[InterpretationController] mapSessionSpeaker end, sessionId={}, speakerId={}", sessionId, speakerId);
-        return Result.ok(identity);
+        return Result.ok(mapping);
     }
 }

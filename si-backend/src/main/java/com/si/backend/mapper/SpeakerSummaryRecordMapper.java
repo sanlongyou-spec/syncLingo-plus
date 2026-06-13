@@ -1,4 +1,4 @@
-package com.si.backend.mapper;
+﻿package com.si.backend.mapper;
 
 import com.si.backend.entity.SpeakerSummaryRecord;
 import org.apache.ibatis.annotations.*;
@@ -40,7 +40,10 @@ public interface SpeakerSummaryRecordMapper {
     @Update("UPDATE speaker_summary SET speaker_name = #{speakerName}, summary = #{summary} WHERE id = #{id}")
     int updateEditableFields(SpeakerSummaryRecord record);
 
-    /** Latest summary record for a given speaker within a session — one summary per person. */
+    @Update("UPDATE speaker_summary SET speaker_name = #{speakerName} WHERE session_id = #{sessionId} AND speaker_id = #{speakerId}")
+    int updateSpeakerName(@Param("sessionId") String sessionId, @Param("speakerId") String speakerId, @Param("speakerName") String speakerName);
+
+    /** Latest summary record for a given speaker within a session -- one summary per person. */
     @Select("SELECT * FROM speaker_summary WHERE session_id = #{sessionId} AND speaker_name = #{speakerName} ORDER BY id DESC LIMIT 1")
     SpeakerSummaryRecord findBySessionIdAndSpeakerName(@Param("sessionId") String sessionId, @Param("speakerName") String speakerName);
 
