@@ -1,5 +1,6 @@
 package com.si.backend.common;
 
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.BindException;
@@ -21,9 +22,16 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(BizException.class)
-    @ResponseStatus(HttpStatus.OK)
-    public Result<Void> handleBizException(BizException e) {
+    public Result<Void> handleBizException(BizException e, HttpServletResponse response) {
         log.warn("[GlobalExceptionHandler] BizException, code={}, message={}", e.getCode(), e.getMessage());
+        int httpStatus = switch (e.getCode()) {
+            case 401 -> 401;
+            case 403 -> 403;
+            case 404 -> 404;
+            case 400 -> 400;
+            default  -> 200;
+        };
+        response.setStatus(httpStatus);
         return Result.fail(e.getCode(), e.getMessage());
     }
 
