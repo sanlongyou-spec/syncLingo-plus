@@ -109,6 +109,9 @@ export default function UserShareView() {
   const audioWsRef = useRef<WebSocket | null>(null)
   const selectedLangRef = useRef<string | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
+  const audioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null)
+  const audioElRef = useRef<HTMLAudioElement | null>(null)
+  const audioGenRef = useRef(0)  // increments on every stopAudio; guards stale decoder callbacks
   const decoderRef = useRef<{ decode: (chunk: unknown) => void; close: () => void } | null>(null)
   const scheduleRef = useRef(0)
   const tsRef = useRef(0)
@@ -152,6 +155,7 @@ export default function UserShareView() {
   }
 
   const stopAudio = useCallback(() => {
+    audioGenRef.current++  // invalidate all in-flight decoder output callbacks
     selectedLangRef.current = null
     audioWsRef.current?.close()
     audioWsRef.current = null
@@ -159,6 +163,9 @@ export default function UserShareView() {
     decoderRef.current = null
     pendingSourcesRef.current.forEach(source => { try { source.stop() } catch { /* ended */ } })
     pendingSourcesRef.current.clear()
+    audioElRef.current?.pause()
+    audioElRef.current = null
+    audioDestRef.current = null
     void audioCtxRef.current?.close()
     audioCtxRef.current = null
     scheduleRef.current = 0
@@ -193,9 +200,21 @@ export default function UserShareView() {
       return
     }
 
-    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: 'playback' })
     audioCtxRef.current = ctx
     void ctx.resume()
+
+    // Route through HTMLAudioElement so Bluetooth speakers are used on iOS/Android.
+    // Web Audio API's ctx.destination routes to low-latency (voice) output which
+    // bypasses Bluetooth; MediaStreamDestination → <audio> uses the media pipeline.
+    const dest = ctx.createMediaStreamDestination()
+    audioDestRef.current = dest
+    const audioEl = new Audio()
+    audioEl.srcObject = dest.stream
+    audioEl.play().catch(() => { /* requires user gesture — already inside click handler */ })
+    audioElRef.current = audioEl
+
+    const myGen = audioGenRef.current  // capture generation for this startAudio call
 
     const handleAudioData = (data: unknown) => {
       const audioData = data as {
@@ -203,6 +222,11 @@ export default function UserShareView() {
         allocationSize: (opt: { planeIndex: number; format: string }) => number
         copyTo: (dest: Float32Array, opt: { planeIndex: number; format: string }) => void
         close: () => void
+      }
+      // Guard: if stopAudio() was called after this startAudio, discard stale callback
+      if (audioGenRef.current !== myGen) {
+        try { audioData.close() } catch { /* already closed */ }
+        return
       }
       try {
         const size = audioData.allocationSize({ planeIndex: 0, format: 'f32-planar' })
@@ -212,7 +236,7 @@ export default function UserShareView() {
         buffer.copyToChannel(samples, 0)
         const source = ctx.createBufferSource()
         source.buffer = buffer
-        source.connect(ctx.destination)
+        source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate
