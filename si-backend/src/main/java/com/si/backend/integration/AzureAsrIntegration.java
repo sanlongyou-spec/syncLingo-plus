@@ -406,7 +406,13 @@ public class AzureAsrIntegration {
             }
             // 2) 逗号/子句标点：同样优先用标点版本
             if (end == NO_SEGMENT && shouldForce(working, lang)) {
-                int cp = findCommaSegmentEnd(detectionText, 0);
+                // 当使用标点版本时，额外限制搜索上界为 safe（原始坐标）。
+                // CT-Transformer 只插入字符，故 punct_pos >= orig_pos；
+                // 任何 punct_pos <= safe 的逗号必然映射到 orig_pos <= safe，
+                // 避免"最后逗号"映射后刚好越界 safe 而错失更早的有效逗号。
+                int cp = punctuated != null
+                        ? findCommaSegmentEnd(detectionText, 0, safe)
+                        : findCommaSegmentEnd(detectionText, 0);
                 if (cp != NO_SEGMENT) {
                     int co = punctuated != null ? mapPunctuatedToOriginal(working, punctuated, cp) : cp;
                     if (co > 0 && co <= safe) {
@@ -522,7 +528,11 @@ public class AzureAsrIntegration {
 
         /** run-on 兜底：返回 [startIndex, len-尾余量) 内"最后一个逗号"之后的位置；无逗号返回 NO_SEGMENT(不切)。 */
         private int findCommaSegmentEnd(String text, int startIndex) {
-            int safeEnd = text.length() - FORCE_TAIL_MARGIN_CHARS;
+            return findCommaSegmentEnd(text, startIndex, Integer.MAX_VALUE);
+        }
+
+        private int findCommaSegmentEnd(String text, int startIndex, int maxDetEnd) {
+            int safeEnd = Math.min(text.length() - FORCE_TAIL_MARGIN_CHARS, maxDetEnd);
             if (safeEnd <= startIndex) {
                 return NO_SEGMENT;
             }

@@ -168,7 +168,11 @@ def simulate(original: str, punctuated: Optional[str]) -> dict:
                     "cut_orig": eo, "cut_text": txt, "safe": safe}
 
     # P2：最后逗号（shouldForce=True 这里固定触发）
-    cp = find_last_comma(det, det_safe_end)
+    # 当使用标点版本时，额外限制搜索上界为 safe（原始坐标）。
+    # CT-Transformer 只插入字符，故 punct_pos >= orig_pos，
+    # 任何 punct_pos <= safe 的逗号必然映射到 orig_pos <= safe。
+    comma_det_end = min(det_safe_end, safe) if punctuated else det_safe_end
+    cp = find_last_comma(det, comma_det_end)
     if cp != NO_SEG:
         co = map_to_original(original, punctuated, cp) if punctuated else cp
         if 0 < co <= safe:
