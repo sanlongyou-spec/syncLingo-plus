@@ -3,15 +3,12 @@ package com.si.backend.facade;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
+import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
-import com.si.backend.service.SessionSpeakerVoiceService;
-import com.si.backend.service.SpeakerIdentityService;
+import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
-import com.si.backend.service.VoiceCloneService;
-import com.si.backend.service.AudioRecordService;
-import com.si.backend.service.VoiceUsageRecordService;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -48,10 +45,7 @@ class RealtimeInterpretationOrderTest {
         InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
         CartesiaProperties cartesiaProperties = new CartesiaProperties();
         InterpretationRecordService recordService = mock(InterpretationRecordService.class);
-        VoiceUsageRecordService usageService = mock(VoiceUsageRecordService.class);
-        VoiceCloneService voiceCloneService = mock(VoiceCloneService.class);
-        SessionSpeakerVoiceService speakerVoiceService = mock(SessionSpeakerVoiceService.class);
-        SpeakerIdentityService speakerIdentityService = mock(SpeakerIdentityService.class);
+        SessionSpeakerNameService speakerNameService = mock(SessionSpeakerNameService.class);
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
@@ -61,10 +55,7 @@ class RealtimeInterpretationOrderTest {
                 sessionService,
                 cartesiaProperties,
                 recordService,
-                usageService,
-                voiceCloneService,
-                speakerVoiceService,
-                speakerIdentityService,
+                speakerNameService,
                 audioRecordService
         );
 
@@ -74,7 +65,6 @@ class RealtimeInterpretationOrderTest {
         session.setUserId(1L);
         when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
         when(sessionService.isSessionActive(sessionId)).thenReturn(true);
-        when(voiceCloneService.isVoiceUsable(anyString())).thenReturn(true);
 
         CountDownLatch firstTranslationStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstTranslation = new CountDownLatch(1);
@@ -116,19 +106,14 @@ class RealtimeInterpretationOrderTest {
             }
         });
 
-        SpeakerIdentityService.SpeakerResolution speaker = SpeakerIdentityService.SpeakerResolution.builder()
-                .sessionId(sessionId)
-                .speakerId("speaker-1")
-                .build();
-
         Thread first = new Thread(() -> facade.translateAndStreamTts(
-                "first", "zh-CN", "id", null, sessionId, "speaker-1", speaker, System.currentTimeMillis()
+                "first", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
         ));
         first.start();
         assertTrue(firstTranslationStarted.await(5, TimeUnit.SECONDS));
 
         facade.translateAndStreamTts(
-                "second", "zh-CN", "id", null, sessionId, "speaker-1", speaker, System.currentTimeMillis()
+                "second", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
         );
         releaseFirstTranslation.countDown();
         first.join(5_000);
