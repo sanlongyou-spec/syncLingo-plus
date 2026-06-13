@@ -239,7 +239,35 @@ public class SpeakerSummaryService {
     }
 
     public List<SpeakerSummaryRecord> getBySession(String sessionId) {
-        return mapper.findBySessionId(sessionId);
+        List<SpeakerSummaryRecord> records = mapper.findBySessionId(sessionId);
+        for (SpeakerSummaryRecord record : records) {
+            if (isUnusableSummary(record.getSummary())
+                    && record.getTextSnippet() != null
+                    && !record.getTextSnippet().isBlank()) {
+                repairMojibake(record);
+            }
+        }
+        return records;
+    }
+
+    private void repairMojibake(SpeakerSummaryRecord record) {
+        String speakerName = record.getSpeakerName() != null && !record.getSpeakerName().isBlank()
+                ? record.getSpeakerName()
+                : (record.getSpeakerId() != null ? record.getSpeakerId() : "未知发言人");
+        try {
+            log.warn("[SpeakerSummaryService] mojibake detected, repairing in-place, id={}, speaker={}",
+                    record.getId(), speakerName);
+            String raw = llmIntegration.summarizeSpeakerSegment(speakerName, record.getTextSnippet(), null);
+            if (!isUnusableSummary(raw)) {
+                record.setSummary(raw);
+                mapper.updateSummary(record);
+                contentEmbeddingService.asyncEmbedSpeakerSummary(
+                        record.getId(), record.getSessionId(), speakerName, record.getTitle(), raw);
+                log.info("[SpeakerSummaryService] mojibake repaired, id={}", record.getId());
+            }
+        } catch (Exception e) {
+            log.warn("[SpeakerSummaryService] mojibake repair failed, id={}", record.getId(), e);
+        }
     }
 
     public SpeakerSummaryRecord update(Long id, String speakerName, String summary) {
