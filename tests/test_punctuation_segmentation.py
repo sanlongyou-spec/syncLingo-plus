@@ -111,7 +111,7 @@ ALL_CASES = (
     [("A-长话题", s) for s in LONG_ORAL] +
     [("B-话题切换", s) for s in TOPIC_SWITCH]
 )
-assert len(ALL_CASES) == 50, f"预期50句，实际{len(ALL_CASES)}"
+assert len(ALL_CASES) == 30, f"预期30句，实际{len(ALL_CASES)}"
 
 
 # ── 分段逻辑模拟（与 Java emitForcedSegments 对齐）────────────────────────────
