@@ -86,7 +86,7 @@ export default function InterpretationView() {
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
   const [currentSource, setCurrentSource] = useState('')
   const [currentTranslated, setCurrentTranslated] = useState('')
-  const [voiceId, setVoiceId] = useState<string | null>(null)
+  const [voiceId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
   const [currentSpeakerId, setCurrentSpeakerId] = useState('')
