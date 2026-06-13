@@ -138,6 +138,8 @@ public class PreMeetingService {
             int fontSize) {}
 
     private final ConcurrentHashMap<String, PreMeetingDoc> store = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> storeTimes = new ConcurrentHashMap<>();
+    private static final long STORE_TTL_MS = 4L * 60 * 60 * 1000; // 4 hours
 
     @PostConstruct
     public void initTable() {
@@ -546,18 +548,33 @@ public class PreMeetingService {
         return usageMapper.findDailyUsage(userId, since);
     }
 
+    private static final int ZIP_MAX_ENTRIES = 50;
+    private static final long ZIP_MAX_ENTRY_BYTES = 50L * 1024 * 1024;   // 50 MB per entry
+    private static final long ZIP_MAX_TOTAL_BYTES = 200L * 1024 * 1024;  // 200 MB total
+
     private List<PreMeetingFileVo> processZip(InputStream in) throws IOException {
         List<PreMeetingFileVo> result = new ArrayList<>();
+        int entryCount = 0;
+        long totalBytes = 0;
         try (ZipInputStream zis = new ZipInputStream(in)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (entry.isDirectory()) { zis.closeEntry(); continue; }
+                if (++entryCount > ZIP_MAX_ENTRIES) {
+                    log.warn("[PreMeetingService] zip entry count exceeded {}, aborting", ZIP_MAX_ENTRIES);
+                    break;
+                }
                 String name = entry.getName();
                 String baseName = name.contains("/") ? name.substring(name.lastIndexOf('/') + 1) : name;
                 String ext = extension(baseName).toLowerCase();
                 if (!Set.of("doc", "docx", "pdf").contains(ext)) { zis.closeEntry(); continue; }
 
-                byte[] bytes = zis.readAllBytes();
+                byte[] bytes = readZipEntry(zis, ZIP_MAX_ENTRY_BYTES);
+                totalBytes += bytes.length;
+                if (totalBytes > ZIP_MAX_TOTAL_BYTES) {
+                    log.warn("[PreMeetingService] zip total decompressed size exceeded {} bytes, aborting", ZIP_MAX_TOTAL_BYTES);
+                    break;
+                }
                 try {
                     String text = extractText(new ByteArrayInputStream(bytes), ext);
                     String fileId = storeDoc(baseName, ext, text, bytes);
@@ -572,6 +589,21 @@ public class PreMeetingService {
             }
         }
         return result;
+    }
+
+    private static byte[] readZipEntry(ZipInputStream zis, long maxBytes) throws IOException {
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        long read = 0;
+        int n;
+        while ((n = zis.read(chunk)) != -1) {
+            read += n;
+            if (read > maxBytes) {
+                throw new IOException("ZIP entry exceeds max size " + maxBytes + " bytes");
+            }
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
     }
 
     private List<String> buildAttendanceSectionLines(PreMeetingAttendanceVo attendance) {
@@ -2197,7 +2229,25 @@ public class PreMeetingService {
     private String storeDoc(String fileName, String ext, String text, byte[] originalBytes) {
         String fileId = UUID.randomUUID().toString();
         store.put(fileId, new PreMeetingDoc(fileName, ext, text, originalBytes));
+        storeTimes.put(fileId, System.currentTimeMillis());
         return fileId;
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 30 * 60 * 1000) // every 30 min
+    public void evictExpiredDocs() {
+        long cutoff = System.currentTimeMillis() - STORE_TTL_MS;
+        int removed = 0;
+        for (java.util.Iterator<java.util.Map.Entry<String, Long>> it = storeTimes.entrySet().iterator(); it.hasNext(); ) {
+            java.util.Map.Entry<String, Long> e = it.next();
+            if (e.getValue() < cutoff) {
+                store.remove(e.getKey());
+                it.remove();
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            log.info("[PreMeetingService] evictExpiredDocs removed={}", removed);
+        }
     }
 
     /**

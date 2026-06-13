@@ -1,8 +1,10 @@
 package com.si.backend.service;
 
 import com.si.backend.common.BizException;
+import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.Meeting;
+import com.si.backend.util.AuthContext;
 import com.si.backend.entity.PersistentPreMeetingFile;
 import com.si.backend.mapper.MeetingMapper;
 import com.si.backend.mapper.PersistentPreMeetingFileMapper;
@@ -92,12 +94,12 @@ public class MeetingService {
     }
 
     public MeetingVo getMeeting(Long meetingId) {
-        Meeting meeting = requireMeeting(meetingId);
+        Meeting meeting = requireOwner(meetingId);
         return toVo(meeting, fileMapper.findByMeetingId(meetingId));
     }
 
     public MeetingFileVo uploadFile(Long meetingId, MultipartFile file) throws IOException {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         String originalName = file.getOriginalFilename();
         if (originalName == null || originalName.isBlank()) originalName = "unnamed";
         String ext = extension(originalName).toLowerCase();
@@ -118,12 +120,12 @@ public class MeetingService {
     }
 
     public List<MeetingFileVo> getFiles(Long meetingId) {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         return fileMapper.findByMeetingId(meetingId).stream().map(this::toFileVo).toList();
     }
 
     public void deleteFile(Long meetingId, Long fileId) {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         PersistentPreMeetingFile file = fileMapper.findById(fileId);
         if (file == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         if (!meetingId.equals(file.getMeetingId())) {
@@ -164,7 +166,7 @@ public class MeetingService {
     }
 
     public String getMeetingNoticeText(Long meetingId) {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
         PersistentPreMeetingFile notice = files.stream()
                 .filter(file -> file.getFileName() != null
@@ -179,17 +181,18 @@ public class MeetingService {
     }
 
     public void saveAttendance(Long meetingId, String attendanceJson) {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
     }
 
     public void setMeetingUrl(Long meetingId, String url) {
-        requireMeeting(meetingId);
+        requireOwner(meetingId);
         meetingMapper.updateMeetingUrl(meetingId, url);
     }
 
     @Transactional
     public void deleteMeeting(Long meetingId) {
+        requireOwner(meetingId);
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
 
         // Collect the meeting's sessions BEFORE soft-deleting them, to clean their per-session data.
@@ -222,6 +225,16 @@ public class MeetingService {
     private Meeting requireMeeting(Long meetingId) {
         Meeting m = meetingMapper.findById(meetingId);
         if (m == null) throw BizException.of(ErrorCode.NOT_FOUND, "会议不存在");
+        return m;
+    }
+
+    private Meeting requireOwner(Long meetingId) {
+        Meeting m = requireMeeting(meetingId);
+        Long authId = AuthContext.currentUserId();
+        if (authId != null && !authId.equals(m.getUserId())) {
+            log.warn("[MeetingService] ownership violation, meetingId={}, ownerId={}, authId={}", meetingId, m.getUserId(), authId);
+            throw BizException.of(Constants.HTTP_UNAUTHORIZED, "无权操作该会议");
+        }
         return m;
     }
 

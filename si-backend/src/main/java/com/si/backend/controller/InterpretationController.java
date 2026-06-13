@@ -1,5 +1,7 @@
 package com.si.backend.controller;
 
+import com.si.backend.common.BizException;
+import com.si.backend.common.Constants;
 import com.si.backend.common.Result;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.dto.SaveInterpretationResultRequest;
@@ -7,6 +9,7 @@ import com.si.backend.dto.MapSessionSpeakerRequest;
 import com.si.backend.dto.StartInterpretationRequest;
 import com.si.backend.dto.StopInterpretationRequest;
 import com.si.backend.dto.UpdateSessionTitleRequest;
+import com.si.backend.util.AuthContext;
 import com.si.backend.vo.InterpretationRecordVo;
 import com.si.backend.vo.InterpretationResultItemVo;
 import com.si.backend.vo.InterpretationSessionVo;
@@ -26,6 +29,13 @@ import org.springframework.web.bind.annotation.*;
 public class InterpretationController {
 
     private final InterpretationFacade facade;
+
+    private void requireSelf(Long requestedUserId) {
+        Long authId = AuthContext.currentUserId();
+        if (authId != null && !authId.equals(requestedUserId)) {
+            throw BizException.of(Constants.HTTP_UNAUTHORIZED, "无权访问其他用户的数据");
+        }
+    }
 
     @PostMapping("/start")
     public Result<String> startInterpretation(@Valid @RequestBody StartInterpretationRequest request) {
@@ -65,6 +75,7 @@ public class InterpretationController {
             @PathVariable Long userId,
             @RequestParam(required = false) String keyword
     ) {
+        requireSelf(userId);
         log.info("[InterpretationController] getUserSessions start, userId={}, keyword={}", userId, keyword);
         java.util.List<InterpretationSessionVo> sessions = facade.searchUserSessions(userId, keyword);
         log.info("[InterpretationController] getUserSessions end, userId={}, count={}", userId, sessions.size());
@@ -77,6 +88,7 @@ public class InterpretationController {
             @RequestParam Long userId,
             @Valid @RequestBody UpdateSessionTitleRequest request
     ) {
+        requireSelf(userId);
         log.info("[InterpretationController] updateTitle start, sessionId={}, userId={}", sessionId, userId);
         facade.updateTitle(sessionId, userId, request.getTitle());
         log.info("[InterpretationController] updateTitle end, sessionId={}, userId={}", sessionId, userId);
@@ -85,6 +97,7 @@ public class InterpretationController {
 
     @DeleteMapping("/{sessionId}")
     public Result<Void> deleteSession(@PathVariable String sessionId, @RequestParam Long userId) {
+        requireSelf(userId);
         log.info("[InterpretationController] deleteSession start, sessionId={}, userId={}", sessionId, userId);
         facade.deleteSession(sessionId, userId);
         log.info("[InterpretationController] deleteSession end, sessionId={}, userId={}", sessionId, userId);
