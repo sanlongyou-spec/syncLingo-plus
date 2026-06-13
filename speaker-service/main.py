@@ -78,7 +78,6 @@ async def lifespan(app: FastAPI):
                 model=sherpa_onnx.OfflinePunctuationModelConfig(
                     ct_transformer=str(punct_path),
                 ),
-                num_threads=PUNCT_NUM_THREADS,
             )
             punct_model = sherpa_onnx.OfflinePunctuation(punct_cfg)
             # 预热：第一次推理会触发 ONNX 图编译，后续正常
