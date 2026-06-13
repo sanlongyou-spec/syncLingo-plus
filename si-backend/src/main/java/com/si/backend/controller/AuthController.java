@@ -27,4 +27,12 @@ public class AuthController {
         log.info("[AuthController] login end, username={}, userId={}", request.getUsername(), response.getUserId());
         return Result.ok(response);
     }
+
+    @PostMapping("/register")
+    public Result<LoginResponse> register(@Valid @RequestBody LoginRequest request) {
+        log.info("[AuthController] register start, username={}", request.getUsername());
+        LoginResponse response = facade.register(request);
+        log.info("[AuthController] register end, username={}, userId={}", request.getUsername(), response.getUserId());
+        return Result.ok(response);
+    }
 }

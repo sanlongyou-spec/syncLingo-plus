@@ -20,4 +20,11 @@ public class AuthFacade {
         log.info("[AuthFacade] login end, username={}, userId={}", request.getUsername(), response.getUserId());
         return response;
     }
+
+    public LoginResponse register(LoginRequest request) {
+        log.info("[AuthFacade] register start, username={}", request.getUsername());
+        LoginResponse response = authService.register(request.getUsername(), request.getPassword());
+        log.info("[AuthFacade] register end, username={}, userId={}", request.getUsername(), response.getUserId());
+        return response;
+    }
 }
