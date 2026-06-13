@@ -1,7 +1,3 @@
-/**
- * HTTP 客户端
- * 所有请求通过此文件发出，禁止在组件中直接使用 axios
- */
 import axios from 'axios'
 import { API_DEFAULTS } from './constants'
 
@@ -11,6 +7,14 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+})
+
+client.interceptors.request.use(config => {
+  const token = localStorage.getItem('si_token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
 })
 
 export default client

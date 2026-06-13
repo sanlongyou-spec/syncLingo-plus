@@ -177,10 +177,6 @@ public class SpeakerSummaryService {
         return new String[]{null, trimmed};
     }
 
-    private String summarizeSpeakerUntilAccepted(String speakerName, String text) throws Exception {
-        return summarizeSpeakerUntilAccepted(speakerName, text, null);
-    }
-
     private String summarizeSpeakerUntilAccepted(String speakerName, String text, String requirements) throws Exception {
         int attempt = 1;
         String raw = llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements);
@@ -243,9 +239,7 @@ public class SpeakerSummaryService {
     }
 
     public List<SpeakerSummaryRecord> getBySession(String sessionId) {
-        List<SpeakerSummaryRecord> records = mapper.findBySessionId(sessionId);
-        records.forEach(this::refreshUnusableRecord);
-        return records;
+        return mapper.findBySessionId(sessionId);
     }
 
     public SpeakerSummaryRecord update(Long id, String speakerName, String summary) {
@@ -263,29 +257,4 @@ public class SpeakerSummaryService {
         return record;
     }
 
-    private void refreshUnusableRecord(SpeakerSummaryRecord record) {
-        if (record == null || !isUnusableSummary(record.getSummary())) {
-            return;
-        }
-        if (record.getTextSnippet() == null || record.getTextSnippet().isBlank()) {
-            log.warn("[SpeakerSummaryService] skip unusable summary refresh, missing textSnippet, id={}", record.getId());
-            return;
-        }
-        String speakerName = record.getSpeakerName() != null && !record.getSpeakerName().isBlank()
-                ? record.getSpeakerName()
-                : record.getSpeakerId();
-        try {
-            log.warn("[SpeakerSummaryService] persisted speaker summary is unusable, regenerating, id={}, sessionId={}",
-                    record.getId(), record.getSessionId());
-            String raw = summarizeSpeakerUntilAccepted(speakerName, record.getTextSnippet());
-            String[] parts = parseTitleAndContent(raw);
-            record.setTitle(parts[0]);
-            record.setSummary(parts[1]);
-            mapper.updateSummary(record);
-            contentEmbeddingService.asyncEmbedSpeakerSummary(
-                    record.getId(), record.getSessionId(), speakerName, parts[0], parts[1]);
-        } catch (Exception e) {
-            log.warn("[SpeakerSummaryService] persisted speaker summary refresh failed, id={}", record.getId(), e);
-        }
-    }
 }

@@ -82,8 +82,8 @@ public class AdminController {
     private void ensureAuthorized(String secret) {
         String configured = adminProperties.getApiSecret();
         if (configured == null || configured.isBlank()) {
-            log.warn("[AdminController] app.admin.api-secret is not set; admin endpoint is unprotected.");
-            return;
+            log.error("[AdminController] app.admin.api-secret is not configured — all admin requests rejected.");
+            throw BizException.of(Constants.HTTP_UNAUTHORIZED, "Admin 接口未配置 api-secret，拒绝访问");
         }
         if (!configured.equals(secret)) {
             log.warn("[AdminController] unauthorized admin request.");

@@ -303,8 +303,8 @@ public class TeamsBotQueryService {
     private void ensureAuthorized(String apiSecret) {
         String configuredSecret = normalize(teamsBotProperties.getApiSecret());
         if (configuredSecret.isBlank()) {
-            log.warn("[TeamsBotQueryService] apiSecret is not configured; Teams Bot query endpoint is running without shared-secret protection.");
-            return;
+            log.error("[TeamsBotQueryService] apiSecret is not configured — all bot query requests rejected.");
+            throw BizException.of(Constants.HTTP_UNAUTHORIZED, "Bot 查询接口未配置 api-secret，拒绝访问");
         }
         if (!configuredSecret.equals(apiSecret)) {
             log.warn("[TeamsBotQueryService] unauthorized Teams Bot query request.");

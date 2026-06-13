@@ -11,9 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.Base64;
+import com.si.backend.util.JwtUtil;
 
 @Slf4j
 @Service
@@ -37,13 +35,7 @@ public class AuthService {
     }
 
     private String createToken(SiUser user) {
-        long expiresAt = Instant.now().toEpochMilli() + jwtProperties.getExpirationMs();
-        String payload = user.getId() + ":" + user.getUsername() + ":" + expiresAt;
-        String encodedPayload = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
         String secret = jwtProperties.getSecret() == null ? "" : jwtProperties.getSecret();
-        String signature = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString((encodedPayload + ":" + secret).getBytes(StandardCharsets.UTF_8));
-        return "si." + encodedPayload + "." + signature;
+        return JwtUtil.createToken(user.getId(), user.getUsername(), jwtProperties.getExpirationMs(), secret);
     }
 }

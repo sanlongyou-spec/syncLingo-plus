@@ -12,6 +12,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -123,6 +124,11 @@ public class MeetingService {
 
     public void deleteFile(Long meetingId, Long fileId) {
         requireMeeting(meetingId);
+        PersistentPreMeetingFile file = fileMapper.findById(fileId);
+        if (file == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        if (!meetingId.equals(file.getMeetingId())) {
+            throw BizException.of(com.si.backend.common.Constants.HTTP_UNAUTHORIZED, "文件不属于该会议");
+        }
         fileMapper.deleteById(fileId);
         contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_SUMMARY, fileId);
         contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_CONTENT, fileId);
@@ -182,6 +188,7 @@ public class MeetingService {
         meetingMapper.updateMeetingUrl(meetingId, url);
     }
 
+    @Transactional
     public void deleteMeeting(Long meetingId) {
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
 

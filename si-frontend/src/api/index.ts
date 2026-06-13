@@ -6,10 +6,6 @@ import type {
   InterpretationResultItem,
   PublicSessionInfo,
   SaveInterpretationResultParams,
-  CloneVoiceParams,
-  CloneVoiceResponse,
-  UserVoice,
-  SpeakerIdentity,
   SessionSpeakerIdentity,
   Terminology,
   AsrHotword,
@@ -123,37 +119,8 @@ export const deleteInterpretationSession = (sessionId: string, userId: number): 
 export const translateText = (text: string, sourceLang: string, targetLang: string, userId = 1): Promise<Result<string>> =>
   client.post<Result<string>>('/api/translate', { text, sourceLang, targetLang, userId }).then(r => r.data)
 
-export const cloneVoice = (params: CloneVoiceParams): Promise<Result<CloneVoiceResponse>> =>
-  client.post<Result<CloneVoiceResponse>>('/api/voice/clone', params).then(r => r.data)
-
-export const getUserVoice = (userId: number): Promise<Result<UserVoice | null>> =>
-  client.get<Result<UserVoice | null>>(`/api/voice/${userId}`).then(r => r.data)
-
-export const deleteUserVoice = (userId: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/voice/${userId}`).then(r => r.data)
-
-export const getSpeakerIdentities = (): Promise<Result<SpeakerIdentity[]>> =>
-  client.get<Result<SpeakerIdentity[]>>('/api/voice/speaker-identities').then(r => r.data)
-
-export const saveSpeakerIdentity = (params: SpeakerIdentity): Promise<Result<SpeakerIdentity>> => {
-  if (params.id) {
-    return client.put<Result<SpeakerIdentity>>(`/api/voice/speaker-identities/${params.id}`, params).then(r => r.data)
-  }
-  return client.post<Result<SpeakerIdentity>>('/api/voice/speaker-identities', params).then(r => r.data)
-}
-
-export const deleteSpeakerIdentity = (id: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/voice/speaker-identities/${id}`).then(r => r.data)
-
 export const getSessionSpeakerIdentities = (sessionId: string): Promise<Result<SessionSpeakerIdentity[]>> =>
   client.get<Result<SessionSpeakerIdentity[]>>(`/api/interpretation/session-speakers/${sessionId}`).then(r => r.data)
-
-export const enrollSpeakerProfile = (
-  id: number,
-  audioBase64: string,
-  locale: string,
-): Promise<Result<SpeakerIdentity>> =>
-  client.post<Result<SpeakerIdentity>>(`/api/voice/speaker-identities/${id}/enroll`, { audioBase64, locale }).then(r => r.data)
 
 export const mapSessionSpeakerIdentity = (
   sessionId: string,

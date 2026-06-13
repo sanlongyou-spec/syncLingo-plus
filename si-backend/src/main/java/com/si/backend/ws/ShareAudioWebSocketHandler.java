@@ -14,8 +14,8 @@ import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -252,12 +252,14 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         }
     }
 
-    /** 单个订阅连接：无界队列 + 独立发送线程，严格不丢音频（慢客户端只在自己队列堆积）。 */
+    /** 单个订阅连接：有界队列（500帧≈10s音频）+ 独立发送线程，慢客户端队列满时断开连接。 */
+    private static final int MAX_QUEUE_PACKETS = 500;
+
     private static final class AudioSubscriber implements Runnable {
         private final WebSocketSession session;
         private final String sessionId;
         private final String lang;
-        private final BlockingQueue<byte[]> queue = new LinkedBlockingQueue<>();
+        private final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<>(MAX_QUEUE_PACKETS);
         private final AtomicBoolean running = new AtomicBoolean(true);
 
         private AudioSubscriber(WebSocketSession session, String sessionId, String lang) {
@@ -268,11 +270,11 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         }
 
         private void offer(byte[] packet) {
-            if (!running.get()) {
-                return;
+            if (!running.get()) return;
+            if (!queue.offer(packet)) {
+                // Queue full — slow client is too far behind; disconnect it to reclaim resources
+                stop();
             }
-            // 无界队列：永不丢包。慢客户端只是在自己的队列里堆积；真正掉线由发送线程的 IOException 退出处理。
-            queue.offer(packet);
         }
 
         private void stop() {

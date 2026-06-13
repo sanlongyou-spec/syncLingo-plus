@@ -2,6 +2,7 @@ package com.si.backend.ws;
 
 import com.si.backend.common.Constants;
 import com.si.backend.config.JwtProperties;
+import com.si.backend.util.JwtUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -36,15 +37,16 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
 
         if (query != null && query.contains(Constants.WS_QUERY_PARAM_TOKEN + "=")) {
             String token = parseToken(query);
-            if (token != null && isValidToken(token)) {
+            String secret = jwtProperties.getSecret() == null ? "" : jwtProperties.getSecret();
+            if (token != null && JwtUtil.verifyAndParseUserId(token, secret) != null) {
                 attributes.put("token", token);
                 log.info("[JwtHandshakeInterceptor] beforeHandshake, token validated, uri={}", request.getURI());
                 return true;
             }
         }
 
-        log.info("[JwtHandshakeInterceptor] beforeHandshake, allowing without auth, uri={}", request.getURI());
-        return true;
+        log.warn("[JwtHandshakeInterceptor] beforeHandshake, rejected — missing or invalid token, uri={}", request.getURI());
+        return false;
     }
 
     @Override
@@ -67,19 +69,4 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
         return null;
     }
 
-    private boolean isValidToken(String token) {
-        try {
-            if (token.startsWith("Bearer ")) {
-                token = token.substring(7);
-            }
-            String[] parts = token.split("\\.");
-            if (parts.length != 3) {
-                return false;
-            }
-            return true;
-        } catch (Exception e) {
-            log.warn("[JwtHandshakeInterceptor] isValidToken error", e);
-            return false;
-        }
-    }
 }
