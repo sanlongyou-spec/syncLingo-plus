@@ -301,6 +301,7 @@ export default function HistoryView() {
   const [recipientSearch, setRecipientSearch] = useState('')
   const [showRecipientDropdown, setShowRecipientDropdown] = useState(false)
   const recipientPickerRef = useRef<HTMLDivElement>(null)
+  const recipientSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ── Speaker tab ─────────────────────────────────────────
   const [speakerRecords, setSpeakerRecords] = useState<SpeakerSummaryRecord[]>([])
@@ -678,7 +679,10 @@ export default function HistoryView() {
       next.has(email) ? next.delete(email) : next.add(email)
       const list = Array.from(next)
       localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(list))
-      saveSummaryRecipients(list).catch(() => {})
+      if (recipientSaveTimerRef.current) clearTimeout(recipientSaveTimerRef.current)
+      recipientSaveTimerRef.current = setTimeout(() => {
+        saveSummaryRecipients(list).catch(() => {})
+      }, 300)
       return next
     })
   }

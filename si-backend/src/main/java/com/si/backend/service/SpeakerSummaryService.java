@@ -16,6 +16,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -36,12 +39,21 @@ public class SpeakerSummaryService {
     private static final int MAX_SPEAKER_TEXT_CHARS = 100000;
     private static final String TITLE_PREFIX = "\u6807\u9898";
 
+    private static final long NOTIFICATION_RETRY_DELAY_S = 10L;
+
     private final LlmIntegration llmIntegration;
     private final SpeakerSummaryRecordMapper mapper;
     private final ContentEmbeddingService contentEmbeddingService;
     private final InterpretationSessionMapper interpretationSessionMapper;
     private final MeetingBotIntegration meetingBotIntegration;
     private final UserPreferenceService userPreferenceService;
+
+    private final ScheduledExecutorService notifyRetryExecutor =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "notify-retry");
+                t.setDaemon(true);
+                return t;
+            });
 
     @PostConstruct
     public void initTable() {
@@ -307,10 +319,29 @@ public class SpeakerSummaryService {
                 return;
             }
             String content = buildAutoSendContent(speakerName, title, summary);
-            meetingBotIntegration.sendNotification(content, recipients);
-            log.info("[SpeakerSummaryService] auto-send done, sessionId={}, speaker={}, recipientCount={}", sessionId, speakerName, recipients.size());
+            trySendWithRetry(content, recipients, sessionId, speakerName, false);
         } catch (Exception e) {
             log.warn("[SpeakerSummaryService] auto-send failed, sessionId={}, speaker={}: {}", sessionId, speakerName, e.getMessage());
+        }
+    }
+
+    private void trySendWithRetry(String content, List<String> recipients,
+                                   String sessionId, String speakerName, boolean isRetry) {
+        try {
+            meetingBotIntegration.sendNotification(content, recipients);
+            log.info("[SpeakerSummaryService] auto-send done, sessionId={}, speaker={}, recipientCount={}, retry={}",
+                    sessionId, speakerName, recipients.size(), isRetry);
+        } catch (Exception e) {
+            if (isRetry) {
+                log.warn("[SpeakerSummaryService] auto-send retry also failed, sessionId={}, speaker={}: {}",
+                        sessionId, speakerName, e.getMessage());
+            } else {
+                log.warn("[SpeakerSummaryService] auto-send failed, will retry in {}s, sessionId={}, speaker={}: {}",
+                        NOTIFICATION_RETRY_DELAY_S, sessionId, speakerName, e.getMessage());
+                notifyRetryExecutor.schedule(
+                        () -> trySendWithRetry(content, recipients, sessionId, speakerName, true),
+                        NOTIFICATION_RETRY_DELAY_S, TimeUnit.SECONDS);
+            }
         }
     }
 
