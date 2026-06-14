@@ -26,7 +26,7 @@ public class AsrService {
 
     /** 每个会话最近 final 分段的去重缓存: sessionId → (speakerId:textHash → emitTimeMs) */
     private final Map<String, Map<String, Long>> recentFinals = new ConcurrentHashMap<>();
-    private static final long DEDUP_WINDOW_MS = 5_000;
+    private static final long DEDUP_WINDOW_MS = 12_000;
 
     /**
      * 启动 ASR 连续识别。
