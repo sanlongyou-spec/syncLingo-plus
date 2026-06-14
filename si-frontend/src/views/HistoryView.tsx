@@ -296,6 +296,9 @@ export default function HistoryView() {
     () => new Set(JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]') as string[])
   )
   const hasFetchedSummaryRef = useRef(false)
+  const [recipientSearch, setRecipientSearch] = useState('')
+  const [showRecipientDropdown, setShowRecipientDropdown] = useState(false)
+  const recipientPickerRef = useRef<HTMLDivElement>(null)
 
   // ── Speaker tab ─────────────────────────────────────────
   const [speakerRecords, setSpeakerRecords] = useState<SpeakerSummaryRecord[]>([])
@@ -366,6 +369,23 @@ export default function HistoryView() {
     return map
   }, [transcriptMatches])
   const activeTranscriptMatchKind = transcriptMatches[activeTranscriptMatchIndex]?.kind ?? null
+
+  const chosenRecipients = useMemo(
+    () => systemUsers.filter(u => selectedRecipients.has(u.email!)).map(u => u.email!),
+    [systemUsers, selectedRecipients]
+  )
+  const filteredRecipients = useMemo(() => {
+    const q = recipientSearch.trim().toLowerCase()
+    if (!q) return []
+    return systemUsers
+      .filter(u => {
+        const name = (u.personName || '').toLowerCase()
+        const dept = (u.department || '').toLowerCase()
+        const email = (u.email || '').toLowerCase()
+        return name.includes(q) || dept.includes(q) || email.includes(q)
+      })
+      .slice(0, 8)
+  }, [systemUsers, recipientSearch])
 
   useEffect(() => {
     if (transcriptMatchIndexes.length === 0) {
@@ -439,6 +459,17 @@ export default function HistoryView() {
       })
       .catch(() => setSystemUsers([]))
       .finally(() => setSystemUsersLoading(false))
+  }, [])
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (recipientPickerRef.current && !recipientPickerRef.current.contains(e.target as Node)) {
+        setShowRecipientDropdown(false)
+        setRecipientSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
   // ── Load tab data lazily ─────────────────────────────────
@@ -643,6 +674,59 @@ export default function HistoryView() {
       localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
       return next
     })
+  }
+
+  const renderRecipientPicker = (label: string) => {
+    if (systemUsersLoading) return <div className="history-summary-send-hint">正在加载用户列表...</div>
+    if (systemUsers.length === 0) return <div className="history-summary-send-hint">暂无可发送的用户，请先在系统管理中导入用户信息。</div>
+    return (
+      <div className="history-recipient-section" ref={recipientPickerRef}>
+        <div className="history-summary-send-label">{label}</div>
+        <div className="history-recipient-box">
+          {Array.from(selectedRecipients).map(email => {
+            const user = systemUsers.find(u => u.email === email)
+            const displayName = user
+              ? `${user.personName}${user.department ? ` · ${user.department}` : ''}`
+              : email
+            return (
+              <span key={email} className="history-recipient-tag">
+                {displayName}
+                <button
+                  className="history-recipient-tag-x"
+                  type="button"
+                  onMouseDown={e => { e.preventDefault(); toggleRecipient(email) }}
+                >×</button>
+              </span>
+            )
+          })}
+          <input
+            className="history-recipient-input"
+            placeholder={selectedRecipients.size === 0 ? '搜索姓名或部门添加...' : '继续添加...'}
+            value={recipientSearch}
+            onChange={e => { setRecipientSearch(e.target.value); setShowRecipientDropdown(true) }}
+            onFocus={() => setShowRecipientDropdown(true)}
+          />
+          {showRecipientDropdown && filteredRecipients.length > 0 && (
+            <div className="history-recipient-dropdown">
+              {filteredRecipients.map(u => (
+                <div
+                  key={u.email}
+                  className="history-recipient-dropdown-item"
+                  onMouseDown={e => {
+                    e.preventDefault()
+                    toggleRecipient(u.email!)
+                    setRecipientSearch('')
+                    setShowRecipientDropdown(false)
+                  }}
+                >
+                  {u.personName}{u.department ? ` · ${u.department}` : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )
   }
 
   const regenerateSpeakerRecord = async (record: SpeakerSummaryRecord, statusKey: string, idx: number) => {
@@ -1070,18 +1154,6 @@ export default function HistoryView() {
 
               {/* ── 发言摘要 Tab ── */}
               {activeTab === 'speakers' && (() => {
-                const chosenRecipients = systemUsers
-                  .filter(u => selectedRecipients.has(u.email!))
-                  .map(u => u.email!)
-                const allSelected = systemUsers.length > 0
-                  && systemUsers.every(u => selectedRecipients.has(u.email!))
-                const toggleAll = () => {
-                  const next = allSelected
-                    ? new Set<string>()
-                    : new Set(systemUsers.map(u => u.email!))
-                  localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
-                  setSelectedRecipients(next)
-                }
                 return (
                   <div className="history-tab-content">
                     <div className="history-summary-requirements">
@@ -1103,34 +1175,7 @@ export default function HistoryView() {
                         rows={3}
                       />
                     </div>
-                    {systemUsersLoading ? (
-                      <div className="history-summary-send-hint">正在加载用户列表...</div>
-                    ) : systemUsers.length === 0 ? (
-                      <div className="history-summary-send-hint">
-                        暂无可发送的用户，请先在系统管理中导入用户信息。
-                      </div>
-                    ) : (
-                      <div className="history-summary-send-panel">
-                        <div className="history-summary-send-header">
-                          <span className="history-summary-send-label">发言摘要发送账号（默认，修改后自动保存）</span>
-                          <button className="history-summary-send-all-btn" onClick={toggleAll}>
-                            {allSelected ? '取消全选' : '全选'}
-                          </button>
-                        </div>
-                        <div className="history-summary-send-list">
-                          {systemUsers.map(u => (
-                            <label key={u.email} className="history-summary-send-item">
-                              <input
-                                type="checkbox"
-                                checked={selectedRecipients.has(u.email!)}
-                                onChange={() => toggleRecipient(u.email!)}
-                              />
-                              <span>{u.personName}{u.department ? ` · ${u.department}` : ''}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    {renderRecipientPicker('发言摘要发送账号（默认，修改后自动保存）')}
                     {!selectedSessionId && <div className="si-tri-empty">该会议尚未进行同传，暂无发言摘要</div>}
                     {selectedSessionId && speakerLoading && <div className="history-summary-loading"><span className="history-summary-spinner" />加载中...</div>}
                     {selectedSessionId && !speakerLoading && speakerRecords.length === 0 && (
@@ -1201,18 +1246,6 @@ export default function HistoryView() {
               {/* ── 会议总结 Tab ── */}
               {activeTab === 'summary' && (() => {
                 const displayed = summaryText
-                const allSummarySelected = systemUsers.length > 0
-                  && systemUsers.every(u => selectedRecipients.has(u.email!))
-                const toggleAllSummary = () => {
-                  const next = allSummarySelected
-                    ? new Set<string>()
-                    : new Set(systemUsers.map(u => u.email!))
-                  localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
-                  setSelectedRecipients(next)
-                }
-                const chosenSummaryRecipients = systemUsers
-                  .filter(u => selectedRecipients.has(u.email!))
-                  .map(u => u.email!)
                 return (
                   <div className="history-summary-tab">
                     <div className="history-summary-requirements">
@@ -1231,34 +1264,7 @@ export default function HistoryView() {
                       />
                     </div>
                     <div className="history-summary-send-settings">
-                      {systemUsersLoading ? (
-                        <div className="history-summary-send-hint">正在加载用户列表...</div>
-                      ) : systemUsers.length === 0 ? (
-                        <div className="history-summary-send-hint">
-                          暂无可发送的用户，请先在系统管理中导入用户信息。
-                        </div>
-                      ) : (
-                        <div className="history-summary-send-panel">
-                          <div className="history-summary-send-header">
-                            <span className="history-summary-send-label">会议总结发送账号（默认，修改后自动保存）</span>
-                            <button className="history-summary-send-all-btn" onClick={toggleAllSummary}>
-                              {allSummarySelected ? '取消全选' : '全选'}
-                            </button>
-                          </div>
-                          <div className="history-summary-send-list">
-                            {systemUsers.map(u => (
-                              <label key={u.email} className="history-summary-send-item">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedRecipients.has(u.email!)}
-                                  onChange={() => toggleRecipient(u.email!)}
-                                />
-                                <span>{u.personName}{u.department ? ` · ${u.department}` : ''}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                      {renderRecipientPicker('会议总结发送账号（默认，修改后自动保存）')}
                     </div>
                     {!selectedSessionId && <div className="si-tri-empty">该会议尚未进行同传，暂无会议总结</div>}
                     {selectedSessionId && (summaryLoading || displayed === null) && (
@@ -1278,10 +1284,10 @@ export default function HistoryView() {
                           <button
                             className="history-summary-export-btn"
                             title="生成 PDF，上传到 Teams/SharePoint 后把下载链接发到所选 Teams 账号"
-                            onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenSummaryRecipients) }}
-                            disabled={teamsPushStatus === 'loading' || chosenSummaryRecipients.length === 0}
+                            onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenRecipients) }}
+                            disabled={teamsPushStatus === 'loading' || chosenRecipients.length === 0}
                           >
-                            {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenSummaryRecipients.length} 人）`}
+                            {teamsPushStatus === 'done' ? '已发送 ✓' : teamsPushStatus === 'error' ? '发送失败' : teamsPushStatus === 'loading' ? '发送中...' : `发送到 Teams（${chosenRecipients.length} 人）`}
                           </button>
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
