@@ -8,19 +8,38 @@
     </encoder>
   </appender>
 
+  <!-- 文件 appender：按天滚动，单文件上限 200MB，保留 7 天 -->
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>/app/logs/app.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+      <fileNamePattern>/app/logs/app-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+      <maxFileSize>200MB</maxFileSize>
+      <maxHistory>7</maxHistory>
+      <totalSizeCap>1GB</totalSizeCap>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
   <root level="WARN">
     <appender-ref ref="STDERR"/>
+    <appender-ref ref="FILE"/>
   </root>
 
   <logger name="com.si.backend" level="INFO" additivity="false">
     <appender-ref ref="STDERR"/>
+    <appender-ref ref="FILE"/>
   </logger>
 
   <logger name="com.microsoft.cognitiveservices.speech" level="INFO" additivity="false">
     <appender-ref ref="STDERR"/>
+    <appender-ref ref="FILE"/>
   </logger>
 
   <logger name="com.si.backend.integration" level="DEBUG" additivity="false">
     <appender-ref ref="STDERR"/>
+    <appender-ref ref="FILE"/>
   </logger>
 </configuration>

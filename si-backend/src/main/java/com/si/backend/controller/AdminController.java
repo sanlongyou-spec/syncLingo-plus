@@ -6,14 +6,20 @@ import com.si.backend.common.Result;
 import com.si.backend.config.AppAdminProperties;
 import com.si.backend.service.ContentEmbeddingService;
 import com.si.backend.service.InterpretationResultService;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.Map;
 
 @Slf4j
@@ -77,6 +83,23 @@ public class AdminController {
         int aggregated = hierarchicalSummaryService.rebuildForUser(userId);
         log.info("[AdminController] rebuildOverview done, userId={}, aggregated={}", userId, aggregated);
         return Result.ok(Map.of("userId", userId, "aggregatedMeetings", aggregated));
+    }
+
+    @GetMapping("/logs/download")
+    public void downloadLogs(
+            @RequestParam(value = "secret", required = false) String secret,
+            HttpServletResponse response) throws IOException {
+        ensureAuthorized(secret);
+        Path logFile = Path.of("/app/logs/app.log");
+        if (!Files.exists(logFile)) {
+            response.sendError(HttpServletResponse.SC_NOT_FOUND, "日志文件不存在，请确认服务已重启");
+            return;
+        }
+        String filename = "si-backend-" + LocalDate.now() + ".log";
+        response.setContentType("text/plain;charset=UTF-8");
+        response.setHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+        log.info("[AdminController] logs download requested, file={}", logFile);
+        Files.copy(logFile, response.getOutputStream());
     }
 
     private void ensureAuthorized(String secret) {
