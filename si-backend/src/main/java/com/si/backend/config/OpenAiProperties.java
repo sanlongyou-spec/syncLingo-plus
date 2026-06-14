@@ -22,7 +22,7 @@ public class OpenAiProperties {
 
     private boolean compressionEnabled = true;
 
-    private int compressionMinTextLength = 80;
+    private int compressionMinTextLength = 20;
 
     // Real-time per-segment compression — kept on a fast, non-reasoning model.
     private String compressionModel = "anthropic/claude-haiku-4.5";
