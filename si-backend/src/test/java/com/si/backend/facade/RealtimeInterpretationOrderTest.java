@@ -7,6 +7,7 @@ import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SessionSpeakerNameService;
+import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
 import org.junit.jupiter.api.Test;
@@ -47,6 +48,7 @@ class RealtimeInterpretationOrderTest {
         InterpretationRecordService recordService = mock(InterpretationRecordService.class);
         SessionSpeakerNameService speakerNameService = mock(SessionSpeakerNameService.class);
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -56,7 +58,8 @@ class RealtimeInterpretationOrderTest {
                 cartesiaProperties,
                 recordService,
                 speakerNameService,
-                audioRecordService
+                audioRecordService,
+                speakerTurnService
         );
 
         String sessionId = "order-test-session";
