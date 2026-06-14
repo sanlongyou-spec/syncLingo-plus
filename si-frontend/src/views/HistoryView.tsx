@@ -455,13 +455,17 @@ export default function HistoryView() {
         setSystemUsers(withEmail)
         // Prefer backend-stored recipients; fall back to localStorage
         const backendEmails: string[] | null = recipientsRes.data ?? null
-        const sourceEmails: string[] = backendEmails && backendEmails.length > 0
-          ? backendEmails
-          : JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
+        const backendEmpty = !(backendEmails && backendEmails.length > 0)
+        const sourceEmails: string[] = backendEmpty
+          ? JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
+          : backendEmails!
         const valid = sourceEmails.filter(e => withEmail.some(u => u.email === e))
         const validSet = new Set(valid)
         setSelectedRecipients(validSet)
         localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(validSet)))
+        if (backendEmpty && valid.length > 0) {
+          saveSummaryRecipients(valid).catch(() => {})
+        }
       })
       .catch(() => setSystemUsers([]))
       .finally(() => setSystemUsersLoading(false))
