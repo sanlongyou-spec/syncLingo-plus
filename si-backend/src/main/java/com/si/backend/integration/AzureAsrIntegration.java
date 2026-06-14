@@ -219,6 +219,12 @@ public class AzureAsrIntegration {
         private final AtomicReference<String> lastValidSpeakerId = new AtomicReference<>("");
         /** 上一次 transcribing(中间结果) 时间戳，用于估算 ASR 句末延迟（最后中间结果→isFinal） */
         private final java.util.concurrent.atomic.AtomicLong lastInterimAtMs = new java.util.concurrent.atomic.AtomicLong(0);
+        /** 节流 INFO 级 recognizing 日志：上次记录时的文本长度 */
+        private int lastLoggedTranscribeLen = 0;
+        /** 节流 INFO 级 recognizing 日志：上次记录时间戳 */
+        private long lastLoggedTranscribeMs = 0;
+        private static final int LOG_TRANSCRIBING_CHAR_STEP = 40;
+        private static final long LOG_TRANSCRIBING_INTERVAL_MS = 5000;
 
         private final List<String> hotwords;
 
@@ -315,6 +321,17 @@ public class AzureAsrIntegration {
                 log.debug("[AsrSession] transcribing textLen={} emittedLen={} lang={} speakerId={} text='{}'",
                         text.length(), emittedLen, lang, speakerId,
                         text.length() <= 40 ? text : text.substring(0, 37) + "...");
+                // 节流 INFO：文本每增长 40 字符、或距上次超过 5 秒，记录一次便于分析分段问题
+                long nowMs = System.currentTimeMillis();
+                if (text.length() - lastLoggedTranscribeLen >= LOG_TRANSCRIBING_CHAR_STEP
+                        || (text.length() > lastLoggedTranscribeLen
+                                && nowMs - lastLoggedTranscribeMs >= LOG_TRANSCRIBING_INTERVAL_MS)) {
+                    log.info("[AsrSession] asr-recognizing textLen={} emittedLen={} lang={} speakerId={} text='{}'",
+                            text.length(), emittedLen, lang, speakerId,
+                            text.length() <= 80 ? text : text.substring(0, 77) + "...");
+                    lastLoggedTranscribeLen = text.length();
+                    lastLoggedTranscribeMs = nowMs;
+                }
                 // 强切 + 取未发出的中间结果, 全程加锁 + emittedLen 单调推进(防失控刷段/竞态)
                 String interimText;
                 synchronized (segLock) {
@@ -351,6 +368,8 @@ public class AzureAsrIntegration {
                     emittedSuffix = "";
                     prevText = "";
                 }
+                lastLoggedTranscribeLen = 0;
+                lastLoggedTranscribeMs = 0;
                 segmentStartMs.set(0);
                 long lastInterim = lastInterimAtMs.getAndSet(0);
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;

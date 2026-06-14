@@ -2,13 +2,19 @@ package com.si.backend.service;
 
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.entity.InterpretationSession;
+import com.si.backend.entity.SiUser;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.integration.LlmIntegration;
+import com.si.backend.integration.MeetingBotIntegration;
+import com.si.backend.mapper.InterpretationSessionMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
+import com.si.backend.mapper.UserMapper;
 import com.si.backend.vo.SpeakerSummaryVo;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -32,9 +38,15 @@ public class SpeakerSummaryService {
     private static final int MAX_SPEAKER_TEXT_CHARS = 100000;
     private static final String TITLE_PREFIX = "\u6807\u9898";
 
+    @Value("${notification.teams-domain:jlg.co.id}")
+    private String teamsDomain;
+
     private final LlmIntegration llmIntegration;
     private final SpeakerSummaryRecordMapper mapper;
     private final ContentEmbeddingService contentEmbeddingService;
+    private final InterpretationSessionMapper interpretationSessionMapper;
+    private final UserMapper userMapper;
+    private final MeetingBotIntegration meetingBotIntegration;
 
     @PostConstruct
     public void initTable() {
@@ -150,6 +162,7 @@ public class SpeakerSummaryService {
             } catch (Exception e) {
                 log.warn("[SpeakerSummaryService] failed to persist summary, sessionId={}", sessionId, e);
             }
+            autoSendToSessionOwner(sessionId, speakerName, title, summary);
             return SpeakerSummaryVo.builder()
                     .speakerId(speakerId)
                     .speakerName(speakerName)
@@ -283,6 +296,39 @@ public class SpeakerSummaryService {
                 record.getId(), record.getSessionId(), record.getSpeakerName(), record.getTitle(), record.getSummary());
         log.info("[SpeakerSummaryService] update end, id={}, speaker={}", id, record.getSpeakerName());
         return record;
+    }
+
+    /**
+     * 摘要生成后自动发送给会话创建者（Teams 邮件域匹配时）。
+     * 发送失败不影响摘要保存结果，仅记录 warn 日志。
+     */
+    private void autoSendToSessionOwner(String sessionId, String speakerName, String title, String summary) {
+        try {
+            InterpretationSession session = interpretationSessionMapper.findBySessionId(sessionId);
+            if (session == null || session.getUserId() == null) return;
+            SiUser user = userMapper.findById(session.getUserId());
+            if (user == null || user.getEmail() == null || user.getEmail().isBlank()) return;
+            String email = user.getEmail().trim().toLowerCase();
+            if (!email.endsWith("@" + teamsDomain.toLowerCase())) {
+                log.debug("[SpeakerSummaryService] auto-send skipped, non-Teams email, sessionId={}, email={}", sessionId, email);
+                return;
+            }
+            String content = buildAutoSendContent(speakerName, title, summary);
+            meetingBotIntegration.sendNotification(content, List.of(user.getEmail().trim()));
+            log.info("[SpeakerSummaryService] auto-send done, sessionId={}, speaker={}, recipient={}", sessionId, speakerName, email);
+        } catch (Exception e) {
+            log.warn("[SpeakerSummaryService] auto-send failed, sessionId={}, speaker={}: {}", sessionId, speakerName, e.getMessage());
+        }
+    }
+
+    private static String buildAutoSendContent(String speakerName, String title, String summary) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("【发言摘要】").append(speakerName);
+        if (title != null && !title.isBlank()) {
+            sb.append("\n标题：").append(title);
+        }
+        sb.append("\n\n").append(summary != null ? summary.trim() : "");
+        return sb.toString();
     }
 
 }

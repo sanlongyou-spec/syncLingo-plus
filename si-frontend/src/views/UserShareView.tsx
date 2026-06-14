@@ -237,6 +237,13 @@ export default function UserShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
+        // Cap schedule horizon: if backlog exceeds 6s, stop all pending sources and reset to prevent
+        // AudioBufferSourceNode accumulation (memory leak) and unrecoverable lag after tab throttling.
+        if (scheduleRef.current - ctx.currentTime > 6.0) {
+          pendingSourcesRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
+          pendingSourcesRef.current.clear()
+          scheduleRef.current = ctx.currentTime + 0.05
+        }
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate

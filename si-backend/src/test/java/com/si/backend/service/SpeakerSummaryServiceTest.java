@@ -2,7 +2,10 @@ package com.si.backend.service;
 
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.integration.LlmIntegration;
+import com.si.backend.integration.MeetingBotIntegration;
+import com.si.backend.mapper.InterpretationSessionMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
+import com.si.backend.mapper.UserMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -44,7 +47,10 @@ class SpeakerSummaryServiceTest {
         SpeakerSummaryService service = new SpeakerSummaryService(
                 mock(LlmIntegration.class),
                 mapper,
-                embeddingService
+                embeddingService,
+                mock(InterpretationSessionMapper.class),
+                mock(UserMapper.class),
+                mock(MeetingBotIntegration.class)
         );
         SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
                 .id(7L)
@@ -69,7 +75,12 @@ class SpeakerSummaryServiceTest {
         LlmIntegration llmIntegration = mock(LlmIntegration.class);
         SpeakerSummaryRecordMapper mapper = mock(SpeakerSummaryRecordMapper.class);
         ContentEmbeddingService embeddingService = mock(ContentEmbeddingService.class);
-        SpeakerSummaryService service = new SpeakerSummaryService(llmIntegration, mapper, embeddingService);
+        SpeakerSummaryService service = new SpeakerSummaryService(
+                llmIntegration, mapper, embeddingService,
+                mock(InterpretationSessionMapper.class),
+                mock(UserMapper.class),
+                mock(MeetingBotIntegration.class)
+        );
         SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
                 .id(8L)
                 .sessionId("session-2")
