@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -54,6 +55,9 @@ public class SpeakerSummaryService {
                 t.setDaemon(true);
                 return t;
             });
+
+    /** sessionId → 已发送过通知的 speakerName 集合，保证每人只发一次 */
+    private final Map<String, java.util.Set<String>> sessionSentSpeakers = new java.util.concurrent.ConcurrentHashMap<>();
 
     @PostConstruct
     public void initTable() {
@@ -311,6 +315,12 @@ public class SpeakerSummaryService {
      */
     private void autoSendToSessionOwner(String sessionId, String speakerName, String title, String summary) {
         try {
+            java.util.Set<String> sent = sessionSentSpeakers
+                    .computeIfAbsent(sessionId, k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+            if (!sent.add(speakerName)) {
+                log.debug("[SpeakerSummaryService] auto-send skipped, already sent for speaker, sessionId={}, speaker={}", sessionId, speakerName);
+                return;
+            }
             InterpretationSession session = interpretationSessionMapper.findBySessionId(sessionId);
             if (session == null || session.getUserId() == null) return;
             List<String> recipients = userPreferenceService.getSummaryRecipients(session.getUserId());
