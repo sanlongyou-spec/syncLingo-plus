@@ -202,21 +202,25 @@ public class SpeakerSummaryService {
     }
 
     private String summarizeSpeakerUntilAccepted(String speakerName, String text, String requirements) throws Exception {
-        int attempt = 1;
-        String raw = llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements);
-        while (isUnusableSummary(raw) && attempt < SUMMARY_MAX_ATTEMPTS) {
-            log.warn("[SpeakerSummaryService] unusable LLM speaker summary detected, retrying, speaker={}, attempt={}, mojibake={}",
-                    speakerName, attempt, isMojibake(raw));
-            sleepBeforeRetry(attempt);
-            attempt++;
-            raw = requirements != null && !requirements.isBlank()
-                    ? llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements)
-                    : llmIntegration.summarizeSpeakerSegmentRetry(speakerName, text);
+        String raw = null;
+        Exception lastException = null;
+        for (int attempt = 1; attempt <= SUMMARY_MAX_ATTEMPTS; attempt++) {
+            try {
+                raw = (attempt == 1 || (requirements != null && !requirements.isBlank()))
+                        ? llmIntegration.summarizeSpeakerSegment(speakerName, text, requirements)
+                        : llmIntegration.summarizeSpeakerSegmentRetry(speakerName, text);
+                if (!isUnusableSummary(raw)) return raw;
+                log.warn("[SpeakerSummaryService] unusable LLM speaker summary detected, retrying, speaker={}, attempt={}, mojibake={}",
+                        speakerName, attempt, isMojibake(raw));
+            } catch (Exception e) {
+                lastException = e;
+                log.warn("[SpeakerSummaryService] LLM call failed, retrying, speaker={}, attempt={}: {}",
+                        speakerName, attempt, e.getMessage());
+            }
+            if (attempt < SUMMARY_MAX_ATTEMPTS) sleepBeforeRetry(attempt);
         }
-        if (isUnusableSummary(raw)) {
-            throw new IllegalStateException("发言摘要连续生成异常，请稍后重试");
-        }
-        return raw;
+        if (raw != null && !isUnusableSummary(raw)) return raw;
+        throw lastException != null ? lastException : new IllegalStateException("发言摘要连续生成异常，请稍后重试");
     }
 
     private void sleepBeforeRetry(int attempt) {
