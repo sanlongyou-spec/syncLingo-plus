@@ -325,6 +325,11 @@ public class AzureAsrIntegration {
                 String speakerId = resolveSpeakerId(result);
                 // 最终结果: 按 emittedLen 取已强切之后的剩余部分(单调下标, 不重发已发文本)
                 String full = text == null ? "" : text;
+                if (!full.isBlank()) {
+                    log.info("[AsrSession] asr-raw lang={} speakerId={} len={} text='{}'",
+                            lang, speakerId, full.length(),
+                            full.length() <= 120 ? full : full.substring(0, 117) + "...");
+                }
                 String remainder;
                 boolean hadForced;
                 synchronized (segLock) {
@@ -338,8 +343,9 @@ public class AzureAsrIntegration {
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
                 if (!remainder.isBlank()) {
                     callback.onRecognizing(remainder, lang, speakerId, true);
-                    log.info("[AsrSession] asr final {}, costMs={}, len={}, speakerId={}",
-                            hadForced ? "remainder(after force)" : "latency", asrTailMs, remainder.length(), speakerId);
+                    log.info("[AsrSession] asr-segment final={} costMs={} len={} speakerId={} text='{}'",
+                            hadForced ? "remainder" : "full", asrTailMs, remainder.length(), speakerId,
+                            remainder.length() <= 120 ? remainder : remainder.substring(0, 117) + "...");
                 }
             });
 
@@ -390,6 +396,12 @@ public class AzureAsrIntegration {
                     // 模型返回原文（model_available=false 场景），视为无效
                     punctuated = null;
                 }
+            }
+            if (punctuated != null) {
+                log.info("[AsrSession] punct lang={} inputLen={} outputLen={} input='{}' output='{}'",
+                        lang, working.length(), punctuated.length(),
+                        working.length() <= 120 ? working : working.substring(0, 117) + "...",
+                        punctuated.length() <= 120 ? punctuated : punctuated.substring(0, 117) + "...");
             }
             String detectionText = punctuated != null ? punctuated : working;
 
@@ -447,8 +459,9 @@ public class AzureAsrIntegration {
             segmentStartMs.set(System.currentTimeMillis());
             if (!segment.isBlank()) {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
-                log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={}",
-                        reason, segment.length(), lang, resolvedSpeakerId, punctuated != null);
+                log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
+                        reason, segment.length(), lang, resolvedSpeakerId, punctuated != null,
+                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
                 callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
         }
