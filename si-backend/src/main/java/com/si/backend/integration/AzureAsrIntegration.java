@@ -32,12 +32,15 @@ public class AzureAsrIntegration {
 
     private final AzureSpeechProperties asrProperties;
     private final PunctuationServiceIntegration punctuationService;
+    private final SegmentationServiceIntegration segmentationService;
     private final Map<String, AsrSession> sessions = new ConcurrentHashMap<>();
 
     public AzureAsrIntegration(AzureSpeechProperties asrProperties,
-                                PunctuationServiceIntegration punctuationService) {
+                                PunctuationServiceIntegration punctuationService,
+                                SegmentationServiceIntegration segmentationService) {
         this.asrProperties = asrProperties;
         this.punctuationService = punctuationService;
+        this.segmentationService = segmentationService;
     }
 
     /**
@@ -106,12 +109,12 @@ public class AzureAsrIntegration {
             );
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
-            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService);
+            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService);
         } else {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber, specified lang={}, sessionId={}", sourceLang, sessionId);
             config.setSpeechRecognitionLanguage(sourceLang);
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
-            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService);
+            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService);
         }
 
         sessions.put(sessionId, session);
@@ -197,6 +200,8 @@ public class AzureAsrIntegration {
         private final long forceSegmentMs;
         /** 标点还原服务（null = 未启用），用于在 Transcribing 中间结果里推断句末标点位置 */
         private final PunctuationServiceIntegration punctuationSvc;
+        /** 句边界检测服务（null = 未启用），用于印尼语等无标点还原模型的语言 */
+        private final SegmentationServiceIntegration segmentationSvc;
         /** 调用标点服务的最短文本长度（避免在极短片段上浪费调用） */
         private static final int PUNCT_MIN_CHARS = 10;
         /** 当前未提交段落的开始时刻（ms）；emit 或 final 后重置，用于按时间强切 */
@@ -216,7 +221,8 @@ public class AzureAsrIntegration {
 
         public AsrSession(SpeechConfig config, AudioConfig audioConfig, PushAudioInputStream pushStream,
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
-                          PunctuationServiceIntegration punctuationService) {
+                          PunctuationServiceIntegration punctuationService,
+                          SegmentationServiceIntegration segmentationService) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = false;
@@ -229,12 +235,14 @@ public class AzureAsrIntegration {
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
+            this.segmentationSvc = segmentationService;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
 
         public AsrSession(SpeechConfig config, AutoDetectSourceLanguageConfig autoConfig, PushAudioInputStream pushStream,
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
-                          PunctuationServiceIntegration punctuationService) {
+                          PunctuationServiceIntegration punctuationService,
+                          SegmentationServiceIntegration segmentationService) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = true;
@@ -246,6 +254,7 @@ public class AzureAsrIntegration {
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
+            this.segmentationSvc = segmentationService;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
             this.conversationTranscriber = new ConversationTranscriber(config, autoConfig, audioConfig);
@@ -384,13 +393,13 @@ public class AzureAsrIntegration {
                 return;
             }
 
-            // ── 标点还原（中文，长度 >= PUNCT_MIN_CHARS，服务可用时）──────────────
-            // 用带标点的文本做切段判断，找到的标点位置映射回原始下标更新 emittedLen；
-            // 向翻译 emit 带标点的文本以提升翻译质量。
+            // ── 标点还原（中文/英文，长度 >= PUNCT_MIN_CHARS，服务可用时）──────────
+            // CT-Transformer zh-en 模型同时支持中英文；用带标点的文本做切段判断，
+            // 找到的标点位置映射回原始下标更新 emittedLen；向翻译 emit 带标点文本以提升翻译质量。
             String punctuated = null;
             if (punctuationSvc != null && punctuationSvc.isEnabled()
                     && working.length() >= PUNCT_MIN_CHARS
-                    && isChineseSegment(working, 0, lang)) {
+                    && (isChineseSegment(working, 0, lang) || startsWithIgnoreCase(lang, "en"))) {
                 punctuated = punctuationSvc.punctuate(working);
                 if (punctuated != null && punctuated.equals(working)) {
                     // 模型返回原文（model_available=false 场景），视为无效
@@ -405,11 +414,21 @@ public class AzureAsrIntegration {
             }
             String detectionText = punctuated != null ? punctuated : working;
 
+            // ── 句边界检测（印尼语：wtpsplit SaT，服务可用时）──────────────────────
+            int wtpBoundary = NO_SEGMENT;
+            if (segmentationSvc != null && segmentationSvc.isEnabled()
+                    && working.length() >= PUNCT_MIN_CHARS
+                    && startsWithIgnoreCase(lang, "id")) {
+                int b = segmentationSvc.findBoundary(working, lang, safe);
+                if (b > 0) wtpBoundary = b;
+            }
+
             int end = NO_SEGMENT;
             String reason = null;
             String emitText = null;   // null → 用 working.substring(0, end)
 
-            // 1) 句末标点：在 detectionText 中找，映射回 working 下标
+            // 1) 句末标点：在 detectionText 中找，映射回 working 下标；
+            //    无标点时对印尼语用 wtpsplit 边界补位
             if (sentenceSegmentationEnabled) {
                 int ep = findSentenceSegmentEnd(detectionText, 0);
                 if (ep != NO_SEGMENT) {
@@ -421,6 +440,11 @@ public class AzureAsrIntegration {
                             emitText = punctuated.substring(0, ep).trim();
                         }
                     }
+                }
+                // 无标点边界：用 wtpsplit 检测到的语义句边界（印尼语）
+                if (end == NO_SEGMENT && wtpBoundary != NO_SEGMENT) {
+                    end = wtpBoundary;
+                    reason = "sentence-wtpsplit";
                 }
             }
             // 2) 逗号/子句标点：同样优先用标点版本

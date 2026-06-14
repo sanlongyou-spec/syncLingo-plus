@@ -87,6 +87,14 @@ punctuation:
     # 超时 60ms（真实 working ~60-70字推理约 48ms，留 12ms 余量）；超时降级为原字符数分段
     timeout-ms: ${PUNCTUATION_SERVICE_TIMEOUT_MS:60}
 
+segmentation:
+  service:
+    # 句边界检测服务开关（复用 speaker-service /segment-boundary 端点，wtpsplit SaT 推理）
+    # 用于印尼语等无标点还原模型的语言；超时降级为词边界/字符数分段
+    enabled: ${SEGMENTATION_SERVICE_ENABLED:false}
+    url: ${SEGMENTATION_SERVICE_URL:http://localhost:7000}
+    timeout-ms: ${SEGMENTATION_SERVICE_TIMEOUT_MS:100}
+
 speaker:
   service:
     enabled: ${SPEAKER_SERVICE_ENABLED:false}

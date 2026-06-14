@@ -5,3 +5,4 @@ pydantic>=2.7.4
 python-multipart>=0.0.9
 webrtcvad>=2.0.10
 sherpa-onnx>=1.13.0
+wtpsplit>=0.4.0

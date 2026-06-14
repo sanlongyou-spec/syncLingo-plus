@@ -1,11 +1,12 @@
 """
-Speaker service — punctuation restoration only.
+Speaker service — punctuation restoration + sentence boundary detection.
 The speaker identification/enrollment endpoints have been removed;
 Azure ASR speakerId is used directly without AI-based voiceprint matching.
 
 Endpoints:
-  POST /punctuate   — CT-Transformer punctuation restoration
-  GET  /health      — service health check
+  POST /punctuate         — CT-Transformer punctuation restoration (zh/en)
+  POST /segment-boundary  — wtpsplit sentence boundary detection (id, en, …)
+  GET  /health            — service health check
 """
 import os
 import logging
@@ -20,20 +21,23 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger("speaker-service")
 punc_log = logging.getLogger("speaker-service.punct")
+sat_log = logging.getLogger("speaker-service.sat")
 
 # ── 标点还原模型（sherpa-onnx CT-Transformer, 可选）──────────────────────────
-# 下载：https://github.com/k2-fsa/sherpa-onnx/releases/tag/punctuation-models
-# 解压后将 model.onnx 放到此路径（或通过环境变量覆盖）
 PUNCT_MODEL_PATH = os.environ.get(
     "PUNCT_MODEL_PATH",
     "models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12/model.onnx"
 )
 PUNCT_NUM_THREADS = int(os.environ.get("PUNCT_NUM_THREADS", "1"))
 
+# ── 句边界检测模型（wtpsplit SaT，用于印尼语等无标点还原模型的语言）──────────
+# sat-3l 支持 85+ 语言(含 id)，约 100MB；首次启动自动从 HuggingFace 下载
+SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-3l")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global punct_model
+    global punct_model, sat_model
     # ── 标点模型（可选，文件不存在则降级为不加标点）────────────────────────────
     punct_path = Path(PUNCT_MODEL_PATH)
     if punct_path.exists():
@@ -45,7 +49,6 @@ async def lifespan(app: FastAPI):
                 ),
             )
             punct_model = sherpa_onnx.OfflinePunctuation(punct_cfg)
-            # 预热：第一次推理会触发 ONNX 图编译，后续正常
             _ = punct_model.add_punctuation("今天开会讨论预算")
             elapsed_ms = int((time.time() - t0) * 1000)
             log.info("[punct] Model loaded and warmed up from %s, elapsed=%dms", punct_path, elapsed_ms)
@@ -56,13 +59,26 @@ async def lifespan(app: FastAPI):
         log.info("[punct] Model file not found at %s — /punctuate will echo input (degraded)", punct_path)
         punct_model = None
 
+    # ── wtpsplit SaT 模型（可选，import 失败或下载失败时降级）──────────────────
+    try:
+        from wtpsplit import SaT
+        t0 = time.time()
+        sat_model = SaT(SAT_MODEL_NAME)
+        _ = sat_model.split("This is a sentence. This is another one.", lang_code="en")
+        elapsed_ms = int((time.time() - t0) * 1000)
+        log.info("[sat] Model loaded and warmed up: %s, elapsed=%dms", SAT_MODEL_NAME, elapsed_ms)
+    except Exception as e:
+        log.warning("[sat] Failed to load SaT model (%s): %s — /segment-boundary will return no boundary", SAT_MODEL_NAME, e)
+        sat_model = None
+
     yield
 
 
-app = FastAPI(title="Speaker Service (punctuation only)", lifespan=lifespan)
+app = FastAPI(title="Speaker Service", lifespan=lifespan)
 
 # Global state
 punct_model = None
+sat_model = None
 
 
 class PunctuateRequest(BaseModel):
@@ -108,11 +124,66 @@ async def punctuate(req: PunctuateRequest):
         return PunctuateResponse(punctuated=text, latency_ms=round(latency_ms, 2), model_available=False)
 
 
+class SegmentBoundaryRequest(BaseModel):
+    text: str
+    lang: str
+    safe_end: int  # 在此字符位置（含）之内查找句边界
+
+
+class SegmentBoundaryResponse(BaseModel):
+    boundary: int       # safe_end 范围内第一个句边界的字符位置，-1 表示未找到
+    latency_ms: float
+    model_available: bool
+
+
+@app.post("/segment-boundary", response_model=SegmentBoundaryResponse)
+async def segment_boundary(req: SegmentBoundaryRequest):
+    """
+    在 safe_end 字符范围内查找第一个句子边界位置。
+    用于印尼语等无标点还原模型的语言的语义分段。
+    boundary=-1 表示模型不可用或范围内无句边界。
+    """
+    text = req.text.strip()
+    safe_end = req.safe_end
+    lang = req.lang
+
+    if not text or safe_end <= 0:
+        return SegmentBoundaryResponse(boundary=-1, latency_ms=0.0, model_available=sat_model is not None)
+
+    if sat_model is None:
+        return SegmentBoundaryResponse(boundary=-1, latency_ms=0.0, model_available=False)
+
+    t0 = time.time()
+    try:
+        sentences = sat_model.split(text, lang_code=lang)
+        latency_ms = (time.time() - t0) * 1000
+
+        boundary = -1
+        pos = 0
+        for sent in sentences[:-1]:  # 最后一句之后不是边界
+            pos += len(sent)
+            # 消费句间空白
+            while pos < len(text) and text[pos] == ' ':
+                pos += 1
+            if 0 < pos <= safe_end:
+                boundary = pos
+                break
+
+        sat_log.info("[sat] lang=%s inputLen=%d safeEnd=%d boundary=%d latency=%.1fms",
+                     lang, len(text), safe_end, boundary, latency_ms)
+        return SegmentBoundaryResponse(boundary=boundary, latency_ms=round(latency_ms, 2), model_available=True)
+    except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        sat_log.warning("[sat] inference error after %.1fms: %s", latency_ms, e)
+        return SegmentBoundaryResponse(boundary=-1, latency_ms=round(latency_ms, 2), model_available=False)
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "punct_model_loaded": punct_model is not None,
+        "sat_model_loaded": sat_model is not None,
     }
 
 
