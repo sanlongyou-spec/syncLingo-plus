@@ -116,9 +116,6 @@ export default function UserShareView() {
   const scheduleRef = useRef(0)
   const tsRef = useRef(0)
   const pendingSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
-  // 帧合批：积攒 BATCH_FRAMES 个 Opus 帧再调度一个 AudioBufferSourceNode，减少 GC 压力
-  const BATCH_FRAMES = 5  // 5 × 20ms = 100ms per node（节点数降至原来的 1/5）
-  const frameBatchRef = useRef<Float32Array[]>([])
   // 端到端延迟测量：句首音标记 + RTT
   const pendingMarkerRef = useRef<{ captureMs: number; arrivalMs: number } | null>(null)
   const rttRef = useRef(0)
@@ -160,7 +157,6 @@ export default function UserShareView() {
   const stopAudio = useCallback(() => {
     audioGenRef.current++  // invalidate all in-flight decoder output callbacks
     selectedLangRef.current = null
-    frameBatchRef.current = []
     audioWsRef.current?.close()
     audioWsRef.current = null
     try { decoderRef.current?.close() } catch { /* already closed */ }
@@ -220,28 +216,6 @@ export default function UserShareView() {
 
     const myGen = audioGenRef.current  // capture generation for this startAudio call
 
-    const scheduleBuffer = (samples: Float32Array<ArrayBuffer>, sampleRate: number) => {
-      const buffer = ctx.createBuffer(1, samples.length, sampleRate)
-      buffer.copyToChannel(samples, 0)
-      const source = ctx.createBufferSource()
-      source.buffer = buffer
-      source.connect(dest)
-      if (scheduleRef.current - ctx.currentTime > 6.0) {
-        scheduleRef.current = ctx.currentTime + 0.05
-      }
-      const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
-      const rate = catchupRate(backlogSec)
-      source.playbackRate.value = rate
-      maxRateRef.current = Math.max(maxRateRef.current, rate)
-      const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
-      pendingSourcesRef.current.add(source)
-      source.onended = () => pendingSourcesRef.current.delete(source)
-      source.start(startAt)
-      scheduleRef.current = startAt + buffer.duration / rate
-      return { backlogSec, rate, startAt }
-    }
-
-
     const handleAudioData = (data: unknown) => {
       const audioData = data as {
         sampleRate: number
@@ -258,22 +232,25 @@ export default function UserShareView() {
         const size = audioData.allocationSize({ planeIndex: 0, format: 'f32-planar' })
         const samples = new Float32Array(size / 4)
         audioData.copyTo(samples, { planeIndex: 0, format: 'f32-planar' })
-        const sampleRate = audioData.sampleRate
-        frameBatchRef.current.push(samples)
-
-        if (frameBatchRef.current.length < BATCH_FRAMES) {
-          return  // finally block closes audioData; wait for more frames
+        const buffer = ctx.createBuffer(1, samples.length, audioData.sampleRate)
+        buffer.copyToChannel(samples, 0)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
+        // Cap schedule horizon: if backlog exceeds 6s, reset the schedule pointer so new packets
+        // start from now. Already-scheduled sources keep playing to avoid cutting off mid-sentence.
+        if (scheduleRef.current - ctx.currentTime > 6.0) {
+          scheduleRef.current = ctx.currentTime + 0.05
         }
-
-        // Concatenate accumulated frames into one buffer
-        const frames = frameBatchRef.current
-        frameBatchRef.current = []
-        const totalLen = frames.reduce((s, f) => s + f.length, 0)
-        const combined = new Float32Array(totalLen)
-        let offset = 0
-        for (const f of frames) { combined.set(f, offset); offset += f.length }
-
-        const { backlogSec, rate, startAt } = scheduleBuffer(combined, sampleRate)
+        const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
+        const rate = catchupRate(backlogSec)
+        source.playbackRate.value = rate
+        maxRateRef.current = Math.max(maxRateRef.current, rate)   // 句中峰值倍速
+        const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
+        pendingSourcesRef.current.add(source)
+        source.onended = () => pendingSourcesRef.current.delete(source)
+        source.start(startAt)
+        scheduleRef.current = startAt + buffer.duration / rate
         // 该句首音真正开始播放：合成端到端延迟 = 服务端耗时 + RTT/2 + 本地缓冲
         const marker = pendingMarkerRef.current
         if (marker) {
