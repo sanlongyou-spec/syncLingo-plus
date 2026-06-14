@@ -525,14 +525,15 @@ public class AzureAsrIntegration {
                 return;
             }
             String segment = emitText != null ? emitText : working.substring(0, end).trim();
+            if ("force-boundary".equals(reason) && segment.length() < 8) {
+                // 不推进 emittedLen，等文本积累到下次再切，避免丢字
+                log.debug("[AsrSession] force-boundary segment too short ({}), deferred: '{}'", segment.length(), segment);
+                return;
+            }
             emittedLen = start + end;   // 单调推进(原始下标), 不会回头重切
             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
             segmentStartMs.set(System.currentTimeMillis());
             if (!segment.isBlank()) {
-                if ("force-boundary".equals(reason) && segment.length() < 8) {
-                    log.debug("[AsrSession] force-boundary segment too short ({}), skipped: '{}'", segment.length(), segment);
-                    return;
-                }
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                 log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
                         reason, segment.length(), lang, resolvedSpeakerId, punctuated != null,
