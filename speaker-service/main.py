@@ -32,7 +32,9 @@ PUNCT_NUM_THREADS = int(os.environ.get("PUNCT_NUM_THREADS", "1"))
 
 # ── 句边界检测模型（wtpsplit SaT，用于印尼语等无标点还原模型的语言）──────────
 # sat-3l 支持 85+ 语言(含 id)，约 100MB；首次启动自动从 HuggingFace 下载
-SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-3l")
+# sat-3l-sm 有 ONNX 导出，配合 ort_providers 无需 torch
+# 若需要更高精度可改为 sat-3l（同样支持 ort_providers）
+SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-3l-sm")
 
 
 @asynccontextmanager
@@ -63,10 +65,11 @@ async def lifespan(app: FastAPI):
     try:
         from wtpsplit import SaT
         t0 = time.time()
-        sat_model = SaT(SAT_MODEL_NAME)
+        # ort_providers 指定 ONNX Runtime 后端，无需 torch
+        sat_model = SaT(SAT_MODEL_NAME, ort_providers=["CPUExecutionProvider"])
         _ = sat_model.split("This is a sentence. This is another one.", lang_code="en")
         elapsed_ms = int((time.time() - t0) * 1000)
-        log.info("[sat] Model loaded and warmed up: %s, elapsed=%dms", SAT_MODEL_NAME, elapsed_ms)
+        log.info("[sat] Model loaded and warmed up: %s (ONNX), elapsed=%dms", SAT_MODEL_NAME, elapsed_ms)
     except Exception as e:
         log.warning("[sat] Failed to load SaT model (%s): %s — /segment-boundary will return no boundary", SAT_MODEL_NAME, e)
         sat_model = None
