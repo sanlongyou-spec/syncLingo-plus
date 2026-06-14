@@ -8,6 +8,7 @@ import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SessionSpeakerNameService;
+import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class RealtimeInterpretationFacade {
     private final InterpretationRecordService recordService;
     private final SessionSpeakerNameService sessionSpeakerNameService;
     private final AudioRecordService audioRecordService;
+    private final SpeakerTurnService speakerTurnService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -143,6 +145,8 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
+        speakerTurnService.flushSession(sessionId);
+        speakerTurnService.cleanupSession(sessionId);
         sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
@@ -180,6 +184,9 @@ public class RealtimeInterpretationFacade {
         String speakerName = sessionSpeakerNameService.getName(sessionId, speakerId);
         log.debug("[RealtimeInterpretationFacade] speaker lookup sessionId={} speakerId={} speakerName={}",
                 sessionId, speakerId, speakerName != null ? speakerName : "not mapped");
+
+        // 根据 speakerId 跟踪说话人切换，切换确认后触发异步发言摘要
+        speakerTurnService.processRecognized(sessionId, speakerId, text);
 
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
@@ -605,6 +612,8 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
+        speakerTurnService.flushSession(sessionId);
+        speakerTurnService.cleanupSession(sessionId);
         sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
     }

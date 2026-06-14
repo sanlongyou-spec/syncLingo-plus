@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  generateSpeakerSummary,
-  getAsrHotwords,
+getAsrHotwords,
   getMeetingParticipants,
   getMeetings,
   getUserLanguagePreference,
@@ -72,8 +71,6 @@ const normalizeVoiceCode = (code?: string | null) => {
 const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
 
-const MIN_SPEAKER_CHANGE_CHARS = 30
-
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
 
@@ -109,12 +106,7 @@ export default function InterpretationView() {
     scrollToBottom: scrollTranscriptToBottom,
   } = useSmartAutoScroll<HTMLDivElement>([transcripts, currentSource])
 
-  // Speaker change detection refs (ID-based for known speakers)
-  const speakerBufferRef = useRef<Record<string, string>>({})
-  const prevFinalSpeakerRef = useRef('')
   const speakerNameMapRef = useRef<Record<string, string>>({})
-  // Candidate new speaker accumulates here until MIN_SPEAKER_CHANGE_CHARS; prevents misidentification
-  const pendingSpeakerRef = useRef<{ speakerId: string; buffer: string } | null>(null)
 
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
@@ -199,58 +191,6 @@ export default function InterpretationView() {
       case 'recognized':
         if (msg.text) {
           rememberSpeakerName(messageSpeakerId, messageSpeakerName)
-          // Speaker change detection for auto-summary
-          if (messageSpeakerId) {
-            const text = (msg.text || '').trim()
-            if (isUnknownSpeakerId(messageSpeakerId)) {
-              // Attribute Unknown text to the last known speaker's buffer
-              const lastKnown = prevFinalSpeakerRef.current
-              if (lastKnown && !isUnknownSpeakerId(lastKnown)) {
-                speakerBufferRef.current[lastKnown] =
-                  ((speakerBufferRef.current[lastKnown] || '') + ' ' + text).trim()
-              }
-            } else if (messageSpeakerId === prevFinalSpeakerRef.current) {
-              // Same speaker confirmed — flush any pending misrecognition back to them
-              const pending = pendingSpeakerRef.current
-              if (pending) {
-                speakerBufferRef.current[messageSpeakerId] =
-                  ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + pending.buffer).trim()
-                pendingSpeakerRef.current = null
-              }
-              speakerBufferRef.current[messageSpeakerId] =
-                ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + text).trim()
-            } else {
-              // Different speaker — buffer until MIN_SPEAKER_CHANGE_CHARS to reject misidentifications
-              const pending = pendingSpeakerRef.current
-              if (pending?.speakerId === messageSpeakerId) {
-                pending.buffer = (pending.buffer + ' ' + text).trim()
-                if (pending.buffer.length >= MIN_SPEAKER_CHANGE_CHARS) {
-                  // Enough text — commit the speaker change
-                  const prevSpeaker = prevFinalSpeakerRef.current
-                  if (prevSpeaker && !isUnknownSpeakerId(prevSpeaker)) {
-                    const prevText = speakerBufferRef.current[prevSpeaker] || ''
-                    const prevName = speakerNameMapRef.current[prevSpeaker] || prevSpeaker
-                    if (prevText.length >= 30 && sessionIdRef.current) {
-                      void triggerSpeakerSummary(prevSpeaker, prevName, prevText, sessionIdRef.current)
-                    }
-                    delete speakerBufferRef.current[prevSpeaker]
-                  }
-                  speakerBufferRef.current[messageSpeakerId] =
-                    ((speakerBufferRef.current[messageSpeakerId] || '') + ' ' + pending.buffer).trim()
-                  prevFinalSpeakerRef.current = messageSpeakerId
-                  pendingSpeakerRef.current = null
-                }
-              } else {
-                // New candidate — flush previous pending back to prevFinalSpeaker (was misrecognition)
-                if (pending) {
-                  const curr = prevFinalSpeakerRef.current
-                  speakerBufferRef.current[curr] =
-                    ((speakerBufferRef.current[curr] || '') + ' ' + pending.buffer).trim()
-                }
-                pendingSpeakerRef.current = { speakerId: messageSpeakerId, buffer: text }
-              }
-            }
-          }
           setTranscripts(prev => [
             ...prev,
             {
@@ -339,10 +279,6 @@ export default function InterpretationView() {
         currentSpeakerIdRef.current = ''
         speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''
-        // Reset speaker-turn tracking so a new session never inherits stale buffers.
-        speakerBufferRef.current = {}
-        prevFinalSpeakerRef.current = ''
-        pendingSpeakerRef.current = null
         break
       case 'stopped':
         setIsRunning(false)
@@ -352,20 +288,6 @@ export default function InterpretationView() {
         break
     }
   }, [rememberSpeakerName, resolveSpeakerName])
-
-  const triggerSpeakerSummary = useCallback(async (
-    speakerId: string, speakerName: string, text: string, sid: string,
-  ) => {
-    console.info('[InterpretationView] triggerSpeakerSummary start:',
-      { speakerName, speakerId, textLen: text.length, sessionId: sid })
-    try {
-      const res = await generateSpeakerSummary({ userId, sessionId: sid, speakerId, speakerName, text })
-      console.info('[InterpretationView] triggerSpeakerSummary done:',
-        { speakerName, title: res.data?.title, summaryLen: res.data?.summary?.length })
-    } catch (e) {
-      console.warn('[InterpretationView] speaker summary failed:', e)
-    }
-  }, [userId])
 
   const resolveActiveMeetingTitle = async () => {
     try {
@@ -428,39 +350,6 @@ export default function InterpretationView() {
   const stopSession = async () => {
     if (!sessionId) return
     const sid = sessionId
-    // Resolve pending speaker before flushing
-    const pendingOnStop = pendingSpeakerRef.current
-    if (pendingOnStop) {
-      if (pendingOnStop.buffer.length >= MIN_SPEAKER_CHANGE_CHARS) {
-        // Spoke enough at end of session — commit the change
-        const prevSpeaker = prevFinalSpeakerRef.current
-        if (prevSpeaker && !isUnknownSpeakerId(prevSpeaker)) {
-          const prevText = speakerBufferRef.current[prevSpeaker] || ''
-          const prevName = speakerNameMapRef.current[prevSpeaker] || prevSpeaker
-          if (prevText.length >= 30) void triggerSpeakerSummary(prevSpeaker, prevName, prevText, sid)
-          delete speakerBufferRef.current[prevSpeaker]
-        }
-        speakerBufferRef.current[pendingOnStop.speakerId] =
-          ((speakerBufferRef.current[pendingOnStop.speakerId] || '') + ' ' + pendingOnStop.buffer).trim()
-        prevFinalSpeakerRef.current = pendingOnStop.speakerId
-      } else {
-        // Too short — flush back to previous speaker (misrecognition at end of session)
-        const curr = prevFinalSpeakerRef.current
-        speakerBufferRef.current[curr] =
-          ((speakerBufferRef.current[curr] || '') + ' ' + pendingOnStop.buffer).trim()
-      }
-      pendingSpeakerRef.current = null
-    }
-    // Flush last speaker's buffer before stopping
-    const lastSpeaker = prevFinalSpeakerRef.current
-    const lastText = speakerBufferRef.current[lastSpeaker] || ''
-    if (lastSpeaker && !isUnknownSpeakerId(lastSpeaker) && lastText.length >= 30) {
-      const lastName = speakerNameMapRef.current[lastSpeaker] || lastSpeaker
-      void triggerSpeakerSummary(lastSpeaker, lastName, lastText, sid)
-    }
-    speakerBufferRef.current = {}
-    prevFinalSpeakerRef.current = ''
-    pendingSpeakerRef.current = null
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null

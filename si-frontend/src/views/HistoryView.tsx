@@ -6,7 +6,7 @@ import {
   getActionItems,
   getMeetings,
   getMeetingSessions,
-  getMeetingNotificationRecipients,
+  getSystemUsers,
   getMeetingSummary,
   getPublicInterpretationResults,
   getSessionSpeakerIdentities,
@@ -30,16 +30,17 @@ import type {
   Meeting,
   MeetingActionItem,
   MeetingFile,
-  MeetingNotificationRecipient,
   MeetingParticipant,
   PreMeetingAttendanceResult,
   SpeakerSummaryRecord,
+  SystemUserInfo,
 } from '../types'
 import './InterpretationView.css'
 import './HistoryView.css'
 
 const DEFAULT_TITLE = '未命名会议'
 const SUMMARY_REQ_KEY = 'si_summary_requirements'
+const SUMMARY_RECIPIENTS_KEY = 'si_summary_default_recipients'
 
 type SpeakerActionStatus = 'idle' | 'loading' | 'done' | 'error'
 type TranscriptGroup = {
@@ -289,9 +290,11 @@ export default function HistoryView() {
   )
   const [summaryReqSaved, setSummaryReqSaved] = useState(false)
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
-  const [meetingRecipientAccounts, setMeetingRecipientAccounts] = useState<MeetingNotificationRecipient[]>([])
-  const [recipientAccountsLoading, setRecipientAccountsLoading] = useState(false)
-  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set())
+  const [systemUsers, setSystemUsers] = useState<SystemUserInfo[]>([])
+  const [systemUsersLoading, setSystemUsersLoading] = useState(false)
+  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
+    () => new Set(JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]') as string[])
+  )
   const hasFetchedSummaryRef = useRef(false)
 
   // ── Speaker tab ─────────────────────────────────────────
@@ -301,7 +304,6 @@ export default function HistoryView() {
     () => localStorage.getItem(STORAGE_KEYS.SPEAKER_SUMMARY_REQUIREMENTS) ?? ''
   )
   const [speakerReqSaved, setSpeakerReqSaved] = useState(false)
-  const [selectedSpeakerRecipients, setSelectedSpeakerRecipients] = useState<Set<string>>(new Set())
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerSaveStatus, setSpeakerSaveStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
@@ -404,9 +406,6 @@ export default function HistoryView() {
     setSpeakerRecords([])
     setSessions([])
     setSelectedSessionId(null)
-    setMeetingRecipientAccounts([])
-    setSelectedRecipients(new Set())
-    setSelectedSpeakerRecipients(new Set())
     setSpeakerRegenStatus({})
     setSpeakerSaveStatus({})
     setSpeakerPushStatus({})
@@ -426,22 +425,21 @@ export default function HistoryView() {
   }, [selectedMeetingId])
 
   useEffect(() => {
-    if (selectedMeetingId === null) return
-    setRecipientAccountsLoading(true)
-    getMeetingNotificationRecipients(selectedMeetingId)
-      .then(recipients => {
-        setMeetingRecipientAccounts(recipients)
-        const accountIds = new Set(recipients.map(recipient => recipient.teamsAccount))
-        setSelectedRecipients(new Set(accountIds))
-        setSelectedSpeakerRecipients(new Set(accountIds))
+    setSystemUsersLoading(true)
+    getSystemUsers()
+      .then(res => {
+        const withEmail = (res.data || []).filter(u => u.email && u.email.trim())
+        setSystemUsers(withEmail)
+        // Keep saved defaults; drop any that no longer exist in the directory
+        const savedEmails: string[] = JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
+        const valid = savedEmails.filter(e => withEmail.some(u => u.email === e))
+        if (valid.length > 0) {
+          setSelectedRecipients(new Set(valid))
+        }
       })
-      .catch(() => {
-        setMeetingRecipientAccounts([])
-        setSelectedRecipients(new Set())
-        setSelectedSpeakerRecipients(new Set())
-      })
-      .finally(() => setRecipientAccountsLoading(false))
-  }, [selectedMeetingId])
+      .catch(() => setSystemUsers([]))
+      .finally(() => setSystemUsersLoading(false))
+  }, [])
 
   // ── Load tab data lazily ─────────────────────────────────
   useEffect(() => {
@@ -598,7 +596,14 @@ export default function HistoryView() {
     hasFetchedSummaryRef.current = true
     try {
       const res = await regenerateMeetingSummary(selectedSessionId, summaryRequirements.trim() || undefined)
-      setSummaryText(res.data?.summary ?? '')
+      const text = res.data?.summary ?? ''
+      setSummaryText(text)
+      if (text) {
+        const recipients = Array.from(selectedRecipients)
+        if (recipients.length > 0) {
+          void pushSummaryPdf(selectedMeeting?.title || '会议总结', text, recipients)
+        }
+      }
     } catch { setSummaryText('') }
     finally { setSummaryLoading(false) }
   }
@@ -631,37 +636,29 @@ export default function HistoryView() {
     setTimeout(() => setSpeakerReqSaved(false), 1500)
   }
 
-  const toggleSummaryRecipient = (aadId: string) => {
+  const toggleRecipient = (email: string) => {
     setSelectedRecipients(prev => {
       const next = new Set(prev)
-      next.has(aadId) ? next.delete(aadId) : next.add(aadId)
+      next.has(email) ? next.delete(email) : next.add(email)
+      localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
       return next
     })
   }
 
-  const toggleSpeakerRecipient = (aadId: string) => {
-    setSelectedSpeakerRecipients(prev => {
-      const next = new Set(prev)
-      next.has(aadId) ? next.delete(aadId) : next.add(aadId)
-      return next
-    })
-  }
-
-  const regenerateSpeakerRecord = async (record: SpeakerSummaryRecord, statusKey: string) => {
+  const regenerateSpeakerRecord = async (record: SpeakerSummaryRecord, statusKey: string, idx: number) => {
     if (!record.id) return
     setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'loading' }))
     try {
       const res = await regenerateSpeakerSummary(record.id, speakerRequirements.trim() || undefined)
+      const updated = { ...record, title: res.data?.title ?? null, summary: res.data?.summary ?? '' }
       setSpeakerRecords(prev => prev.map(item =>
-        item.id === record.id
-          ? {
-              ...item,
-              title: res.data?.title ?? null,
-              summary: res.data?.summary ?? '',
-            }
-          : item
+        item.id === record.id ? { ...item, title: updated.title, summary: updated.summary } : item
       ))
       setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'done' }))
+      const recipients = Array.from(selectedRecipients)
+      if (recipients.length > 0 && updated.summary) {
+        void pushSpeakerSummaryToTeams(updated, recipients, statusKey, idx + 1)
+      }
       setTimeout(() => {
         setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
       }, 1500)
@@ -896,8 +893,6 @@ export default function HistoryView() {
                       setSummaryText(null)
                       setResults([])
                       setSpeakerRecords([])
-                      setSelectedRecipients(new Set())
-                      setSelectedSpeakerRecipients(new Set())
                       setSpeakerRegenStatus({})
                       setSpeakerPushStatus({})
                     }}
@@ -1075,16 +1070,17 @@ export default function HistoryView() {
 
               {/* ── 发言摘要 Tab ── */}
               {activeTab === 'speakers' && (() => {
-                const chosenRecipients = meetingRecipientAccounts
-                  .filter(recipient => selectedSpeakerRecipients.has(recipient.teamsAccount))
-                  .map(recipient => recipient.teamsAccount)
-                const allSelected = meetingRecipientAccounts.length > 0
-                  && meetingRecipientAccounts.every(recipient => selectedSpeakerRecipients.has(recipient.teamsAccount))
+                const chosenRecipients = systemUsers
+                  .filter(u => selectedRecipients.has(u.email!))
+                  .map(u => u.email!)
+                const allSelected = systemUsers.length > 0
+                  && systemUsers.every(u => selectedRecipients.has(u.email!))
                 const toggleAll = () => {
                   const next = allSelected
                     ? new Set<string>()
-                    : new Set(meetingRecipientAccounts.map(recipient => recipient.teamsAccount))
-                  setSelectedSpeakerRecipients(next)
+                    : new Set(systemUsers.map(u => u.email!))
+                  localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
+                  setSelectedRecipients(next)
                 }
                 return (
                   <div className="history-tab-content">
@@ -1107,29 +1103,29 @@ export default function HistoryView() {
                         rows={3}
                       />
                     </div>
-                    {recipientAccountsLoading ? (
-                      <div className="history-summary-send-hint">正在读取会议通知名单并匹配 Teams 账号...</div>
-                    ) : meetingRecipientAccounts.length === 0 ? (
+                    {systemUsersLoading ? (
+                      <div className="history-summary-send-hint">正在加载用户列表...</div>
+                    ) : systemUsers.length === 0 ? (
                       <div className="history-summary-send-hint">
-                        该会议通知的应参会名单中暂无可匹配的 Teams 账号。
+                        暂无可发送的用户，请先在系统管理中导入用户信息。
                       </div>
                     ) : (
                       <div className="history-summary-send-panel">
                         <div className="history-summary-send-header">
-                          <span className="history-summary-send-label">发言摘要发送账号</span>
+                          <span className="history-summary-send-label">发言摘要发送账号（默认，修改后自动保存）</span>
                           <button className="history-summary-send-all-btn" onClick={toggleAll}>
                             {allSelected ? '取消全选' : '全选'}
                           </button>
                         </div>
                         <div className="history-summary-send-list">
-                          {meetingRecipientAccounts.map(recipient => (
-                            <label key={recipient.teamsAccount} className="history-summary-send-item">
+                          {systemUsers.map(u => (
+                            <label key={u.email} className="history-summary-send-item">
                               <input
                                 type="checkbox"
-                                checked={selectedSpeakerRecipients.has(recipient.teamsAccount)}
-                                onChange={() => toggleSpeakerRecipient(recipient.teamsAccount)}
+                                checked={selectedRecipients.has(u.email!)}
+                                onChange={() => toggleRecipient(u.email!)}
                               />
-                              <span>{recipient.scheduleName} · {recipient.accountName || recipient.teamsAccount}</span>
+                              <span>{u.personName}{u.department ? ` · ${u.department}` : ''}</span>
                             </label>
                           ))}
                         </div>
@@ -1174,7 +1170,7 @@ export default function HistoryView() {
                               </button>
                               <button
                                 className="history-summary-regen-btn"
-                                onClick={() => { void regenerateSpeakerRecord(rec, statusKey) }}
+                                onClick={() => { void regenerateSpeakerRecord(rec, statusKey, idx) }}
                                 disabled={!rec.id || regenStatus === 'loading'}
                               >
                                 {regenStatus === 'done' ? '已重新生成' : regenStatus === 'error' ? '生成失败' : regenStatus === 'loading' ? '生成中...' : '按提示词重新生成'}
@@ -1205,17 +1201,18 @@ export default function HistoryView() {
               {/* ── 会议总结 Tab ── */}
               {activeTab === 'summary' && (() => {
                 const displayed = summaryText
-                const allSummarySelected = meetingRecipientAccounts.length > 0
-                  && meetingRecipientAccounts.every(recipient => selectedRecipients.has(recipient.teamsAccount))
+                const allSummarySelected = systemUsers.length > 0
+                  && systemUsers.every(u => selectedRecipients.has(u.email!))
                 const toggleAllSummary = () => {
                   const next = allSummarySelected
                     ? new Set<string>()
-                    : new Set(meetingRecipientAccounts.map(recipient => recipient.teamsAccount))
+                    : new Set(systemUsers.map(u => u.email!))
+                  localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
                   setSelectedRecipients(next)
                 }
-                const chosenSummaryRecipients = meetingRecipientAccounts
-                  .filter(recipient => selectedRecipients.has(recipient.teamsAccount))
-                  .map(recipient => recipient.teamsAccount)
+                const chosenSummaryRecipients = systemUsers
+                  .filter(u => selectedRecipients.has(u.email!))
+                  .map(u => u.email!)
                 return (
                   <div className="history-summary-tab">
                     <div className="history-summary-requirements">
@@ -1234,29 +1231,29 @@ export default function HistoryView() {
                       />
                     </div>
                     <div className="history-summary-send-settings">
-                      {recipientAccountsLoading ? (
-                        <div className="history-summary-send-hint">正在读取会议通知名单并匹配 Teams 账号...</div>
-                      ) : meetingRecipientAccounts.length === 0 ? (
+                      {systemUsersLoading ? (
+                        <div className="history-summary-send-hint">正在加载用户列表...</div>
+                      ) : systemUsers.length === 0 ? (
                         <div className="history-summary-send-hint">
-                          该会议通知的应参会名单中暂无可匹配的 Teams 账号。
+                          暂无可发送的用户，请先在系统管理中导入用户信息。
                         </div>
                       ) : (
                         <div className="history-summary-send-panel">
                           <div className="history-summary-send-header">
-                            <span className="history-summary-send-label">会议总结发送账号</span>
+                            <span className="history-summary-send-label">会议总结发送账号（默认，修改后自动保存）</span>
                             <button className="history-summary-send-all-btn" onClick={toggleAllSummary}>
                               {allSummarySelected ? '取消全选' : '全选'}
                             </button>
                           </div>
                           <div className="history-summary-send-list">
-                            {meetingRecipientAccounts.map(recipient => (
-                              <label key={recipient.teamsAccount} className="history-summary-send-item">
+                            {systemUsers.map(u => (
+                              <label key={u.email} className="history-summary-send-item">
                                 <input
                                   type="checkbox"
-                                  checked={selectedRecipients.has(recipient.teamsAccount)}
-                                  onChange={() => toggleSummaryRecipient(recipient.teamsAccount)}
+                                  checked={selectedRecipients.has(u.email!)}
+                                  onChange={() => toggleRecipient(u.email!)}
                                 />
-                                <span>{recipient.scheduleName} · {recipient.accountName || recipient.teamsAccount}</span>
+                                <span>{u.personName}{u.department ? ` · ${u.department}` : ''}</span>
                               </label>
                             ))}
                           </div>
