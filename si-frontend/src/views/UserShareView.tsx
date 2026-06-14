@@ -111,6 +111,7 @@ export default function UserShareView() {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null)
   const audioElRef = useRef<HTMLAudioElement | null>(null)
+  const audioElHeartbeatRef = useRef<number | null>(null)
   const audioGenRef = useRef(0)  // increments on every stopAudio; guards stale decoder callbacks
   const decoderRef = useRef<{ decode: (chunk: unknown) => void; close: () => void } | null>(null)
   const scheduleRef = useRef(0)
@@ -166,6 +167,10 @@ export default function UserShareView() {
     audioElRef.current?.pause()
     audioElRef.current = null
     audioDestRef.current = null
+    if (audioElHeartbeatRef.current !== null) {
+      window.clearInterval(audioElHeartbeatRef.current)
+      audioElHeartbeatRef.current = null
+    }
     void audioCtxRef.current?.close()
     audioCtxRef.current = null
     scheduleRef.current = 0
@@ -200,7 +205,9 @@ export default function UserShareView() {
       return
     }
 
-    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+    // latencyHint:'playback' uses a larger hardware buffer, reducing GC-pause glitches
+    // over long sessions and smoothing the audio fed into the MediaStreamDestination.
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: 'playback' })
     audioCtxRef.current = ctx
     void ctx.resume()
 
@@ -213,6 +220,17 @@ export default function UserShareView() {
     audioEl.srcObject = dest.stream
     audioEl.play().catch(() => { /* requires user gesture — already inside click handler */ })
     audioElRef.current = audioEl
+
+    // The browser can suspend the <audio> element during silent gaps between TTS sentences.
+    // Recover immediately on pause/stalled events; heartbeat catches browsers that skip events.
+    const recoverAudioEl = () => {
+      if (audioElRef.current === audioEl && audioEl.paused) {
+        audioEl.play().catch(() => {})
+      }
+    }
+    audioEl.addEventListener('pause', recoverAudioEl)
+    audioEl.addEventListener('stalled', recoverAudioEl)
+    audioElHeartbeatRef.current = window.setInterval(recoverAudioEl, 2000)
 
     const myGen = audioGenRef.current  // capture generation for this startAudio call
 
