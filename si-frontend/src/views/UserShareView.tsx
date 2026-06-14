@@ -255,9 +255,11 @@ export default function UserShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
-        // Cap schedule horizon: if backlog exceeds 6s, reset the schedule pointer so new packets
-        // start from now. Already-scheduled sources keep playing to avoid cutting off mid-sentence.
+        // Cap schedule horizon: if backlog exceeds 6s, stop all pending sources and reset the
+        // schedule pointer so new packets start from now, preventing old/new audio overlap.
         if (scheduleRef.current - ctx.currentTime > 6.0) {
+          pendingSourcesRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
+          pendingSourcesRef.current.clear()
           scheduleRef.current = ctx.currentTime + 0.05
         }
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)

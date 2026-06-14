@@ -586,6 +586,10 @@ public class RealtimeInterpretationFacade {
     }
 
     private double resolveTtsSpeed(String targetLang) {
+        if (targetLang == null) return Constants.TTS_SPEED_DEFAULT;
+        String lower = targetLang.toLowerCase();
+        if (lower.startsWith("id") || lower.startsWith("in")) return Constants.TTS_SPEED_INDONESIAN;
+        if (lower.startsWith(Constants.LANG_EN_SHORT)) return Constants.TTS_SPEED_ENGLISH;
         return Constants.TTS_SPEED_DEFAULT;
     }
 
