@@ -583,3 +583,9 @@ export const deleteAudioRecord = (id: number, userId: number): Promise<Result<vo
 
 export const getAudioDownloadUrl = (id: number, userId: number): string =>
   `/api/audio-records/${id}/download?userId=${userId}`
+
+export const getSummaryRecipients = (): Promise<Result<string[]>> =>
+  client.get<Result<string[]>>('/api/user/preference/summary-recipients').then(r => r.data)
+
+export const saveSummaryRecipients = (recipients: string[]): Promise<Result<void>> =>
+  client.put<Result<void>>('/api/user/preference/summary-recipients', recipients).then(r => r.data)

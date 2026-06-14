@@ -5,7 +5,7 @@ import com.si.backend.integration.LlmIntegration;
 import com.si.backend.integration.MeetingBotIntegration;
 import com.si.backend.mapper.InterpretationSessionMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
-import com.si.backend.mapper.UserMapper;
+import com.si.backend.service.UserPreferenceService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -49,8 +49,8 @@ class SpeakerSummaryServiceTest {
                 mapper,
                 embeddingService,
                 mock(InterpretationSessionMapper.class),
-                mock(UserMapper.class),
-                mock(MeetingBotIntegration.class)
+                mock(MeetingBotIntegration.class),
+                mock(UserPreferenceService.class)
         );
         SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
                 .id(7L)
@@ -78,8 +78,8 @@ class SpeakerSummaryServiceTest {
         SpeakerSummaryService service = new SpeakerSummaryService(
                 llmIntegration, mapper, embeddingService,
                 mock(InterpretationSessionMapper.class),
-                mock(UserMapper.class),
-                mock(MeetingBotIntegration.class)
+                mock(MeetingBotIntegration.class),
+                mock(UserPreferenceService.class)
         );
         SpeakerSummaryRecord record = SpeakerSummaryRecord.builder()
                 .id(8L)

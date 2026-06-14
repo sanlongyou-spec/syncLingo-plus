@@ -14,6 +14,8 @@ public class SiUser {
     private String nickname;
     private String email;
     private String role;
+    /** 发言摘要自动发送收件人，JSON 数组格式，如 ["a@jlg.co.id","b@jlg.co.id"] */
+    private String summaryRecipients;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

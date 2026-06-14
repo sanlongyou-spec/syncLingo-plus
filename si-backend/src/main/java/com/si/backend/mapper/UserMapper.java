@@ -28,4 +28,10 @@ public interface UserMapper {
             "VALUES (#{username}, #{password}, #{nickname}, #{email}, #{role}, NOW(), NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(SiUser user);
+
+    @Select("SELECT summary_recipients FROM si_user WHERE id = #{userId}")
+    String getSummaryRecipients(@Param("userId") Long userId);
+
+    @Update("UPDATE si_user SET summary_recipients = #{recipients}, update_time = NOW() WHERE id = #{userId}")
+    int updateSummaryRecipients(@Param("userId") Long userId, @Param("recipients") String recipients);
 }

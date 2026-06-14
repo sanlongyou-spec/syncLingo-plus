@@ -38,7 +38,9 @@
     <appender-ref ref="FILE"/>
   </logger>
 
-  <logger name="com.si.backend.integration" level="DEBUG" additivity="false">
+  <!-- integration 默认 INFO；Cartesia chunk/flush 等高频 DEBUG 已关闭 -->
+  <!-- 排查特定问题时可临时把某个类改回 DEBUG，例如 AzureAsrIntegration -->
+  <logger name="com.si.backend.integration" level="INFO" additivity="false">
     <appender-ref ref="STDERR"/>
     <appender-ref ref="FILE"/>
   </logger>

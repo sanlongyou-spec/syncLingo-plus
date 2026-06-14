@@ -24,6 +24,10 @@ public class AsrService {
 
     private final Map<String, AsrSessionContext> activeSessions = new ConcurrentHashMap<>();
 
+    /** 每个会话最近 final 分段的去重缓存: sessionId → (speakerId:textHash → emitTimeMs) */
+    private final Map<String, Map<String, Long>> recentFinals = new ConcurrentHashMap<>();
+    private static final long DEDUP_WINDOW_MS = 5_000;
+
     /**
      * 启动 ASR 连续识别。
      *
@@ -80,12 +84,26 @@ public class AsrService {
         AsrSessionContext context = new AsrSessionContext(sessionId, asrSession);
         activeSessions.put(sessionId, context);
 
+        recentFinals.put(sessionId, new ConcurrentHashMap<>());
         asrSession.setCallback(new AzureAsrIntegration.RecognizerCallback() {
             @Override
             public void onRecognizing(String text, String language, String speakerId, boolean isFinal) {
                 if (isFinal) {
+                    if (text == null || text.isBlank()) return;
+                    String dedupKey = (speakerId == null ? "" : speakerId) + ":" + text.hashCode() + ":" + text.length();
+                    Map<String, Long> sessionDedup = recentFinals.get(sessionId);
+                    if (sessionDedup != null) {
+                        long now = System.currentTimeMillis();
+                        Long prevMs = sessionDedup.get(dedupKey);
+                        if (prevMs != null && now - prevMs < DEDUP_WINDOW_MS) {
+                            log.warn("[AsrService] duplicate final segment suppressed, sessionId={}, speakerId={}, textLen={}",
+                                    sessionId, speakerId, text.length());
+                            return;
+                        }
+                        sessionDedup.put(dedupKey, now);
+                    }
                     log.info("[AsrService] ASR recognized, sessionId={}, speakerId={}, textLen={}, lang={}",
-                            sessionId, speakerId, text != null ? text.length() : 0, language);
+                            sessionId, speakerId, text.length(), language);
                     onRecognized.onResult(text, language, speakerId);
                 } else {
                     log.trace("[AsrService] ASR recognizing, sessionId={}, speakerId={}, textLen={}, lang={}",
@@ -132,6 +150,7 @@ public class AsrService {
         log.info("[AsrService] stopRecognition start, sessionId={}", sessionId);
         asrIntegration.closeSession(sessionId);
         activeSessions.remove(sessionId);
+        recentFinals.remove(sessionId);
         log.info("[AsrService] stopRecognition end, sessionId={}", sessionId);
     }
 

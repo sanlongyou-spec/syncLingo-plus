@@ -21,6 +21,8 @@ import {
   renameAudioRecord,
   deleteAudioRecord,
   getAudioDownloadUrl,
+  getSummaryRecipients,
+  saveSummaryRecipients,
 } from '../api'
 import { ROUTES, STORAGE_KEYS } from '../constants'
 import type {
@@ -446,16 +448,19 @@ export default function HistoryView() {
 
   useEffect(() => {
     setSystemUsersLoading(true)
-    getSystemUsers()
-      .then(res => {
-        const withEmail = (res.data || []).filter(u => u.email && u.email.trim())
+    Promise.all([getSystemUsers(), getSummaryRecipients().catch(() => ({ data: null }))])
+      .then(([usersRes, recipientsRes]) => {
+        const withEmail = (usersRes.data || []).filter(u => u.email && u.email.trim())
         setSystemUsers(withEmail)
-        // Keep saved defaults; drop any that no longer exist in the directory
-        const savedEmails: string[] = JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
-        const valid = savedEmails.filter(e => withEmail.some(u => u.email === e))
-        if (valid.length > 0) {
-          setSelectedRecipients(new Set(valid))
-        }
+        // Prefer backend-stored recipients; fall back to localStorage
+        const backendEmails: string[] | null = recipientsRes.data ?? null
+        const sourceEmails: string[] = backendEmails && backendEmails.length > 0
+          ? backendEmails
+          : JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
+        const valid = sourceEmails.filter(e => withEmail.some(u => u.email === e))
+        const validSet = new Set(valid)
+        setSelectedRecipients(validSet)
+        localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(validSet)))
       })
       .catch(() => setSystemUsers([]))
       .finally(() => setSystemUsersLoading(false))
@@ -671,7 +676,9 @@ export default function HistoryView() {
     setSelectedRecipients(prev => {
       const next = new Set(prev)
       next.has(email) ? next.delete(email) : next.add(email)
-      localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(next)))
+      const list = Array.from(next)
+      localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(list))
+      saveSummaryRecipients(list).catch(() => {})
       return next
     })
   }

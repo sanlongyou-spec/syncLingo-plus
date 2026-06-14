@@ -200,7 +200,7 @@ export default function UserShareView() {
       return
     }
 
-    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: 'playback' })
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
     audioCtxRef.current = ctx
     void ctx.resume()
 
@@ -237,11 +237,9 @@ export default function UserShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
-        // Cap schedule horizon: if backlog exceeds 6s, stop all pending sources and reset to prevent
-        // AudioBufferSourceNode accumulation (memory leak) and unrecoverable lag after tab throttling.
+        // Cap schedule horizon: if backlog exceeds 6s, reset the schedule pointer so new packets
+        // start from now. Already-scheduled sources keep playing to avoid cutting off mid-sentence.
         if (scheduleRef.current - ctx.currentTime > 6.0) {
-          pendingSourcesRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
-          pendingSourcesRef.current.clear()
           scheduleRef.current = ctx.currentTime + 0.05
         }
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
