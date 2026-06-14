@@ -360,7 +360,7 @@ public class RealtimeInterpretationFacade {
         final String finalTargetLang = targetLang;
         final long ttsSequence = reservation.sequence();
         final String ttsTaskId = reservation.taskId();
-        final double ttsSpeed = resolveTtsSpeed(targetLang, text.length(), translated.length());
+        final double ttsSpeed = Constants.TTS_SPEED_DEFAULT;
         final int ttsSampleRate = cartesiaProperties.getTts().getSampleRate();
 
         log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, textLen={}, voiceId={}, speed={}, prevDone={}",
@@ -583,23 +583,6 @@ public class RealtimeInterpretationFacade {
         if (lower.startsWith(Constants.LANG_EN_SHORT)) return "en";
         if (lower.startsWith("zh")) return "zh";
         return null;
-    }
-
-    private double resolveTtsSpeed(String targetLang, int sourceLen, int translatedLen) {
-        if (targetLang == null) return Constants.TTS_SPEED_DEFAULT;
-        String lower = targetLang.toLowerCase();
-        boolean isId = lower.startsWith("id") || lower.startsWith("in");
-        boolean isEn = lower.startsWith(Constants.LANG_EN_SHORT);
-        if (!isId && !isEn) return Constants.TTS_SPEED_DEFAULT;
-
-        double minSpeed = isId ? Constants.TTS_SPEED_INDONESIAN : Constants.TTS_SPEED_ENGLISH;
-        if (sourceLen <= 0 || translatedLen <= 0) return minSpeed;
-
-        // 动态语速：令 TTS 音频时长 ≈ 原声窗口时长。
-        // Cartesia speed 参数与说话速率成正比，故 speed = translatedLen/sourceLen 时音频时长恰好等于原声。
-        // 乘 0.9 留 10% 余量，确保 TTS 在下一句到达前播完；不低于语言最小速率。
-        double targetSpeed = (double) translatedLen / sourceLen * 0.9;
-        return Math.min(Math.max(targetSpeed, minSpeed), Constants.TTS_SPEED_MAX);
     }
 
     // ---------- Cleanup ----------

@@ -149,14 +149,8 @@ public final class Constants {
     public static final int CARTESIA_CUSTOM_BUFFER_DELAY_MS = 0;
     /** Cartesia TTS WebSocket JSON 字段：speed（语速倍率，1.0 为正常） */
     public static final String CARTESIA_FIELD_SPEED = "speed";
-    /** 印尼语 TTS 语速倍率（1.2 = 加速 20%） */
-    public static final double TTS_SPEED_INDONESIAN = 1.2;
-    /** 英语 TTS 语速倍率（1.1 = 加速 10%） */
-    public static final double TTS_SPEED_ENGLISH = 1.1;
-    /** 默认 TTS 语速倍率（正常速度） */
+    /** TTS 语速倍率（固定 1.0 自然语速；所有加速由前端 playbackRate ≤ 1.35 驱动） */
     public static final double TTS_SPEED_DEFAULT = 1.0;
-    /** TTS 语速上限；超过此值 Cartesia 音质明显下降 */
-    public static final double TTS_SPEED_MAX = 1.6;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
     public static final String CARTESIA_FIELD_AUDIO = "data";
     /** Cartesia TTS WebSocket JSON 字段：done */

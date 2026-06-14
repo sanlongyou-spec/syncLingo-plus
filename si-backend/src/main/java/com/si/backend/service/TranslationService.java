@@ -128,8 +128,8 @@ public class TranslationService {
         }
 
         String direction = resolveCompressionDirection(targetLang);
-        // 目标字数 = 原始中文字数：令压缩后译文长度 ≤ 中文原文，
-        // 配合动态 TTS 语速使 TTS 音频时长 ≈ 原声窗口，消除积压溢出。
+        // 目标字数 = 原始中文字数：TTS 以 1.0x 自然语速合成，压缩后译文长度 ≤ 中文原文时
+        // TTS 时长 ≈ 原声窗口，前端 ≤1.35x 追赶可消化所有剩余积压。
         int targetMaxChars = sourceText.length();
         log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, targetMaxChars={}, model={}",
                 direction, sourceText.length(), translatedText.length(), targetMaxChars, openAiProperties.getCompressionModel());
