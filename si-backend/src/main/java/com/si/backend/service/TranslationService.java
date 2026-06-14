@@ -131,11 +131,11 @@ public class TranslationService {
         double ratio = isEnglishTarget(targetLang)
                 ? openAiProperties.getCompressionZhToEnTargetRatio()
                 : openAiProperties.getCompressionZhToIdTargetRatio();
-        int targetMaxChars = (int) (translatedText.length() * ratio);
-        log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, targetMaxChars={}, model={}",
-                direction, sourceText.length(), translatedText.length(), targetMaxChars, openAiProperties.getCompressionModel());
+        log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, targetRatio={}%, model={}",
+                direction, sourceText.length(), translatedText.length(),
+                String.format("%.0f", ratio * 100), openAiProperties.getCompressionModel());
         try {
-            String compressed = compressByDirection(translatedText, direction, targetMaxChars);
+            String compressed = compressByDirection(translatedText, direction);
             if (compressed == null || compressed.isBlank()) {
                 return translatedText;
             }
@@ -179,11 +179,11 @@ public class TranslationService {
         return isEnglishTarget(targetLang) ? COMPRESSION_DIRECTION_ZH_TO_EN : COMPRESSION_DIRECTION_ZH_TO_ID;
     }
 
-    private String compressByDirection(String text, String direction, int targetMaxChars) throws IOException {
+    private String compressByDirection(String text, String direction) throws IOException {
         if (COMPRESSION_DIRECTION_ZH_TO_EN.equals(direction)) {
-            return llmIntegration.compressEnglish(text, targetMaxChars);
+            return llmIntegration.compressEnglish(text);
         }
-        return llmIntegration.compressIndonesian(text, targetMaxChars);
+        return llmIntegration.compressIndonesian(text);
     }
 
     private boolean isIndonesianTarget(String targetLang) {
