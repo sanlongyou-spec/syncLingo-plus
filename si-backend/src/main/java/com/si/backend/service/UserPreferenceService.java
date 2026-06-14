@@ -23,11 +23,14 @@ public class UserPreferenceService {
     @PostConstruct
     public void initColumns() {
         try {
-            jdbcTemplate.execute(
-                "ALTER TABLE si_user ADD COLUMN IF NOT EXISTS summary_recipients TEXT DEFAULT NULL"
-            );
+            jdbcTemplate.execute("ALTER TABLE si_user ADD COLUMN summary_recipients TEXT DEFAULT NULL");
+            log.info("[UserPreferenceService] summary_recipients column added to si_user");
         } catch (Exception e) {
-            log.debug("[UserPreferenceService] summary_recipients column already exists or migration skipped: {}", e.getMessage());
+            if (e.getMessage() != null && e.getMessage().contains("Duplicate column")) {
+                log.debug("[UserPreferenceService] summary_recipients column already exists");
+            } else {
+                log.warn("[UserPreferenceService] failed to add summary_recipients column: {}", e.getMessage());
+            }
         }
     }
 

@@ -3,7 +3,7 @@ logging:
     root: WARN
     com.si.backend: INFO
     com.microsoft.cognitiveservices.speech: INFO
-    com.si.backend.integration: DEBUG
+    com.si.backend.integration: INFO
 
 spring:
   datasource:
