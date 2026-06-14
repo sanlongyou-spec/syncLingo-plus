@@ -208,6 +208,9 @@ public class AzureAsrIntegration {
         private final java.util.concurrent.atomic.AtomicLong segmentStartMs = new java.util.concurrent.atomic.AtomicLong(0);
         /** 当前句已发出(最终)的字符数, 单调只增, 只在 segLock 内改 → 绝不重发已发文本(防失控刷段) */
         private int emittedLen = 0;
+        /** emittedLen 边界前 EMIT_SUFFIX_LEN 个字符的指纹，用于检测 ASR 文本修正导致的指针漂移 */
+        private String emittedSuffix = "";
+        private static final int EMIT_SUFFIX_LEN = 16;
         /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
         private String prevText = "";
         /** 序列化 中间/最终 结果处理(Azure 事件可能在不同线程派发) */
@@ -345,6 +348,7 @@ public class AzureAsrIntegration {
                     hadForced = emittedLen > 0;
                     remainder = full.substring(Math.min(emittedLen, full.length())).trim();
                     emittedLen = 0;
+                    emittedSuffix = "";
                     prevText = "";
                 }
                 segmentStartMs.set(0);
@@ -380,6 +384,29 @@ public class AzureAsrIntegration {
             }
             int stableAbs = commonPrefixLen(text, prevText);
             prevText = text;
+
+            // ── emittedLen 对齐检查：ASR 修正可能改写 emittedLen 之前的文本，导致指针漂移 ──
+            // 用指纹（边界前 N 字符）验证 emittedLen 在新文本中是否仍正确；不对则搜索修正。
+            if (emittedLen > 0 && !emittedSuffix.isEmpty() && emittedLen <= text.length()) {
+                int checkStart = Math.max(0, emittedLen - emittedSuffix.length());
+                String boundary = text.substring(checkStart, emittedLen);
+                if (!boundary.equals(emittedSuffix)) {
+                    // 文本在 emittedLen 之前被修正；在新文本中搜索指纹定位正确边界
+                    int found = text.lastIndexOf(emittedSuffix, emittedLen + emittedSuffix.length());
+                    if (found >= 0) {
+                        int corrected = found + emittedSuffix.length();
+                        log.debug("[AsrSession] emittedLen corrected {} → {} (ASR revision)", emittedLen, corrected);
+                        emittedLen = corrected;
+                    } else {
+                        // 指纹丢失（大幅修正）：回退到稳定前缀位置，防止重发已发内容
+                        log.debug("[AsrSession] emittedLen reset {} → {} (suffix lost in ASR revision)", emittedLen, stableAbs);
+                        emittedLen = stableAbs;
+                        emittedSuffix = stableAbs > 0
+                                ? text.substring(Math.max(0, stableAbs - EMIT_SUFFIX_LEN), stableAbs) : "";
+                    }
+                }
+            }
+
             int start = emittedLen;
             if (start >= text.length()) {
                 return;
@@ -480,6 +507,7 @@ public class AzureAsrIntegration {
             }
             String segment = emitText != null ? emitText : working.substring(0, end).trim();
             emittedLen = start + end;   // 单调推进(原始下标), 不会回头重切
+            emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
             segmentStartMs.set(System.currentTimeMillis());
             if (!segment.isBlank()) {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
@@ -599,7 +627,7 @@ public class AzureAsrIntegration {
             for (int i = startIndex; i < text.length(); ) {
                 int codePoint = text.codePointAt(i);
                 int nextIndex = i + Character.charCount(codePoint);
-                if (isSentenceEnd(codePoint) && !isDecimalPoint(text, i)
+                if (isSentenceEnd(codePoint) && !isInNumberContext(text, i)
                         && isLikelySentenceBoundary(text, nextIndex, codePoint)) {
                     return consumeClosingPunctuationAndWhitespace(text, nextIndex);
                 }
@@ -617,12 +645,35 @@ public class AzureAsrIntegration {
                     || codePoint == 0x2026;
         }
 
-        private boolean isDecimalPoint(String text, int index) {
-            return text.charAt(index) == '.'
-                    && index > 0
-                    && index + 1 < text.length()
-                    && Character.isDigit(text.charAt(index - 1))
-                    && Character.isDigit(text.charAt(index + 1));
+        /**
+         * 检测标点位置是否处于数字语境（CT-Transformer 会在数字中插入空格，如 `0 . 1`、`6 . 6`）。
+         * 支持 ASCII 小数点（`.`）和 CT-Transformer 在数字末尾误插的中文句号（`。` 0x3002）。
+         * 对 `.`：前后跳过空格后都是数字（或后跟 `%`），则视为小数点而非句末。
+         * 对 `。`：紧前跳过空格后是数字或 `%`，则视为数字结尾处误插标点而非真实句末。
+         */
+        private boolean isInNumberContext(String text, int index) {
+            int codePoint = text.codePointAt(index);
+            if (codePoint == '.') {
+                // 向前跳过空格，找前一个非空白字符
+                int prev = index - 1;
+                while (prev >= 0 && text.charAt(prev) == ' ') prev--;
+                if (prev < 0 || !Character.isDigit(text.charAt(prev))) return false;
+                // 向后跳过空格，找后一个非空白字符
+                int next = index + 1;
+                while (next < text.length() && text.charAt(next) == ' ') next++;
+                if (next >= text.length()) return false;
+                char nc = text.charAt(next);
+                return Character.isDigit(nc) || nc == '%';
+            }
+            if (codePoint == 0x3002) { // 中文句号 `。`
+                // 前一个非空白字符是数字或 %（CT-Transformer 在数字末尾误插的 `。`）
+                int prev = index - 1;
+                while (prev >= 0 && text.charAt(prev) == ' ') prev--;
+                if (prev < 0) return false;
+                char pc = text.charAt(prev);
+                return Character.isDigit(pc) || pc == '%';
+            }
+            return false;
         }
 
         private boolean isLikelySentenceBoundary(String text, int nextIndex, int codePoint) {

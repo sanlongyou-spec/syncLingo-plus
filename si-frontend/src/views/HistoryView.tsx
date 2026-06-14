@@ -1179,7 +1179,7 @@ export default function HistoryView() {
                     {!selectedSessionId && <div className="si-tri-empty">该会议尚未进行同传，暂无发言摘要</div>}
                     {selectedSessionId && speakerLoading && <div className="history-summary-loading"><span className="history-summary-spinner" />加载中...</div>}
                     {selectedSessionId && !speakerLoading && speakerRecords.length === 0 && (
-                      <div className="history-summary-empty">暂无发言人摘要（同传结束后自动生成）</div>
+                      <div className="history-summary-empty">暂无发言人摘要</div>
                     )}
                     {selectedSessionId && !speakerLoading && speakerRecords.map((rec, idx) => {
                       const statusKey = String(rec.id ?? `${rec.sessionId || 'speaker'}-${idx}`)

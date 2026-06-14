@@ -29,8 +29,8 @@ public class SpeakerTurnService {
     private static final int MIN_SWITCH_CONFIRM_CHARS = 30;
     /** 发言文本字符下限（过短不值得生成摘要） */
     private static final int MIN_SUMMARY_CHARS = 30;
-    /** 发言时长下限：至少 1 分钟才生成摘要 */
-    private static final long MIN_SPEAKING_DURATION_MS = 60_000L;
+    /** 发言时长下限：至少 1.5 分钟才生成摘要（说话人切换时触发） */
+    private static final long MIN_SPEAKING_DURATION_MS = 90_000L;
 
     private final SpeakerSummaryService speakerSummaryService;
     private final SessionSpeakerNameService sessionSpeakerNameService;
@@ -198,8 +198,9 @@ public class SpeakerTurnService {
 
     private static boolean isUnknownSpeaker(String speakerId) {
         if (speakerId == null || speakerId.isBlank()) return true;
-        String lower = speakerId.trim().toLowerCase();
-        return lower.equals("unknown") || lower.startsWith("guest");
+        // Azure ConversationTranscriber 使用 "Guest-N" 作为真实说话人 ID（即声纹分组后的 diarization ID）。
+        // 只有字面量 "Unknown" 才是未识别说话人，Guest-* 不能视为未知。
+        return speakerId.trim().equalsIgnoreCase("unknown");
     }
 
     private static String bufferKey(String sessionId, String speakerId) {

@@ -50,7 +50,7 @@ public class PunctuationServiceIntegration {
                 .connectTimeout(1, TimeUnit.SECONDS)
                 .readTimeout(timeoutMs + 10L, TimeUnit.MILLISECONDS) // 比 timeout 多 10ms 余量
                 .writeTimeout(200, TimeUnit.MILLISECONDS)
-                .retryOnConnectionFailure(false)
+                .retryOnConnectionFailure(true)  // 对 keep-alive 连接重置自动重试一次
                 .build();
         log.info("[PunctuationService] enabled={}, url={}, timeoutMs={}", enabled, url, timeoutMs);
     }
