@@ -155,6 +155,8 @@ public final class Constants {
     public static final double TTS_SPEED_ENGLISH = 1.1;
     /** 默认 TTS 语速倍率（正常速度） */
     public static final double TTS_SPEED_DEFAULT = 1.0;
+    /** TTS 语速上限；超过此值 Cartesia 音质明显下降 */
+    public static final double TTS_SPEED_MAX = 1.6;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
     public static final String CARTESIA_FIELD_AUDIO = "data";
     /** Cartesia TTS WebSocket JSON 字段：done */

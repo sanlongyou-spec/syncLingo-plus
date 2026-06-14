@@ -39,6 +39,12 @@ public class AzureSpeechProperties {
         private long forceSegmentMs = 0L;
         /** 让中间结果也带说话人分轨（减少 Unknown，强制分段也能拿到 speakerId） */
         private boolean diarizeIntermediateResults = true;
+        /**
+         * sentence-punct 触发前中文段的最小字符数。
+         * 短于此值的句子不在句末切断，等待下一个句末标点累积到足够长度再切。
+         * 0 = 不限制（旧行为）。
+         */
+        private int minSentenceEmitZhChars = 45;
     }
 
     @Data

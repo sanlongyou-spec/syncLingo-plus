@@ -198,6 +198,8 @@ public class AzureAsrIntegration {
         private final int maxSegmentChars;
         /** run-on 长句兜底：一段说话超过此 ms 仍无句末标点时，在最后一个逗号处强切，0 = 关闭 */
         private final long forceSegmentMs;
+        /** sentence-punct 触发前中文段的最小字符数；0 = 不限制 */
+        private final int minSentenceEmitZhChars;
         /** 标点还原服务（null = 未启用），用于在 Transcribing 中间结果里推断句末标点位置 */
         private final PunctuationServiceIntegration punctuationSvc;
         /** 句边界检测服务（null = 未启用），用于印尼语等无标点还原模型的语言 */
@@ -242,6 +244,7 @@ public class AzureAsrIntegration {
             this.maxSegmentWords = asrConfig.getMaxSegmentWords();
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
+            this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -261,6 +264,7 @@ public class AzureAsrIntegration {
             this.maxSegmentWords = asrConfig.getMaxSegmentWords();
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
+            this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -474,17 +478,25 @@ public class AzureAsrIntegration {
             String emitText = null;   // null → 用 working.substring(0, end)
 
             // 1) 句末标点：在 detectionText 中找，映射回 working 下标；
-            //    无标点时对印尼语用 wtpsplit 边界补位
+            //    中文段跳过短于 minSentenceEmitZhChars 的句边界，继续向后找更长的句末位置。
+            //    无标点时对印尼语用 wtpsplit 边界补位。
             if (sentenceSegmentationEnabled) {
-                int ep = findSentenceSegmentEnd(detectionText, 0);
-                if (ep != NO_SEGMENT) {
+                boolean isChinese = isChineseSegment(working, 0, lang);
+                int searchFrom = 0;
+                while (end == NO_SEGMENT) {
+                    int ep = findSentenceSegmentEnd(detectionText, searchFrom);
+                    if (ep == NO_SEGMENT) break;
                     int eo = punctuated != null ? mapPunctuatedToOriginal(working, punctuated, ep) : ep;
-                    if (eo > 0 && eo <= safe) {
-                        end = eo;
-                        reason = punctuated != null ? "sentence-punct" : "sentence";
-                        if (punctuated != null) {
-                            emitText = punctuated.substring(0, ep).trim();
-                        }
+                    if (eo <= 0 || eo > safe) break;
+                    if (isChinese && minSentenceEmitZhChars > 0 && eo < minSentenceEmitZhChars) {
+                        log.debug("[AsrSession] sentence-punct skipped (too short), eo={} < minEmit={}", eo, minSentenceEmitZhChars);
+                        searchFrom = ep;
+                        continue;
+                    }
+                    end = eo;
+                    reason = punctuated != null ? "sentence-punct" : "sentence";
+                    if (punctuated != null) {
+                        emitText = punctuated.substring(0, ep).trim();
                     }
                 }
                 // 无标点边界：用 wtpsplit 检测到的语义句边界（印尼语）

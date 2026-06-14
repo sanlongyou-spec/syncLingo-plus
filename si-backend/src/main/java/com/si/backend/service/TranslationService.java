@@ -128,10 +128,13 @@ public class TranslationService {
         }
 
         String direction = resolveCompressionDirection(targetLang);
-        log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, model={}",
-                direction, sourceText.length(), translatedText.length(), openAiProperties.getCompressionModel());
+        // 目标字数 = 原始中文字数：令压缩后译文长度 ≤ 中文原文，
+        // 配合动态 TTS 语速使 TTS 音频时长 ≈ 原声窗口，消除积压溢出。
+        int targetMaxChars = sourceText.length();
+        log.info("[TranslationService] compress start, direction={}, sourceTextLen={}, translatedLen={}, targetMaxChars={}, model={}",
+                direction, sourceText.length(), translatedText.length(), targetMaxChars, openAiProperties.getCompressionModel());
         try {
-            String compressed = compressByDirection(translatedText, direction);
+            String compressed = compressByDirection(translatedText, direction, targetMaxChars);
             if (compressed == null || compressed.isBlank()) {
                 return translatedText;
             }
@@ -175,11 +178,11 @@ public class TranslationService {
         return isEnglishTarget(targetLang) ? COMPRESSION_DIRECTION_ZH_TO_EN : COMPRESSION_DIRECTION_ZH_TO_ID;
     }
 
-    private String compressByDirection(String text, String direction) throws IOException {
+    private String compressByDirection(String text, String direction, int targetMaxChars) throws IOException {
         if (COMPRESSION_DIRECTION_ZH_TO_EN.equals(direction)) {
-            return llmIntegration.compressEnglish(text);
+            return llmIntegration.compressEnglish(text, targetMaxChars);
         }
-        return llmIntegration.compressIndonesian(text);
+        return llmIntegration.compressIndonesian(text, targetMaxChars);
     }
 
     private boolean isIndonesianTarget(String targetLang) {

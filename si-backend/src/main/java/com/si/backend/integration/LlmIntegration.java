@@ -49,7 +49,8 @@ public class LlmIntegration {
             + "- Only delete fillers, repetition, weak modifiers, and non-essential promotional wording.\n"
             + "- Preserve all facts, actions, entities, numbers, and results.\n"
             + "- Keep the original order.\n"
-            + "- Target length: keep about %s of the original length when possible.\n\n"
+            + "- Target length: keep about %s of the original length when possible.\n"
+            + "- Hard limit: output MUST be at most %d characters. If the input is already within the limit, return it unchanged.\n\n"
             + "Output only the compressed text, no explanation.";
 
     private static final String ENGLISH_COMPRESSION_PROMPT_TEMPLATE =
@@ -67,7 +68,8 @@ public class LlmIntegration {
             + "[Compression Rules]\n"
             + "- Only delete fillers, repetition, weak modifiers, and redundant wording.\n"
             + "- Preserve sentence order and the speaker's intent.\n"
-            + "- Target length: keep about %s of the original length when possible.\n\n"
+            + "- Target length: keep about %s of the original length when possible.\n"
+            + "- Hard limit: output MUST be at most %d characters. If the input is already within the limit, return it unchanged.\n\n"
             + "Output only the compressed English text, no explanation.";
 
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
@@ -127,17 +129,19 @@ public class LlmIntegration {
      * @return compressed Indonesian text
      * @throws IOException when OpenAI does not return usable text
      */
-    public String compressIndonesian(String text) throws IOException {
+    public String compressIndonesian(String text, int targetMaxChars) throws IOException {
         return compress(text, "zh->id", buildPrompt(
                 INDONESIAN_COMPRESSION_PROMPT_TEMPLATE,
-                openAiProperties.getCompressionZhToIdTargetRatio()
+                openAiProperties.getCompressionZhToIdTargetRatio(),
+                targetMaxChars
         ));
     }
 
-    public String compressEnglish(String text) throws IOException {
+    public String compressEnglish(String text, int targetMaxChars) throws IOException {
         return compress(text, "zh->en", buildPrompt(
                 ENGLISH_COMPRESSION_PROMPT_TEMPLATE,
-                openAiProperties.getCompressionZhToEnTargetRatio()
+                openAiProperties.getCompressionZhToEnTargetRatio(),
+                targetMaxChars
         ));
     }
 
@@ -155,8 +159,8 @@ public class LlmIntegration {
         return result;
     }
 
-    private String buildPrompt(String template, double targetRatio) {
-        return String.format(template, String.format("%.0f%%", targetRatio * 100));
+    private String buildPrompt(String template, double targetRatio, int targetMaxChars) {
+        return String.format(template, String.format("%.0f%%", targetRatio * 100), targetMaxChars);
     }
 
     /**

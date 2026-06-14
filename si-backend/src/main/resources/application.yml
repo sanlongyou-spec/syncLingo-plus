@@ -66,6 +66,8 @@ azure:
       # run-on 长句兜底：说话超过此 ms 仍无句末标点 → 在安全边界强切(防长句拖高延迟)；0=关闭。
       force-segment-ms: ${AZURE_ASR_FORCE_SEGMENT_MS:6000}
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
+      # sentence-punct 触发前中文段的最小字符数；短句不切，等下一个句末标点积累到目标长度再发。0=不限制。
+      min-sentence-emit-zh-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ZH_CHARS:45}
       # 长句强切：单调下标 + 稳定前缀 + 安全边界(标点>逗号>词/字) + 留尾余量，不吞句首字、不失控刷段。
       # 默认开启、只切 run-on 长句(中文>60字 / 拉丁>25词);正常短句不切。置 0 可关。
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:60}
