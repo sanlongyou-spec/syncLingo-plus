@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI):
         t0 = time.time()
         # ort_providers 指定 ONNX Runtime 后端，无需 torch
         sat_model = SaT(SAT_MODEL_NAME, ort_providers=["CPUExecutionProvider"])
-        _ = sat_model.split("This is a sentence. This is another one.", lang_code="en")
+        _ = sat_model.split("This is a sentence. This is another one.")
         elapsed_ms = int((time.time() - t0) * 1000)
         log.info("[sat] Model loaded and warmed up: %s (ONNX), elapsed=%dms", SAT_MODEL_NAME, elapsed_ms)
     except Exception as e:
@@ -158,7 +158,7 @@ async def segment_boundary(req: SegmentBoundaryRequest):
 
     t0 = time.time()
     try:
-        sentences = sat_model.split(text, lang_code=lang)
+        sentences = sat_model.split(text)
         latency_ms = (time.time() - t0) * 1000
 
         boundary = -1
