@@ -139,11 +139,22 @@ public class TranslationService {
             if (compressed == null || compressed.isBlank()) {
                 return translatedText;
             }
+            double actualRatio = (double) compressed.length() / translatedText.length();
+            // Guard: if the model compressed more than 2× the target ratio, the result is
+            // semantically impoverished — fall back to the original translation.
+            if (actualRatio < ratio * 0.50) {
+                log.warn("[TranslationService] compress over-aggressive fallback, direction={}, originalLen={}, compressedLen={}, ratio={}%, targetRatio={}%, totalMs={}",
+                        direction, translatedText.length(), compressed.length(),
+                        String.format("%.1f", actualRatio * 100),
+                        String.format("%.0f", ratio * 100),
+                        System.currentTimeMillis() - requestStartMs);
+                return translatedText;
+            }
             log.info("[TranslationService] compress end, direction={}, originalLen={}, compressedLen={}, ratio={}%, totalMs={}",
                     direction,
                     translatedText.length(),
                     compressed.length(),
-                    String.format("%.1f", (double) compressed.length() / translatedText.length() * 100),
+                    String.format("%.1f", actualRatio * 100),
                     System.currentTimeMillis() - requestStartMs);
             return compressed.trim();
         } catch (IOException e) {
