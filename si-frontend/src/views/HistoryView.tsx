@@ -300,6 +300,7 @@ export default function HistoryView() {
   const hasFetchedSummaryRef = useRef(false)
   const [recipientSearch, setRecipientSearch] = useState('')
   const [showRecipientDropdown, setShowRecipientDropdown] = useState(false)
+  const [recipientSaveStatus, setRecipientSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const recipientPickerRef = useRef<HTMLDivElement>(null)
   const recipientSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -459,11 +460,15 @@ export default function HistoryView() {
         const sourceEmails: string[] = backendEmpty
           ? JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
           : backendEmails!
-        const valid = sourceEmails.filter(e => withEmail.some(u => u.email === e))
+        // Keep all stored emails, even if not currently in systemUsers —
+        // systemUsers may load partially or the user list may change over time.
+        // Only filter out blank/null entries.
+        const valid = sourceEmails.filter(e => e && e.trim())
         const validSet = new Set(valid)
         setSelectedRecipients(validSet)
         localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(validSet)))
-        if (backendEmpty && valid.length > 0) {
+        // Always sync to backend: covers both "never saved" and "backend cleared" cases.
+        if (valid.length > 0) {
           saveSummaryRecipients(valid).catch(() => {})
         }
       })
@@ -677,16 +682,22 @@ export default function HistoryView() {
     setTimeout(() => setSpeakerReqSaved(false), 1500)
   }
 
+  const persistRecipients = (list: string[]) => {
+    localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(list))
+    if (recipientSaveTimerRef.current) clearTimeout(recipientSaveTimerRef.current)
+    setRecipientSaveStatus('saving')
+    recipientSaveTimerRef.current = setTimeout(() => {
+      saveSummaryRecipients(list)
+        .then(() => { setRecipientSaveStatus('saved'); setTimeout(() => setRecipientSaveStatus('idle'), 1500) })
+        .catch(() => { setRecipientSaveStatus('error'); setTimeout(() => setRecipientSaveStatus('idle'), 3000) })
+    }, 300)
+  }
+
   const toggleRecipient = (email: string) => {
     setSelectedRecipients(prev => {
       const next = new Set(prev)
       next.has(email) ? next.delete(email) : next.add(email)
-      const list = Array.from(next)
-      localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(list))
-      if (recipientSaveTimerRef.current) clearTimeout(recipientSaveTimerRef.current)
-      recipientSaveTimerRef.current = setTimeout(() => {
-        saveSummaryRecipients(list).catch(() => {})
-      }, 300)
+      persistRecipients(Array.from(next))
       return next
     })
   }
@@ -694,9 +705,20 @@ export default function HistoryView() {
   const renderRecipientPicker = (label: string) => {
     if (systemUsersLoading) return <div className="history-summary-send-hint">正在加载用户列表...</div>
     if (systemUsers.length === 0) return <div className="history-summary-send-hint">暂无可发送的用户，请先在系统管理中导入用户信息。</div>
+    const saveHint = recipientSaveStatus === 'saving' ? '保存中...'
+      : recipientSaveStatus === 'saved' ? '已保存'
+      : recipientSaveStatus === 'error' ? '保存失败，请重试'
+      : null
     return (
       <div className="history-recipient-section" ref={recipientPickerRef}>
-        <div className="history-summary-send-label">{label}</div>
+        <div className="history-summary-send-label">
+          {label}
+          {saveHint && (
+            <span className={`history-recipient-save-hint history-recipient-save-hint--${recipientSaveStatus}`}>
+              {saveHint}
+            </span>
+          )}
+        </div>
         <div className="history-recipient-box">
           {Array.from(selectedRecipients).map(email => {
             const user = systemUsers.find(u => u.email === email)

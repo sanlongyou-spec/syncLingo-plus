@@ -1172,6 +1172,15 @@
   position: relative;
 }
 
+.history-recipient-save-hint {
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+.history-recipient-save-hint--saving { color: #94a3b8; }
+.history-recipient-save-hint--saved  { color: #22c55e; }
+.history-recipient-save-hint--error  { color: #ef4444; }
+
 .history-recipient-box {
   display: flex;
   flex-wrap: wrap;
