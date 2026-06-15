@@ -90,6 +90,12 @@ public class AsrService {
             public void onRecognizing(String text, String language, String speakerId, boolean isFinal) {
                 if (isFinal) {
                     if (text == null || text.isBlank()) return;
+                    TranscriptOverlapTrimmer.TrimResult trimResult = context.trimAdjacentOverlap(text);
+                    if (trimResult.overlapChars() > 0) {
+                        log.warn("[AsrService] adjacent overlap removed, sessionId={}, speakerId={}, overlapChars={}, originalLen={}, resultLen={}",
+                                sessionId, speakerId, trimResult.overlapChars(), text.length(), trimResult.text().length());
+                    }
+                    if (trimResult.text().isBlank()) return;
                     String dedupKey = (speakerId == null ? "" : speakerId) + ":" + text.hashCode() + ":" + text.length();
                     Map<String, Long> sessionDedup = recentFinals.get(sessionId);
                     if (sessionDedup != null) {
@@ -103,8 +109,8 @@ public class AsrService {
                         sessionDedup.put(dedupKey, now);
                     }
                     log.info("[AsrService] ASR recognized, sessionId={}, speakerId={}, textLen={}, lang={}",
-                            sessionId, speakerId, text.length(), language);
-                    onRecognized.onResult(text, language, speakerId);
+                            sessionId, speakerId, trimResult.text().length(), language);
+                    onRecognized.onResult(trimResult.text(), language, speakerId);
                 } else {
                     log.trace("[AsrService] ASR recognizing, sessionId={}, speakerId={}, textLen={}, lang={}",
                             sessionId, speakerId, text != null ? text.length() : 0, language);
@@ -176,10 +182,17 @@ public class AsrService {
     private static class AsrSessionContext {
         final String sessionId;
         final AzureAsrIntegration.AsrSession asrSession;
+        private String previousFinalText;
 
         AsrSessionContext(String sessionId, AzureAsrIntegration.AsrSession asrSession) {
             this.sessionId = sessionId;
             this.asrSession = asrSession;
+        }
+
+        synchronized TranscriptOverlapTrimmer.TrimResult trimAdjacentOverlap(String text) {
+            TranscriptOverlapTrimmer.TrimResult result = TranscriptOverlapTrimmer.trim(previousFinalText, text);
+            previousFinalText = text;
+            return result;
         }
     }
 

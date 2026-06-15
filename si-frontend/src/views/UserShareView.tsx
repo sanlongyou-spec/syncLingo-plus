@@ -109,9 +109,6 @@ export default function UserShareView() {
   const audioWsRef = useRef<WebSocket | null>(null)
   const selectedLangRef = useRef<string | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
-  const audioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null)
-  const audioElRef = useRef<HTMLAudioElement | null>(null)
-  const audioElHeartbeatRef = useRef<number | null>(null)
   const audioGenRef = useRef(0)  // increments on every stopAudio; guards stale decoder callbacks
   const decoderRef = useRef<{ decode: (chunk: unknown) => void; close: () => void } | null>(null)
   const scheduleRef = useRef(0)
@@ -165,13 +162,6 @@ export default function UserShareView() {
     decoderRef.current = null
     pendingSourcesRef.current.forEach(source => { try { source.stop() } catch { /* ended */ } })
     pendingSourcesRef.current.clear()
-    audioElRef.current?.pause()
-    audioElRef.current = null
-    audioDestRef.current = null
-    if (audioElHeartbeatRef.current !== null) {
-      window.clearInterval(audioElHeartbeatRef.current)
-      audioElHeartbeatRef.current = null
-    }
     void audioCtxRef.current?.close()
     audioCtxRef.current = null
     scheduleRef.current = 0
@@ -210,46 +200,9 @@ export default function UserShareView() {
       return
     }
 
-    // latencyHint:'playback' uses a larger hardware buffer, reducing GC-pause glitches
-    // over long sessions and smoothing the audio fed into the MediaStreamDestination.
-    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE, latencyHint: 'playback' })
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
     audioCtxRef.current = ctx
     void ctx.resume()
-
-    // Route through HTMLAudioElement so Bluetooth speakers are used on iOS/Android.
-    // Web Audio API's ctx.destination routes to low-latency (voice) output which
-    // bypasses Bluetooth; MediaStreamDestination → <audio> uses the media pipeline.
-    const dest = ctx.createMediaStreamDestination()
-    audioDestRef.current = dest
-    const audioEl = new Audio()
-    audioEl.srcObject = dest.stream
-    audioEl.play().catch(() => { /* requires user gesture — already inside click handler */ })
-    audioElRef.current = audioEl
-
-    // Keep a silent looping source connected to dest so the MediaStream is never truly
-    // silent. Without this, browsers detect silence between TTS sentences and auto-pause
-    // the <audio> element, dropping live stream frames that can never be recovered.
-    const silenceBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
-    const keepAlive = ctx.createBufferSource()
-    keepAlive.buffer = silenceBuffer
-    keepAlive.loop = true
-    keepAlive.connect(dest)
-    keepAlive.start()
-
-    // The browser can suspend the <audio> element during silent gaps between TTS sentences.
-    // Recover immediately on pause/stalled events; heartbeat catches browsers that skip events.
-    const recoverAudioEl = () => {
-      if (audioElRef.current === audioEl && audioEl.paused) {
-        audioEl.play().catch(() => {})
-      }
-      // Resume AudioContext if browser suspended it (background tab, power saving, etc.)
-      if (audioCtxRef.current === ctx && ctx.state === 'suspended') {
-        void ctx.resume()
-      }
-    }
-    audioEl.addEventListener('pause', recoverAudioEl)
-    audioEl.addEventListener('stalled', recoverAudioEl)
-    audioElHeartbeatRef.current = window.setInterval(recoverAudioEl, 2000)
 
     // Resume AudioContext immediately when tab becomes visible again
     const handleVisibilityChange = () => {
@@ -287,7 +240,7 @@ export default function UserShareView() {
         buffer.copyToChannel(samples, 0)
         const source = ctx.createBufferSource()
         source.buffer = buffer
-        source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
+        source.connect(ctx.destination)
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate
