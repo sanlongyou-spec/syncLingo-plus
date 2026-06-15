@@ -254,6 +254,11 @@ public class CartesiaStreamingIntegration {
         private volatile long lastActivityMs = 0L;
         /** 当前合成的看门狗任务句柄，DONE/ERROR 时取消 */
         private volatile java.util.concurrent.ScheduledFuture<?> watchdogTask;
+        /**
+         * 物理连接代号，每次 openAndSend 新建连接自增。监听器捕获自己的代号，回调时与当前代号比对：
+         * 旧连接被关闭后其 onClosed/onFailure 不再误伤新一代合成（修复"重连回调把刚开始的句子判失败"）。
+         */
+        private volatile long connEpoch = 0L;
 
         // 当前合成的延迟分析字段
         private volatile long synthStartMs;
@@ -347,14 +352,18 @@ public class CartesiaStreamingIntegration {
 
         /** 新建（或重建）连接，onOpen 后发送待发负载。 */
         private void openAndSend(String payload) {
+            final long myEpoch;
             okhttp3.WebSocket oldWebSocket;
             synchronized (this) {
+                myEpoch = ++connEpoch;       // 本次新连接的代号；旧连接代号已过期
                 oldWebSocket = this.webSocket;
                 this.webSocket = null;
                 this.open = false;
             }
             if (oldWebSocket != null) {
                 try {
+                    // 旧连接的 onClosed 会带 reason="reuse connection" 异步回来，但其 myEpoch 已过期，
+                    // 经下方 epoch 校验会被忽略，不会误把新一代合成判为失败。
                     oldWebSocket.close(Constants.CARTESIA_CLOSE_NORMAL, Constants.CARTESIA_CLOSE_REASON_REUSE);
                 } catch (Exception ignored) {
                     // 忽略旧连接关闭异常
@@ -371,6 +380,7 @@ public class CartesiaStreamingIntegration {
             okhttp3.WebSocket newWebSocket = WS_HTTP_CLIENT.newWebSocket(request, new okhttp3.WebSocketListener() {
                 @Override
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
+                    if (myEpoch != connEpoch) { ws.cancel(); return; }   // 已被更新的连接取代
                     open = true;
                     lastActivityMs = System.currentTimeMillis();
                     String p = pendingPayload;
@@ -382,12 +392,14 @@ public class CartesiaStreamingIntegration {
 
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, String msg) {
+                    if (myEpoch != connEpoch) return;   // 过期连接的迟到消息，忽略
                     handleTextMessage(ws, msg);
                 }
 
                 // 二进制帧：Cartesia 部分版本直接发原始 PCM 而非 base64 JSON
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
+                    if (myEpoch != connEpoch) return;   // 过期连接的迟到音频，忽略
                     byte[] pcm = bytes.toByteArray();
                     lastActivityMs = System.currentTimeMillis();
                     int idx = ++chunkCount;
@@ -402,6 +414,7 @@ public class CartesiaStreamingIntegration {
 
                 @Override
                 public void onFailure(okhttp3.WebSocket ws, Throwable t, okhttp3.Response response) {
+                    if (myEpoch != connEpoch) return;   // 过期连接失败与当前合成无关，忽略
                     open = false;
                     String errMsg = t != null ? t.getMessage() : Constants.TTS_ERROR_UNKNOWN;
                     log.error("[CartesiaWsClient] WebSocket failure, error={}", errMsg, t);
@@ -410,8 +423,10 @@ public class CartesiaStreamingIntegration {
 
                 @Override
                 public void onClosed(okhttp3.WebSocket ws, int code, String reason) {
+                    // 关键修复：旧连接为复用而被主动关闭时 epoch 已过期，绝不能据此把新句子判失败。
+                    if (myEpoch != connEpoch) return;
                     open = false;
-                    // 若连接在生成途中被关（如服务端超时），也要兜底回调，避免借出的连接永不归还。
+                    // 若当前连接在生成途中被关（如服务端超时），兜底回调，避免借出的连接永不归还。
                     completeOnce(false, "WebSocket closed: " + reason);
                 }
             });
