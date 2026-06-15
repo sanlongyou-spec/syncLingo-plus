@@ -319,17 +319,22 @@ public class SpeakerSummaryService {
      */
     private void autoSendToSessionOwner(String sessionId, String speakerName, String title, String summary) {
         try {
+            log.info("[SpeakerSummaryService] auto-send start, sessionId={}, speaker={}", sessionId, speakerName);
             java.util.Set<String> sent = sessionSentSpeakers
                     .computeIfAbsent(sessionId, k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
             if (!sent.add(speakerName)) {
-                log.debug("[SpeakerSummaryService] auto-send skipped, already sent for speaker, sessionId={}, speaker={}", sessionId, speakerName);
+                log.info("[SpeakerSummaryService] auto-send skipped, already sent for speaker, sessionId={}, speaker={}", sessionId, speakerName);
                 return;
             }
             InterpretationSession session = interpretationSessionMapper.findBySessionId(sessionId);
-            if (session == null || session.getUserId() == null) return;
+            if (session == null || session.getUserId() == null) {
+                log.warn("[SpeakerSummaryService] auto-send skipped, session/userId not found, sessionId={}", sessionId);
+                return;
+            }
             List<String> recipients = userPreferenceService.getSummaryRecipients(session.getUserId());
+            log.info("[SpeakerSummaryService] auto-send recipients, sessionId={}, userId={}, recipientCount={}", sessionId, session.getUserId(), recipients.size());
             if (recipients.isEmpty()) {
-                log.debug("[SpeakerSummaryService] auto-send skipped, no configured recipients, sessionId={}", sessionId);
+                log.info("[SpeakerSummaryService] auto-send skipped, no configured recipients, sessionId={}", sessionId);
                 return;
             }
             String content = buildAutoSendContent(speakerName, title, summary);

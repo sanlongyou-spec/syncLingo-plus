@@ -255,14 +255,6 @@ export default function UserShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(dest)  // → MediaStreamDestination → <audio> → Bluetooth
-        // Safety valve: if backlog somehow exceeds 30s (crash / extreme outlier only),
-        // stop pending sources and reset. Under normal operation with dynamic TTS speed
-        // and compression this cap should never trigger.
-        if (scheduleRef.current - ctx.currentTime > 30.0) {
-          pendingSourcesRef.current.forEach(s => { try { s.stop() } catch { /* already ended */ } })
-          pendingSourcesRef.current.clear()
-          scheduleRef.current = ctx.currentTime + 0.05
-        }
         const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate

@@ -26,12 +26,22 @@ public class UserPreferenceService {
             jdbcTemplate.execute("ALTER TABLE si_user ADD COLUMN summary_recipients TEXT DEFAULT NULL");
             log.info("[UserPreferenceService] summary_recipients column added to si_user");
         } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("Duplicate column")) {
+            // Spring wraps MySQL "Duplicate column name" as BadSqlGrammarException,
+            // so check the full cause chain, not just the top-level message.
+            if (causeChainContains(e, "Duplicate column")) {
                 log.debug("[UserPreferenceService] summary_recipients column already exists");
             } else {
                 log.warn("[UserPreferenceService] failed to add summary_recipients column: {}", e.getMessage());
             }
         }
+    }
+
+    private static boolean causeChainContains(Throwable t, String keyword) {
+        while (t != null) {
+            if (t.getMessage() != null && t.getMessage().contains(keyword)) return true;
+            t = t.getCause();
+        }
+        return false;
     }
 
     public List<String> getSummaryRecipients(Long userId) {
