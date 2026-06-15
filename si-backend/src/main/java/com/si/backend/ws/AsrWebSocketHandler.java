@@ -371,12 +371,16 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                             session.getId(), source.getTtsTaskId(), source.getTtsSequence(), source.getChunkIndex(),
                             message.json().length(), System.currentTimeMillis() - sendStart);
                 }
-            } catch (IOException e) {
-                log.error("[AsrWebSocketHandler] send IO error, sessionId={}, type={}",
-                        session.getId(), message.source().getType(), e);
-            } catch (IllegalStateException e) {
-                log.error("[AsrWebSocketHandler] send state error, sessionId={}, type={}",
-                        session.getId(), message.source().getType(), e);
+            } catch (IOException | IllegalStateException e) {
+                // 客户端中途断开(刷新/关页)是常态：isOpen 检查与 sendMessage 之间存在竞态，
+                // 连接此刻已关时只是良性丢弃，降级为 debug，避免污染 ERROR 监控；仍开着才是真异常。
+                if (!session.isOpen()) {
+                    log.debug("[AsrWebSocketHandler] drop send to closed session, sessionId={}, type={}",
+                            session.getId(), message.source().getType());
+                } else {
+                    log.error("[AsrWebSocketHandler] send error on open session, sessionId={}, type={}",
+                            session.getId(), message.source().getType(), e);
+                }
             }
         }
     }
