@@ -8,6 +8,9 @@ import com.si.backend.dto.PreMeetingChatRequest;
 import com.si.backend.dto.PreMeetingSummarizeRequest;
 import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.PreMeetingService;
+import com.si.backend.service.ResourceOwnershipPolicy;
+import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.util.AuthContext;
 import com.si.backend.vo.PreMeetingAttendanceVo;
 import com.si.backend.vo.PreMeetingChatVo;
 import com.si.backend.vo.PreMeetingDailyUsageVo;
@@ -31,6 +34,11 @@ import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.USER,
+        permission = com.si.backend.security.authorization.PermissionCode.PRE_MEETING_MANAGE,
+        scope = com.si.backend.security.authorization.ResourceScope.OWN_OR_SELF,
+        expectedStatuses = {200, 400, 401, 403, 404})
 @RequestMapping("/api/pre-meeting")
 @RequiredArgsConstructor
 public class PreMeetingController {
@@ -38,11 +46,13 @@ public class PreMeetingController {
     private final PreMeetingService preMeetingService;
     private final HotwordExtractionService hotwordExtractionService;
     private final com.si.backend.service.AsrHotwordService asrHotwordService;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @PostMapping("/upload")
     public Result<List<PreMeetingFileVo>> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "userId", required = false) Long userId) {
+        userId = AuthContext.requireSelf(userId);
         if (file == null || file.isEmpty()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的文件");
         }
@@ -52,22 +62,19 @@ public class PreMeetingController {
                 throw BizException.of(ErrorCode.BAD_REQUEST, "压缩包中未找到可解析的 Word 或 PDF 文件");
             }
             // Async hotword extraction from uploaded file content
-            if (userId != null) {
-                final Long finalUserId = userId;
-                final List<String> fileIds = files.stream().map(PreMeetingFileVo::getFileId).toList();
-                CompletableFuture.runAsync(() -> fileIds.forEach(fileId -> {
-                    try {
-                        String text = preMeetingService.getDocText(fileId);
-                        hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
-                        // Add expected participant names + meeting venue from the agenda as hotwords.
-                        PreMeetingService.MeetingEntities entities = preMeetingService.extractMeetingEntities(fileId);
-                        asrHotwordService.saveMeetingEntities(
-                                finalUserId, entities.participantNames(), entities.venue(), "MEETING_AGENDA");
-                    } catch (Exception e) {
-                        log.warn("[PreMeetingController] hotword extraction failed for fileId={}", fileId, e);
-                    }
-                }));
-            }
+            final Long finalUserId = userId;
+            final List<String> fileIds = files.stream().map(PreMeetingFileVo::getFileId).toList();
+            CompletableFuture.runAsync(() -> fileIds.forEach(fileId -> {
+                try {
+                    String text = preMeetingService.getDocText(fileId);
+                    hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
+                    PreMeetingService.MeetingEntities entities = preMeetingService.extractMeetingEntities(fileId);
+                    asrHotwordService.saveMeetingEntities(
+                            finalUserId, entities.participantNames(), entities.venue(), "MEETING_AGENDA");
+                } catch (Exception e) {
+                    log.warn("[PreMeetingController] hotword extraction failed for fileId={}", fileId, e);
+                }
+            }));
             return Result.ok(files);
         } catch (BizException e) {
             throw e;
@@ -81,7 +88,11 @@ public class PreMeetingController {
     @PostMapping("/summarize")
     public Result<PreMeetingSummaryVo> summarize(@RequestBody PreMeetingSummarizeRequest request) {
         try {
-            long userId = request.getUserId() != null ? request.getUserId() : 0L;
+            AuthenticatedActor actor = AuthContext.requireActor();
+            long userId = AuthContext.requireSelf(actor, request.getUserId());
+            if (request.getMeetingId() != null) {
+                resourceOwnershipPolicy.requireOwnedMeeting(actor, request.getMeetingId());
+            }
             PreMeetingSummaryVo result = preMeetingService.summarize(
                     request.getFileId(), request.getRequirements(), userId, request.getMeetingId());
             return Result.ok(result);
@@ -101,6 +112,9 @@ public class PreMeetingController {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请上传会议安排或选择已保存应到名单的会议");
         }
         try {
+            if (hasMeeting) {
+                resourceOwnershipPolicy.requireOwnedMeeting(AuthContext.requireActor(), request.getMeetingId());
+            }
             int actualCount = request.getActualParticipants() == null ? 0 : request.getActualParticipants().size();
             // Prefer the freshly-uploaded file; otherwise fall back to the meeting's saved 应到 list.
             PreMeetingAttendanceVo result = hasFile
@@ -193,6 +207,7 @@ public class PreMeetingController {
             throw BizException.of(ErrorCode.BAD_REQUEST, "缺少 fileId 或 meetingId");
         }
         try {
+            resourceOwnershipPolicy.requireOwnedMeeting(AuthContext.requireActor(), meetingId);
             int count = preMeetingService.saveExpectedParticipants(fileId, meetingId);
             return Result.ok(count);
         } catch (BizException e) {
@@ -211,6 +226,9 @@ public class PreMeetingController {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请选择会议安排文件或已保存应到名单的会议");
         }
         try {
+            if (hasMeeting) {
+                resourceOwnershipPolicy.requireOwnedMeeting(AuthContext.requireActor(), request.getMeetingId());
+            }
             int actualCount = request.getActualParticipants() == null ? 0 : request.getActualParticipants().size();
             log.info("[PreMeetingController] exportAttendance start, fileId={}, meetingId={}, actualCount={}",
                     request.getFileId(), request.getMeetingId(), actualCount);
@@ -244,14 +262,18 @@ public class PreMeetingController {
             throw BizException.of(ErrorCode.BAD_REQUEST, "问题不能为空");
         }
         try {
+            AuthenticatedActor actor = AuthContext.requireActor();
             PreMeetingChatVo result;
             if (request.isCrossMeeting()) {
                 result = preMeetingService.chatCrossMeeting(
-                        request.getUserId(),
+                        AuthContext.requireSelf(actor, request.getUserId()),
                         request.getQuestion(),
                         request.getHistory(),
                         request.getDays());
             } else {
+                if (request.getSessionId() != null && !request.getSessionId().isBlank()) {
+                    resourceOwnershipPolicy.requireOwnedSession(actor, request.getSessionId());
+                }
                 result = preMeetingService.chat(
                         request.getFileId(),
                         request.getSessionId(),
@@ -271,6 +293,7 @@ public class PreMeetingController {
     public Result<List<PreMeetingDailyUsageVo>> getUsage(
             @RequestParam long userId,
             @RequestParam(defaultValue = "365") int days) {
+        userId = AuthContext.requireSelf(userId);
         return Result.ok(preMeetingService.getDailyUsage(userId, days));
     }
 

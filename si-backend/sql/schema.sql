@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS si_user (
     nickname     VARCHAR(128)          DEFAULT NULL,
     email        VARCHAR(255)          DEFAULT NULL,
     role         VARCHAR(32)           DEFAULT 'user',
+    status       VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
     create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_username (username)

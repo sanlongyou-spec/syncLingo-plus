@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.si.backend.common.Constants;
 import com.si.backend.dto.WsMessage;
 import com.si.backend.facade.RealtimeInterpretationFacade;
+import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.service.ResourceOwnershipPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -14,6 +16,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -35,6 +38,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final RealtimeInterpretationFacade realtimeFacade;
     private final ShareWebSocketHandler shareWebSocketHandler;
     private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
@@ -45,6 +49,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     /** 上次原声路由到的语言：仅在变化时打一条诊断日志，不逐包刷屏 */
     private final Map<String, String> sessionAudioRouteLangMap = new ConcurrentHashMap<>();
     private final Map<String, String> webSocketSessionBizSessionMap = new ConcurrentHashMap<>();
+    private final Map<String, String> bizSessionWebSocketMap = new ConcurrentHashMap<>();
+    private final Set<String> stoppedWebSocketSessionIds = ConcurrentHashMap.newKeySet();
     private final Map<String, OutboundMessageSender> outboundSenderMap = new ConcurrentHashMap<>();
 
     private static final int TEXT_QUEUE_CAPACITY = 1000;
@@ -87,6 +93,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
 
     private void handleStart(WebSocketSession session, WsMessage msg) {
         String sessionId = msg.getSessionId();
+        if (!bindOwnedSession(session, sessionId)) {
+            return;
+        }
         String sourceLang = msg.getSourceLang();
         String targetLang = msg.getTargetLang();
         log.info("[AsrWebSocketHandler] handleStart, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
@@ -94,8 +103,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
 
         sessionLangMap.put(sessionId, sourceLang + ":" + targetLang);
         sessionConfiguredSourceLangMap.put(sessionId, sourceLang == null ? "" : sourceLang);
-        webSocketSessionBizSessionMap.put(session.getId(), sessionId);
-
         realtimeFacade.startInterpretation(
                 sessionId,
                 sourceLang,
@@ -173,6 +180,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
 
     private void handleAudio(WebSocketSession session, WsMessage msg) {
         String sessionId = msg.getSessionId();
+        if (!requireBoundSession(session, sessionId, true)) {
+            return;
+        }
         String data = msg.getAudioBase64();
         if (data == null || data.isBlank()) {
             return;
@@ -195,11 +205,14 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
 
     private void handleStop(WebSocketSession session, WsMessage msg) {
         String sessionId = msg.getSessionId();
+        if (!requireBoundSession(session, sessionId, true)) {
+            return;
+        }
+        stoppedWebSocketSessionIds.add(session.getId());
         sessionLangMap.remove(sessionId);
         sessionSourceLangMap.remove(sessionId);
         sessionConfiguredSourceLangMap.remove(sessionId);
         sessionAudioRouteLangMap.remove(sessionId);
-        webSocketSessionBizSessionMap.remove(session.getId());
         realtimeFacade.stopInterpretation(sessionId);
         shareAudioWebSocketHandler.closeSession(sessionId);
 
@@ -211,6 +224,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleTranslate(WebSocketSession session, WsMessage msg) {
+        if (!requireBoundSession(session, msg.getSessionId(), true)) {
+            return;
+        }
         String text = msg.getText();
         String targetLang = msg.getTargetLanguage();
         if (text == null || targetLang == null) {
@@ -238,11 +254,14 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         }
         String bizSessionId = webSocketSessionBizSessionMap.remove(session.getId());
         if (bizSessionId != null) {
+            bizSessionWebSocketMap.remove(bizSessionId, session.getId());
             sessionLangMap.remove(bizSessionId);
             sessionSourceLangMap.remove(bizSessionId);
             sessionConfiguredSourceLangMap.remove(bizSessionId);
             sessionAudioRouteLangMap.remove(bizSessionId);
-            realtimeFacade.cleanupSession(bizSessionId);
+            if (!stoppedWebSocketSessionIds.remove(session.getId())) {
+                realtimeFacade.cleanupSession(bizSessionId);
+            }
             shareAudioWebSocketHandler.closeSession(bizSessionId);
         } else {
             log.info("[AsrWebSocketHandler] no business session bound, skip realtime cleanup, wsSessionId={}", session.getId());
@@ -284,6 +303,75 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         sendMessage(session, msg);
         if (sessionId != null) {
             shareWebSocketHandler.broadcast(sessionId, msg);
+        }
+    }
+
+    private boolean bindOwnedSession(WebSocketSession session, String businessSessionId) {
+        if (businessSessionId == null || businessSessionId.isBlank()) {
+            rejectAndClose(session, null, Constants.WS_ERROR_INVALID_STATE, "Missing sessionId");
+            return false;
+        }
+        String boundSessionId = webSocketSessionBizSessionMap.get(session.getId());
+        if (boundSessionId != null) {
+            if (boundSessionId.equals(businessSessionId)) {
+                sendError(session, businessSessionId, Constants.WS_ERROR_INVALID_STATE, "Session already started");
+            } else {
+                rejectAndClose(session, businessSessionId, Constants.WS_ERROR_INVALID_STATE,
+                        "Cannot switch sessions on one connection");
+            }
+            return false;
+        }
+        AuthenticatedActor actor = resolveActor(session);
+        if (actor == null) {
+            rejectAndClose(session, businessSessionId, Constants.WS_ERROR_UNAUTHORIZED, "Unauthenticated");
+            return false;
+        }
+        try {
+            resourceOwnershipPolicy.requireOwnedSession(actor, businessSessionId);
+        } catch (RuntimeException error) {
+            log.warn("[AsrWebSocketHandler] session bind denied, wsSessionId={}, businessSessionId={}, userId={}",
+                    session.getId(), businessSessionId, actor.userId());
+            rejectAndClose(session, businessSessionId, Constants.WS_ERROR_UNAUTHORIZED, "Session unavailable");
+            return false;
+        }
+        String controllingConnection = bizSessionWebSocketMap.putIfAbsent(businessSessionId, session.getId());
+        if (controllingConnection != null && !controllingConnection.equals(session.getId())) {
+            rejectAndClose(session, businessSessionId, Constants.WS_ERROR_SESSION_CONFLICT,
+                    "Session already controlled by another connection");
+            return false;
+        }
+        webSocketSessionBizSessionMap.put(session.getId(), businessSessionId);
+        return true;
+    }
+
+    private boolean requireBoundSession(
+            WebSocketSession session,
+            String requestedBusinessSessionId,
+            boolean rejectStopped
+    ) {
+        String boundSessionId = webSocketSessionBizSessionMap.get(session.getId());
+        if (boundSessionId == null
+                || !boundSessionId.equals(requestedBusinessSessionId)
+                || (rejectStopped && stoppedWebSocketSessionIds.contains(session.getId()))) {
+            rejectAndClose(session, requestedBusinessSessionId, Constants.WS_ERROR_INVALID_STATE,
+                    "Connection is not bound to this active session");
+            return false;
+        }
+        return true;
+    }
+
+    private AuthenticatedActor resolveActor(WebSocketSession session) {
+        Object value = session.getAttributes().get(JwtHandshakeInterceptor.ATTRIBUTE_AUTHENTICATED_USER_ID);
+        return value instanceof Long userId ? new AuthenticatedActor(userId) : null;
+    }
+
+    private void rejectAndClose(WebSocketSession session, String sessionId, String code, String message) {
+        sendError(session, sessionId, code, message);
+        try {
+            session.close(CloseStatus.POLICY_VIOLATION);
+        } catch (IOException closeError) {
+            log.debug("[AsrWebSocketHandler] failed to close rejected connection, wsSessionId={}",
+                    session.getId(), closeError);
         }
     }
 

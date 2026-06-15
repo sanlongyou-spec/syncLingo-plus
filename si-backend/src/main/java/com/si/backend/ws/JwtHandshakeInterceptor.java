@@ -9,15 +9,18 @@ import org.springframework.http.server.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.server.HandshakeInterceptor;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.Map;
 
 /**
- * WebSocket 握手拦截器，负责 JWT Token 验证与属性注入。
+ * Validates the ASR WebSocket token and binds the authenticated user id to the connection.
  */
 @Slf4j
 @Component
 public class JwtHandshakeInterceptor implements HandshakeInterceptor {
+
+    public static final String ATTRIBUTE_AUTHENTICATED_USER_ID = "authenticatedUserId";
 
     private final JwtProperties jwtProperties;
 
@@ -32,21 +35,20 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
             WebSocketHandler wsHandler,
             Map<String, Object> attributes
     ) {
-        log.info("[JwtHandshakeInterceptor] beforeHandshake, uri={}", request.getURI());
-        String query = request.getURI().getQuery();
-
-        if (query != null && query.contains(Constants.WS_QUERY_PARAM_TOKEN + "=")) {
-            String token = parseToken(query);
-            String secret = jwtProperties.getSecret() == null ? "" : jwtProperties.getSecret();
-            if (token != null && JwtUtil.verifyAndParseUserId(token, secret) != null) {
-                attributes.put("token", token);
-                log.info("[JwtHandshakeInterceptor] beforeHandshake, token validated, uri={}", request.getURI());
-                return true;
-            }
+        String path = request.getURI().getPath();
+        log.info("[JwtHandshakeInterceptor] beforeHandshake start, path={}", path);
+        String token = UriComponentsBuilder.fromUri(request.getURI())
+                .build()
+                .getQueryParams()
+                .getFirst(Constants.WS_QUERY_PARAM_TOKEN);
+        Long authenticatedUserId = JwtUtil.verifyAndParseUserId(token, secret());
+        if (authenticatedUserId == null) {
+            log.warn("[JwtHandshakeInterceptor] beforeHandshake rejected, path={}", path);
+            return false;
         }
-
-        log.warn("[JwtHandshakeInterceptor] beforeHandshake, rejected — missing or invalid token, uri={}", request.getURI());
-        return false;
+        attributes.put(ATTRIBUTE_AUTHENTICATED_USER_ID, authenticatedUserId);
+        log.info("[JwtHandshakeInterceptor] beforeHandshake end, path={}, userId={}", path, authenticatedUserId);
+        return true;
     }
 
     @Override
@@ -56,17 +58,11 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
             WebSocketHandler wsHandler,
             Exception exception
     ) {
-        log.info("[JwtHandshakeInterceptor] afterHandshake, uri={}, exception={}",
-                request.getURI(), exception != null ? exception.getMessage() : "none");
+        log.info("[JwtHandshakeInterceptor] afterHandshake, path={}, success={}",
+                request.getURI().getPath(), exception == null);
     }
 
-    private String parseToken(String query) {
-        for (String param : query.split("&")) {
-            if (param.startsWith(Constants.WS_QUERY_PARAM_TOKEN + "=")) {
-                return param.substring(Constants.WS_QUERY_PARAM_TOKEN.length() + 1);
-            }
-        }
-        return null;
+    private String secret() {
+        return jwtProperties.getSecret() == null ? "" : jwtProperties.getSecret();
     }
-
 }

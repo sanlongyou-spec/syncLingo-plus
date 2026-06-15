@@ -25,6 +25,11 @@ import java.util.List;
  */
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.USER,
+        permission = com.si.backend.security.authorization.PermissionCode.DIRECTORY_ACCESS,
+        scope = com.si.backend.security.authorization.ResourceScope.ALL,
+        expectedStatuses = {200, 400, 401, 404})
 @RequestMapping("/api/system-users")
 @RequiredArgsConstructor
 public class SystemUserInfoController {

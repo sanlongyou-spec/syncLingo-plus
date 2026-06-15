@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
 import com.si.backend.entity.MeetingActionItem;
+import com.si.backend.entity.InterpretationSession;
 import com.si.backend.integration.LlmIntegration;
 import com.si.backend.mapper.InterpretationResultMapper;
 import com.si.backend.mapper.MeetingActionItemMapper;
@@ -8,6 +9,9 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -21,6 +25,7 @@ public class MeetingActionItemService {
     private final InterpretationResultMapper resultMapper;
     private final LlmIntegration llmIntegration;
     private final ContentEmbeddingService contentEmbeddingService;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @PostConstruct
     public void initTable() {
@@ -31,7 +36,17 @@ public class MeetingActionItemService {
      * Extract action items from the full transcript of a session via LLM.
      * Saves each line as a separate MeetingActionItem row.
      */
-    public List<MeetingActionItem> extractAndSave(String sessionId, Long meetingId, Long userId) {
+    public List<MeetingActionItem> extractAndSave(
+            AuthenticatedActor actor,
+            String sessionId,
+            Long requestedMeetingId
+    ) {
+        InterpretationSession session = resourceOwnershipPolicy.requireOwnedSession(actor, sessionId);
+        if (requestedMeetingId != null && !requestedMeetingId.equals(session.getMeetingId())) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "Resource not found");
+        }
+        Long meetingId = session.getMeetingId();
+        Long userId = actor.userId();
         log.info("[MeetingActionItemService] extractAndSave start, sessionId={}", sessionId);
 
         var results = resultMapper.findBySessionId(sessionId);
@@ -83,16 +98,19 @@ public class MeetingActionItemService {
         }
     }
 
-    public List<MeetingActionItem> listBySessionId(String sessionId) {
+    public List<MeetingActionItem> listBySessionId(AuthenticatedActor actor, String sessionId) {
+        resourceOwnershipPolicy.requireOwnedSession(actor, sessionId);
         return actionItemMapper.findBySessionId(sessionId);
     }
 
-    public MeetingActionItem updateStatus(Long id, String status) {
+    public MeetingActionItem updateStatus(AuthenticatedActor actor, Long id, String status) {
+        resourceOwnershipPolicy.requireOwnedActionItem(actor, id);
         actionItemMapper.updateStatus(id, status);
         return actionItemMapper.findById(id);
     }
 
-    public void delete(Long id) {
+    public void delete(AuthenticatedActor actor, Long id) {
+        resourceOwnershipPolicy.requireOwnedActionItem(actor, id);
         contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_ACTION_ITEM, id);
         actionItemMapper.deleteById(id);
     }

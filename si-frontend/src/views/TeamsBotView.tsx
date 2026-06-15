@@ -97,7 +97,7 @@ const attendanceStatusClass = (status: string) => {
 }
 
 export default function TeamsBotView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
 
   // ── 全局状态 ─────────────────────────────────────────
   const [error, setError] = useState('')

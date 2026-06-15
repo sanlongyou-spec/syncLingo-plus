@@ -11,6 +11,11 @@ import java.util.Map;
  */
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.ANONYMOUS,
+        permission = com.si.backend.security.authorization.PermissionCode.HEALTH_READ,
+        scope = com.si.backend.security.authorization.ResourceScope.NONE,
+        expectedStatuses = {200})
 @RequestMapping("/api")
 public class HealthController {
 

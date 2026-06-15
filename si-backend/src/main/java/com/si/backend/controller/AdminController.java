@@ -24,6 +24,11 @@ import java.util.Map;
 
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.ADMIN_SECRET,
+        permission = com.si.backend.security.authorization.PermissionCode.OPS_EXECUTE,
+        scope = com.si.backend.security.authorization.ResourceScope.ALL,
+        expectedStatuses = {200, 401, 404})
 @RequestMapping("/api/admin")
 @RequiredArgsConstructor
 public class AdminController {
@@ -87,7 +92,7 @@ public class AdminController {
 
     @GetMapping("/logs/download")
     public void downloadLogs(
-            @RequestParam(value = "secret", required = false) String secret,
+            @RequestHeader(value = ADMIN_SECRET_HEADER, required = false) String secret,
             HttpServletResponse response) throws IOException {
         ensureAuthorized(secret);
         Path logFile = Path.of("/app/logs/app.log");

@@ -3,6 +3,7 @@ package com.si.backend.controller;
 import com.si.backend.common.Result;
 import com.si.backend.config.CostRatesProperties;
 import com.si.backend.mapper.InterpretationSessionMapper;
+import com.si.backend.util.AuthContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +27,11 @@ public class CostController {
      * S3: Return current billing rates so the frontend can compute cost without
      * hardcoded constants. Rates are per-unit (e.g. per millisecond of ASR audio).
      */
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.USER,
+            permission = com.si.backend.security.authorization.PermissionCode.COST_RATES_READ,
+            scope = com.si.backend.security.authorization.ResourceScope.NONE,
+            expectedStatuses = {200, 401})
     @GetMapping("/rates")
     public Result<Map<String, Object>> getRates() {
         CostRatesProperties.Rates r = costRates.getRates();
@@ -47,8 +53,14 @@ public class CostController {
      * S7: Monthly cost summary for a user. Each row contains month, sessionCount,
      * usage totals, and estimated cost computed server-side.
      */
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.USER,
+            permission = com.si.backend.security.authorization.PermissionCode.COST_READ_SELF,
+            scope = com.si.backend.security.authorization.ResourceScope.SELF,
+            expectedStatuses = {200, 401, 403})
     @GetMapping("/monthly-summary")
     public Result<List<Map<String, Object>>> getMonthlySummary(@RequestParam Long userId) {
+        userId = AuthContext.requireSelf(userId);   // P0.5a:本人成本,越权→403
         log.info("[CostController] getMonthlySummary userId={}", userId);
         List<Map<String, Object>> rows = sessionMapper.monthlySummaryByUser(userId);
         CostRatesProperties.Rates r = costRates.getRates();

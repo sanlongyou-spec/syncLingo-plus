@@ -4,6 +4,9 @@ import com.si.backend.dto.SpeakerSummaryRequest;
 import com.si.backend.dto.UpdateSpeakerSummaryRequest;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.service.SpeakerSummaryService;
+import com.si.backend.service.ResourceOwnershipPolicy;
+import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.util.AuthContext;
 import com.si.backend.vo.SpeakerSummaryRecordVo;
 import com.si.backend.vo.SpeakerSummaryVo;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +26,11 @@ public class SpeakerSummaryFacade {
     private static final String UNKNOWN_SPEAKER = "未知发言人";
 
     private final SpeakerSummaryService speakerSummaryService;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
-    public SpeakerSummaryVo summarize(SpeakerSummaryRequest request) {
+    public SpeakerSummaryVo summarize(AuthenticatedActor actor, SpeakerSummaryRequest request) {
+        AuthContext.requireSelf(actor, request.getUserId());
+        resourceOwnershipPolicy.requireOwnedSession(actor, request.getSessionId());
         String speakerName = resolveSpeakerName(request.getSpeakerName(), request.getSpeakerId());
         log.info("[SpeakerSummaryFacade] summarize start, sessionId={}, speaker={}, textLen={}",
                 request.getSessionId(), speakerName, request.getText().length());
@@ -40,7 +46,8 @@ public class SpeakerSummaryFacade {
         return summary;
     }
 
-    public List<SpeakerSummaryRecordVo> getBySession(String sessionId) {
+    public List<SpeakerSummaryRecordVo> getBySession(AuthenticatedActor actor, String sessionId) {
+        resourceOwnershipPolicy.requireOwnedSession(actor, sessionId);
         log.info("[SpeakerSummaryFacade] getBySession start, sessionId={}", sessionId);
         List<SpeakerSummaryRecordVo> summaries = speakerSummaryService.getBySession(sessionId).stream()
                 .map(this::toVo)
@@ -49,14 +56,20 @@ public class SpeakerSummaryFacade {
         return summaries;
     }
 
-    public SpeakerSummaryVo regenerate(Long id, String requirements) {
+    public SpeakerSummaryVo regenerate(AuthenticatedActor actor, Long id, String requirements) {
+        resourceOwnershipPolicy.requireOwnedSpeakerSummary(actor, id);
         log.info("[SpeakerSummaryFacade] regenerate start, id={}", id);
         SpeakerSummaryVo summary = speakerSummaryService.regenerate(id, requirements);
         log.info("[SpeakerSummaryFacade] regenerate end, id={}", id);
         return summary;
     }
 
-    public SpeakerSummaryRecordVo update(Long id, UpdateSpeakerSummaryRequest request) {
+    public SpeakerSummaryRecordVo update(
+            AuthenticatedActor actor,
+            Long id,
+            UpdateSpeakerSummaryRequest request
+    ) {
+        resourceOwnershipPolicy.requireOwnedSpeakerSummary(actor, id);
         log.info("[SpeakerSummaryFacade] update start, id={}, speaker={}", id, request.getSpeakerName());
         SpeakerSummaryRecordVo summary = toVo(speakerSummaryService.update(
                 id,

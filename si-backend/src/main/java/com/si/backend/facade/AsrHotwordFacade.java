@@ -7,6 +7,8 @@ import com.si.backend.entity.Terminology;
 import com.si.backend.service.AsrHotwordService;
 import com.si.backend.service.HotwordExtractionService;
 import com.si.backend.service.TerminologyService;
+import com.si.backend.service.ResourceOwnershipPolicy;
+import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.vo.AsrHotwordVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +27,7 @@ public class AsrHotwordFacade {
     private final AsrHotwordService hotwordService;
     private final TerminologyService terminologyService;
     private final HotwordExtractionService extractionService;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     public List<AsrHotwordVo> list(Long userId, String keyword, Boolean enabled, String language, String category) {
         log.info("[AsrHotwordFacade] list start, userId={}", userId);
@@ -89,7 +92,12 @@ public class AsrHotwordFacade {
         log.info("[AsrHotwordFacade] delete end, id={}, userId={}", id, userId);
     }
 
-    public List<HotwordSuggestion> previewExtractedHotwords(String sessionId, Long userId) {
+    public List<HotwordSuggestion> previewExtractedHotwords(
+            AuthenticatedActor actor,
+            String sessionId,
+            Long userId
+    ) {
+        resourceOwnershipPolicy.requireOwnedSession(actor, sessionId);
         log.info("[AsrHotwordFacade] previewExtractedHotwords start, sessionId={}, userId={}", sessionId, userId);
         List<HotwordSuggestion> result = extractionService.previewFromSession(sessionId, userId);
         log.info("[AsrHotwordFacade] previewExtractedHotwords end, sessionId={}, count={}", sessionId, result.size());

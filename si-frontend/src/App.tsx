@@ -1,7 +1,7 @@
 /**
  * 应用根组件，路由配置
  */
-import { HashRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { HashRouter, Navigate, Routes, Route, useLocation } from 'react-router-dom'
 import InterpretationView from './views/InterpretationView'
 import LoginView from './views/LoginView'
 import UserShareView from './views/UserShareView'
@@ -9,13 +9,17 @@ import HistoryView from './views/HistoryView'
 import TerminologyView from './views/TerminologyView'
 import TeamsBotView from './views/TeamsBotView'
 import CostAnalysisView from './views/CostAnalysisView'
-import { STORAGE_KEYS, ROUTES } from './constants'
+import UserManagementView from './views/UserManagementView'
+import { STORAGE_KEYS } from './constants'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
   const token = localStorage.getItem(STORAGE_KEYS.TOKEN)
-  if (!token) {
-    window.location.hash = ROUTES.LOGIN
-    return null
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
+  if (!token || !Number.isSafeInteger(userId) || userId <= 0) {
+    localStorage.removeItem(STORAGE_KEYS.TOKEN)
+    localStorage.removeItem(STORAGE_KEYS.USER_ID)
+    localStorage.removeItem(STORAGE_KEYS.ROLE)
+    return <Navigate to="/login" replace />
   }
   return children
 }
@@ -44,6 +48,11 @@ function AuthenticatedWorkspace() {
       {location.pathname === '/cost-analysis' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
           <CostAnalysisView />
+        </div>
+      )}
+      {location.pathname === '/user-management' && (
+        <div className="route-overlay" role="dialog" aria-modal="true">
+          <UserManagementView />
         </div>
       )}
     </>

@@ -1,0 +1,50 @@
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:1/si_backend_test?useSSL=false
+    username: test_only
+    password: test_only
+  servlet:
+    multipart:
+      max-file-size: 1MB
+      max-request-size: 1MB
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+jwt:
+  secret: test-only-secret-that-is-never-used-in-production
+  expiration-ms: 60000
+
+app:
+  admin:
+    api-secret: test-admin-secret
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+
+bot:
+  api:
+    url: http://127.0.0.1:1
+    allowed-user-ids: []
+
+audio:
+  record:
+    api-secret: test-bot-secret
+
+speaker:
+  service:
+    enabled: false
+
+punctuation:
+  service:
+    enabled: false
+
+segmentation:
+  service:
+    enabled: false
+
+notification:
+  test-mode: true

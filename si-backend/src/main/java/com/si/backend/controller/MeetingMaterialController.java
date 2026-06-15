@@ -4,6 +4,7 @@ import com.si.backend.common.Result;
 import com.si.backend.dto.SaveMeetingMaterialRequest;
 import com.si.backend.facade.MeetingMaterialFacade;
 import com.si.backend.vo.MeetingMaterialVo;
+import com.si.backend.util.AuthContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +20,11 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.USER,
+        permission = com.si.backend.security.authorization.PermissionCode.MEETING_CONTENT_MANAGE,
+        scope = com.si.backend.security.authorization.ResourceScope.OWN,
+        expectedStatuses = {200, 400, 401, 404})
 @RequestMapping("/api/meeting-materials")
 @RequiredArgsConstructor
 public class MeetingMaterialController {
@@ -28,7 +34,7 @@ public class MeetingMaterialController {
     @GetMapping("/sessions/{sessionId}")
     public Result<MeetingMaterialVo> getMaterial(@PathVariable String sessionId) {
         log.info("[MeetingMaterialController] getMaterial start, sessionId={}", sessionId);
-        MeetingMaterialVo material = facade.getMaterial(sessionId);
+        MeetingMaterialVo material = facade.getMaterial(AuthContext.requireActor(), sessionId);
         log.info("[MeetingMaterialController] getMaterial end, sessionId={}", sessionId);
         return Result.ok(material);
     }
@@ -39,7 +45,7 @@ public class MeetingMaterialController {
             @RequestBody SaveMeetingMaterialRequest request
     ) {
         log.info("[MeetingMaterialController] saveMaterial start, sessionId={}", sessionId);
-        MeetingMaterialVo material = facade.saveMaterial(sessionId, request);
+        MeetingMaterialVo material = facade.saveMaterial(AuthContext.requireActor(), sessionId, request);
         log.info("[MeetingMaterialController] saveMaterial end, sessionId={}", sessionId);
         return Result.ok(material);
     }
@@ -47,7 +53,7 @@ public class MeetingMaterialController {
     @PostMapping("/sessions/{sessionId}/summary")
     public Result<MeetingMaterialVo> generateSummary(@PathVariable String sessionId) {
         log.info("[MeetingMaterialController] generateSummary start, sessionId={}", sessionId);
-        MeetingMaterialVo material = facade.generateSummary(sessionId);
+        MeetingMaterialVo material = facade.generateSummary(AuthContext.requireActor(), sessionId);
         log.info("[MeetingMaterialController] generateSummary end, sessionId={}", sessionId);
         return Result.ok(material);
     }

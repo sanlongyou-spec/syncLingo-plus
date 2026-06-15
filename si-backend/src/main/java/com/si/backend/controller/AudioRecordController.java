@@ -3,6 +3,7 @@ package com.si.backend.controller;
 import com.si.backend.common.Result;
 import com.si.backend.entity.SessionAudioRecord;
 import com.si.backend.service.AudioRecordService;
+import com.si.backend.util.AuthContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
@@ -20,6 +21,11 @@ import java.util.Map;
 
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.USER,
+        permission = com.si.backend.security.authorization.PermissionCode.AUDIO_MANAGE,
+        scope = com.si.backend.security.authorization.ResourceScope.SELF,
+        expectedStatuses = {200, 401, 403, 404})
 @RequestMapping("/api/audio-records")
 @RequiredArgsConstructor
 public class AudioRecordController {
@@ -32,6 +38,7 @@ public class AudioRecordController {
             @RequestParam(required = false, defaultValue = "") String keyword,
             @RequestParam(required = false, defaultValue = "1") int page,
             @RequestParam(required = false, defaultValue = "20") int size) {
+        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
         List<SessionAudioRecord> items = audioRecordService.search(userId, keyword, page, size);
         long total = audioRecordService.count(userId, keyword);
         return Result.ok(Map.of("items", items, "total", total));
@@ -42,6 +49,7 @@ public class AudioRecordController {
             @PathVariable Long id,
             @RequestParam Long userId,
             @RequestParam String name) {
+        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
         boolean ok = audioRecordService.rename(userId, id, name);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
@@ -50,6 +58,7 @@ public class AudioRecordController {
     public Result<Void> delete(
             @PathVariable Long id,
             @RequestParam Long userId) {
+        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
         boolean ok = audioRecordService.delete(userId, id);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
@@ -58,6 +67,7 @@ public class AudioRecordController {
     public ResponseEntity<Resource> download(
             @PathVariable Long id,
             @RequestParam Long userId) {
+        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音下载,越权→403
         File file = audioRecordService.getFile(userId, id);
         if (file == null) {
             return ResponseEntity.notFound().build();

@@ -265,7 +265,7 @@ const formatChineseDate = (src?: string | null): string => {
 
 
 export default function HistoryView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
 
   // ── Meeting list ────────────────────────────────────────
   const [meetings, setMeetings] = useState<Meeting[]>([])

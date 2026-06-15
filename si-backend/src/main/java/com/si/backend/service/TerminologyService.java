@@ -71,11 +71,9 @@ public class TerminologyService {
     public Terminology createTerminology(Terminology terminology) {
         log.info("[TerminologyService] createTerminology start, category={}, enabled={}",
                 terminology.getCategory(), terminology.getEnabled());
+        requireUserId(terminology.getUserId());
         if (terminology.getEnabled() == null) {
             terminology.setEnabled(true);
-        }
-        if (terminology.getUserId() == null) {
-            terminology.setUserId(1L);
         }
         if (terminology.getReviewStatus() == null || terminology.getReviewStatus().isBlank()) {
             terminology.setReviewStatus("APPROVED");
@@ -116,10 +114,11 @@ public class TerminologyService {
         String fileName = file != null ? file.getOriginalFilename() : null;
         log.info("[TerminologyService] importExcel start, userId={}, fileName={}, size={}",
                 userId, fileName, file != null ? file.getSize() : 0);
+        requireUserId(userId);
         if (file == null || file.isEmpty()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的 Excel 文件");
         }
-        long uid = userId != null ? userId : 1L;
+        long uid = userId;
         try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
             DataFormatter formatter = new DataFormatter(Locale.ROOT);
             // 已有术语的去重键集合（中文|印尼语|英语，trim+小写）
@@ -247,7 +246,7 @@ public class TerminologyService {
     @Transactional
     public void updateEnabled(Long id, Long userId, Boolean enabled) {
         log.info("[TerminologyService] updateEnabled start, id={}, userId={}, enabled={}", id, userId, enabled);
-        terminologyMapper.updateEnabled(id, userId, Boolean.TRUE.equals(enabled));
+        requireModified(terminologyMapper.updateEnabled(id, userId, Boolean.TRUE.equals(enabled)));
         log.info("[TerminologyService] updateEnabled end, id={}", id);
     }
 
@@ -262,15 +261,27 @@ public class TerminologyService {
         if (terminology.getReviewStatus() == null || terminology.getReviewStatus().isBlank()) {
             terminology.setReviewStatus("APPROVED");
         }
-        terminologyMapper.update(terminology);
+        requireModified(terminologyMapper.update(terminology));
         log.info("[TerminologyService] updateTerminology end, id={}", id);
     }
 
     @Transactional
     public void deleteTerminology(Long id, Long userId) {
         log.info("[TerminologyService] deleteTerminology start, id={}, userId={}", id, userId);
-        terminologyMapper.deleteById(id, userId);
+        requireModified(terminologyMapper.deleteById(id, userId));
         log.info("[TerminologyService] deleteTerminology end, id={}", id);
+    }
+
+    private void requireUserId(Long userId) {
+        if (userId == null) {
+            throw BizException.of(ErrorCode.UNAUTHORIZED, "Unauthenticated");
+        }
+    }
+
+    private void requireModified(int modifiedRows) {
+        if (modifiedRows == 0) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "术语不存在");
+        }
     }
 
     public TerminologyProtection applyBeforeTranslate(Long userId, String sourceText, String sourceLang, String targetLang) {

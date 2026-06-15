@@ -34,4 +34,25 @@ public interface UserMapper {
 
     @Update("UPDATE si_user SET summary_recipients = #{recipients}, update_time = NOW() WHERE id = #{userId}")
     int updateSummaryRecipients(@Param("userId") Long userId, @Param("recipients") String recipients);
+
+    /** P1:为存量库补 status 列(列已存在时 MySQL 抛 Duplicate column,由调用方忽略)。 */
+    @Update("ALTER TABLE si_user ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'")
+    void addStatusColumnIfNotExists();
+
+    // ── P1 用户管理 ──────────────────────────────────────────────
+    @Select("SELECT * FROM si_user ORDER BY id ASC")
+    java.util.List<SiUser> findAll();
+
+    @Update("UPDATE si_user SET role = #{role}, update_time = NOW() WHERE id = #{id}")
+    int updateRole(@Param("id") Long id, @Param("role") String role);
+
+    @Update("UPDATE si_user SET status = #{status}, update_time = NOW() WHERE id = #{id}")
+    int updateStatus(@Param("id") Long id, @Param("status") String status);
+
+    @Update("UPDATE si_user SET password = #{password}, update_time = NOW() WHERE id = #{id}")
+    int updatePassword(@Param("id") Long id, @Param("password") String password);
+
+    /** 当前有效(未停用)管理员数量,用于"最后一个管理员"保护。 */
+    @Select("SELECT COUNT(*) FROM si_user WHERE role = 'ADMIN' AND (status IS NULL OR status <> 'DISABLED')")
+    int countActiveAdmins();
 }

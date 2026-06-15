@@ -108,6 +108,9 @@ public final class Constants {
     public static final String WS_ERROR_UNKNOWN_MESSAGE_TYPE = "UNKNOWN_MESSAGE_TYPE";
     public static final String WS_ERROR_PARSE_ERROR = "PARSE_ERROR";
     public static final String WS_ERROR_ASR_ERROR = "ASR_ERROR";
+    public static final String WS_ERROR_UNAUTHORIZED = "UNAUTHORIZED";
+    public static final String WS_ERROR_INVALID_STATE = "INVALID_STATE";
+    public static final String WS_ERROR_SESSION_CONFLICT = "SESSION_CONFLICT";
 
     // ═══════════════════════════════════════════════════════════
     // Cartesia TTS WebSocket

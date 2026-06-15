@@ -1,5 +1,7 @@
 package com.si.backend.service;
 
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.AsrHotword;
 import com.si.backend.entity.Terminology;
 import com.si.backend.mapper.AsrHotwordMapper;
@@ -101,22 +103,28 @@ public class AsrHotwordService {
         hotword.setUserId(userId);
         if (hotword.getEnabled() == null) hotword.setEnabled(true);
         if (hotword.getWeight() == null) hotword.setWeight(1.0);
-        hotwordMapper.update(hotword);
+        requireModified(hotwordMapper.update(hotword));
         log.info("[AsrHotwordService] update end, id={}, userId={}", id, userId);
     }
 
     @Transactional
     public void updateEnabled(Long id, Long userId, Boolean enabled) {
         log.info("[AsrHotwordService] updateEnabled start, id={}, userId={}, enabled={}", id, userId, enabled);
-        hotwordMapper.updateEnabled(id, userId, Boolean.TRUE.equals(enabled));
+        requireModified(hotwordMapper.updateEnabled(id, userId, Boolean.TRUE.equals(enabled)));
         log.info("[AsrHotwordService] updateEnabled end, id={}, userId={}", id, userId);
     }
 
     @Transactional
     public void delete(Long id, Long userId) {
         log.info("[AsrHotwordService] delete start, id={}, userId={}", id, userId);
-        hotwordMapper.deleteById(id, userId);
+        requireModified(hotwordMapper.deleteById(id, userId));
         log.info("[AsrHotwordService] delete end, id={}, userId={}", id, userId);
+    }
+
+    private void requireModified(int modifiedRows) {
+        if (modifiedRows == 0) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "热词不存在");
+        }
     }
 
     /**

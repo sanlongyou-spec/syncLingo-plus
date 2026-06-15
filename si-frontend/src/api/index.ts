@@ -1,6 +1,7 @@
 import client from './client'
 import type {
   Result,
+  UserSummary,
   StartInterpretationParams,
   InterpretationStatus,
   InterpretationResultItem,
@@ -338,7 +339,7 @@ export const chatWithPreMeeting = (
     fileId: options?.fileId || null,
     sessionId: options?.sessionId || null,
     crossMeeting: options?.crossMeeting || false,
-    userId: options?.userId || 1,
+    userId: options?.userId ?? null,
     days: options?.days || 0,
   }, { timeout: 120_000 }).then(r => r.data)
 
@@ -589,3 +590,22 @@ export const getSummaryRecipients = (): Promise<Result<string[]>> =>
 
 export const saveSummaryRecipients = (recipients: string[]): Promise<Result<void>> =>
   client.put<Result<void>>('/api/user/preference/summary-recipients', recipients).then(r => r.data)
+
+// ── P1 用户管理(仅 ADMIN;/me 任意已登录用户) ──────────────────────────
+export const getMe = (): Promise<Result<UserSummary>> =>
+  client.get<Result<UserSummary>>('/api/users/me').then(r => r.data)
+
+export const listUsers = (): Promise<Result<UserSummary[]>> =>
+  client.get<Result<UserSummary[]>>('/api/users').then(r => r.data)
+
+export const createUser = (params: { username: string; password: string; role: string; nickname?: string; email?: string }): Promise<Result<UserSummary>> =>
+  client.post<Result<UserSummary>>('/api/users', params).then(r => r.data)
+
+export const updateUserRole = (id: number, role: string): Promise<Result<UserSummary>> =>
+  client.put<Result<UserSummary>>(`/api/users/${id}/role`, { role }).then(r => r.data)
+
+export const updateUserStatus = (id: number, status: string): Promise<Result<UserSummary>> =>
+  client.put<Result<UserSummary>>(`/api/users/${id}/status`, { status }).then(r => r.data)
+
+export const resetUserPassword = (id: number, password: string): Promise<Result<void>> =>
+  client.post<Result<void>>(`/api/users/${id}/reset-password`, { password }).then(r => r.data)

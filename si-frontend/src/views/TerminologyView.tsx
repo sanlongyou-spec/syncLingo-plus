@@ -77,7 +77,7 @@ function groupBy<T>(items: T[], key: (item: T) => string): [string, T[]][] {
 }
 
 export default function TerminologyView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
   const [activeTab, setActiveTab] = useState<Tab>('terminology')
   const [terms, setTerms] = useState<Terminology[]>([])
   const [hotwords, setHotwords] = useState<AsrHotword[]>([])

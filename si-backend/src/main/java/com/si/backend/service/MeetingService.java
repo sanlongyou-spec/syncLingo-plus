@@ -1,13 +1,12 @@
 package com.si.backend.service;
 
 import com.si.backend.common.BizException;
-import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.Meeting;
-import com.si.backend.util.AuthContext;
 import com.si.backend.entity.PersistentPreMeetingFile;
 import com.si.backend.mapper.MeetingMapper;
 import com.si.backend.mapper.PersistentPreMeetingFileMapper;
+import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.vo.MeetingFileVo;
 import com.si.backend.vo.MeetingVo;
 import jakarta.annotation.PostConstruct;
@@ -62,7 +61,8 @@ public class MeetingService {
         }
     }
 
-    public MeetingVo createMeeting(Long userId, String title, String scheduledTime, String note) {
+    public MeetingVo createMeeting(AuthenticatedActor actor, String title, String scheduledTime, String note) {
+        Long userId = actor.userId();
         String trimmedTitle = title == null ? "" : title.trim();
         if (trimmedTitle.isBlank()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "会议名称不能为空");
@@ -87,19 +87,19 @@ public class MeetingService {
         return toVo(meeting, List.of());
     }
 
-    public List<MeetingVo> getMeetings(Long userId) {
-        return meetingMapper.findByUserId(userId).stream()
+    public List<MeetingVo> getMeetings(AuthenticatedActor actor) {
+        return meetingMapper.findByUserId(actor.userId()).stream()
                 .map(m -> toVo(m, fileMapper.findByMeetingId(m.getId())))
                 .toList();
     }
 
-    public MeetingVo getMeeting(Long meetingId) {
-        Meeting meeting = requireOwner(meetingId);
+    public MeetingVo getMeeting(AuthenticatedActor actor, Long meetingId) {
+        Meeting meeting = requireOwner(actor, meetingId);
         return toVo(meeting, fileMapper.findByMeetingId(meetingId));
     }
 
-    public MeetingFileVo uploadFile(Long meetingId, MultipartFile file) throws IOException {
-        requireOwner(meetingId);
+    public MeetingFileVo uploadFile(AuthenticatedActor actor, Long meetingId, MultipartFile file) throws IOException {
+        requireOwner(actor, meetingId);
         String originalName = file.getOriginalFilename();
         if (originalName == null || originalName.isBlank()) originalName = "unnamed";
         String ext = extension(originalName).toLowerCase();
@@ -119,30 +119,36 @@ public class MeetingService {
         return toFileVo(entity);
     }
 
-    public List<MeetingFileVo> getFiles(Long meetingId) {
-        requireOwner(meetingId);
+    public List<MeetingFileVo> getFiles(AuthenticatedActor actor, Long meetingId) {
+        requireOwner(actor, meetingId);
         return fileMapper.findByMeetingId(meetingId).stream().map(this::toFileVo).toList();
     }
 
-    public void deleteFile(Long meetingId, Long fileId) {
-        requireOwner(meetingId);
+    public void deleteFile(AuthenticatedActor actor, Long meetingId, Long fileId) {
+        requireOwner(actor, meetingId);
         PersistentPreMeetingFile file = fileMapper.findById(fileId);
         if (file == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         if (!meetingId.equals(file.getMeetingId())) {
-            throw BizException.of(com.si.backend.common.Constants.HTTP_UNAUTHORIZED, "文件不属于该会议");
+            throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         }
         fileMapper.deleteById(fileId);
         contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_SUMMARY, fileId);
         contentEmbeddingService.deleteByTypeAndRefId(ContentEmbeddingService.TYPE_FILE_CONTENT, fileId);
     }
 
-    public PersistentPreMeetingFile getFileWithContent(Long fileId) {
+    public PersistentPreMeetingFile getFileWithContent(AuthenticatedActor actor, Long meetingId, Long fileId) {
+        requireOwner(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findById(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        requireFileBelongsToMeeting(f, meetingId);
         return f;
     }
 
-    public void saveFileSummary(Long fileId, String summary) {
+    public void saveFileSummary(AuthenticatedActor actor, Long meetingId, Long fileId, String summary) {
+        requireOwner(actor, meetingId);
+        PersistentPreMeetingFile owned = fileMapper.findById(fileId);
+        if (owned == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        requireFileBelongsToMeeting(owned, meetingId);
         fileMapper.updateSummary(fileId, summary);
         if (summary != null && !summary.isBlank()) {
             PersistentPreMeetingFile f = fileMapper.findById(fileId);
@@ -152,21 +158,25 @@ public class MeetingService {
         }
     }
 
-    public PersistentPreMeetingFile getFileForDownload(Long fileId) {
+    public PersistentPreMeetingFile getFileForDownload(AuthenticatedActor actor, Long meetingId, Long fileId) {
+        requireOwner(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findByIdForDownload(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        requireFileBelongsToMeeting(f, meetingId);
         return f;
     }
 
     /** Full record incl. both extracted text and original bytes — used to re-load a file for re-summary. */
-    public PersistentPreMeetingFile getFileFull(Long fileId) {
+    public PersistentPreMeetingFile getFileFull(AuthenticatedActor actor, Long meetingId, Long fileId) {
+        requireOwner(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findByIdFull(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        requireFileBelongsToMeeting(f, meetingId);
         return f;
     }
 
-    public String getMeetingNoticeText(Long meetingId) {
-        requireOwner(meetingId);
+    public String getMeetingNoticeText(AuthenticatedActor actor, Long meetingId) {
+        requireOwner(actor, meetingId);
         List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
         PersistentPreMeetingFile notice = files.stream()
                 .filter(file -> file.getFileName() != null
@@ -180,19 +190,19 @@ public class MeetingService {
         return full == null || full.getFileContent() == null ? "" : full.getFileContent();
     }
 
-    public void saveAttendance(Long meetingId, String attendanceJson) {
-        requireOwner(meetingId);
+    public void saveAttendance(AuthenticatedActor actor, Long meetingId, String attendanceJson) {
+        requireOwner(actor, meetingId);
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
     }
 
-    public void setMeetingUrl(Long meetingId, String url) {
-        requireOwner(meetingId);
+    public void setMeetingUrl(AuthenticatedActor actor, Long meetingId, String url) {
+        requireOwner(actor, meetingId);
         meetingMapper.updateMeetingUrl(meetingId, url);
     }
 
     @Transactional
-    public void deleteMeeting(Long meetingId) {
-        requireOwner(meetingId);
+    public void deleteMeeting(AuthenticatedActor actor, Long meetingId) {
+        requireOwner(actor, meetingId);
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
 
         // Collect the meeting's sessions BEFORE soft-deleting them, to clean their per-session data.
@@ -228,14 +238,20 @@ public class MeetingService {
         return m;
     }
 
-    private Meeting requireOwner(Long meetingId) {
+    private Meeting requireOwner(AuthenticatedActor actor, Long meetingId) {
         Meeting m = requireMeeting(meetingId);
-        Long authId = AuthContext.currentUserId();
-        if (authId != null && !authId.equals(m.getUserId())) {
-            log.warn("[MeetingService] ownership violation, meetingId={}, ownerId={}, authId={}", meetingId, m.getUserId(), authId);
-            throw BizException.of(Constants.HTTP_UNAUTHORIZED, "无权操作该会议");
+        if (actor == null || actor.userId() == null || !actor.userId().equals(m.getUserId())) {
+            log.warn("[MeetingService] ownership violation, meetingId={}, ownerId={}, actorId={}",
+                    meetingId, m.getUserId(), actor == null ? null : actor.userId());
+            throw BizException.of(ErrorCode.NOT_FOUND, "会议不存在");
         }
         return m;
+    }
+
+    private void requireFileBelongsToMeeting(PersistentPreMeetingFile file, Long meetingId) {
+        if (!meetingId.equals(file.getMeetingId())) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
+        }
     }
 
     private MeetingVo toVo(Meeting m, List<PersistentPreMeetingFile> files) {

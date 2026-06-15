@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
 getAsrHotwords,
+  getMe,
   getMeetingParticipants,
   getMeetings,
   getUserLanguagePreference,
@@ -75,8 +76,9 @@ const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
 
 export default function InterpretationView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
 
+  const [currentRole, setCurrentRole] = useState<string>(localStorage.getItem(STORAGE_KEYS.ROLE) || '')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -398,6 +400,19 @@ export default function InterpretationView() {
   }
 
 
+  useEffect(() => {
+    getMe()
+      .then(res => {
+        if (res.code === 200 && res.data?.role) {
+          setCurrentRole(res.data.role)
+          localStorage.setItem(STORAGE_KEYS.ROLE, res.data.role)
+        }
+      })
+      .catch(() => { /* 角色获取失败不影响同传主流程 */ })
+  }, [])
+
+  const isAdmin = currentRole.toUpperCase() === 'ADMIN'
+
   return (
     <div className="si-root">
       <aside className="si-hover-sidebar" aria-label="工具侧边栏">
@@ -423,6 +438,12 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">T</span>
             <span>设置</span>
           </button>
+          {isAdmin && (
+            <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.USER_MANAGEMENT }}>
+              <span className="si-side-action-icon">U</span>
+              <span>用户管理</span>
+            </button>
+          )}
         </div>
       </aside>
 

@@ -5,6 +5,7 @@ import com.si.backend.common.ErrorCode;
 import com.si.backend.dto.MeetingNotificationPreviewRequest;
 import com.si.backend.dto.MeetingNotificationSendRequest;
 import com.si.backend.integration.MeetingBotIntegration;
+import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.service.MeetingNoticeParser;
 import com.si.backend.service.MeetingNotificationService;
 import com.si.backend.service.MeetingService;
@@ -37,19 +38,23 @@ public class MeetingNotificationFacade {
     private final MeetingNotificationService meetingNotificationService;
     private final MeetingBotIntegration meetingBotIntegration;
 
-    public MeetingNotificationPreviewVo preview(Long meetingId, MeetingNotificationPreviewRequest request) {
+    public MeetingNotificationPreviewVo preview(
+            AuthenticatedActor actor,
+            Long meetingId,
+            MeetingNotificationPreviewRequest request
+    ) {
         log.info("[MeetingNotificationFacade] preview start, meetingId={}, fileId={}",
                 meetingId, request == null ? null : request.getFileId());
         if (request == null || request.getMeetingUrl() == null || request.getMeetingUrl().isBlank()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请填写会议链接");
         }
         String meetingUrl = request.getMeetingUrl().trim();
-        meetingService.setMeetingUrl(meetingId, meetingUrl);
-        MeetingVo meeting = meetingService.getMeeting(meetingId);
+        meetingService.setMeetingUrl(actor, meetingId, meetingUrl);
+        MeetingVo meeting = meetingService.getMeeting(actor, meetingId);
         String fileId = request.getFileId();
         String noticeText = fileId != null && !fileId.isBlank()
                 ? preMeetingService.getDocText(fileId)
-                : meetingService.getMeetingNoticeText(meetingId);
+                : meetingService.getMeetingNoticeText(actor, meetingId);
         MeetingNoticeParser.MeetingNoticeDetails details = meetingNoticeParser.parse(noticeText, meeting.getTitle());
         List<String> participantNames = resolveParticipantNames(meetingId, fileId);
         MeetingNotificationService.NotificationPlan plan =
@@ -60,9 +65,9 @@ public class MeetingNotificationFacade {
         return preview;
     }
 
-    public List<MeetingNotificationRecipientVo> recipients(Long meetingId) {
+    public List<MeetingNotificationRecipientVo> recipients(AuthenticatedActor actor, Long meetingId) {
         log.info("[MeetingNotificationFacade] recipients start, meetingId={}", meetingId);
-        MeetingVo meeting = meetingService.getMeeting(meetingId);
+        MeetingVo meeting = meetingService.getMeeting(actor, meetingId);
         List<String> participantNames = preMeetingService.expectedParticipantNames(meetingId);
         MeetingNotificationService.NotificationPlan plan =
                 meetingNotificationService.buildPlan(meeting.getTitle(), null, participantNames);
@@ -72,7 +77,11 @@ public class MeetingNotificationFacade {
         return recipients;
     }
 
-    public MeetingNotificationSendVo send(Long meetingId, MeetingNotificationSendRequest request) {
+    public MeetingNotificationSendVo send(
+            AuthenticatedActor actor,
+            Long meetingId,
+            MeetingNotificationSendRequest request
+    ) {
         log.info("[MeetingNotificationFacade] send start, meetingId={}, selectedCount={}",
                 meetingId, request == null || request.getRecipients() == null ? 0 : request.getRecipients().size());
         if (request == null || request.getContent() == null || request.getContent().isBlank()) {
@@ -82,7 +91,7 @@ public class MeetingNotificationFacade {
         if (requested.isEmpty()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请至少选择一个通知账号");
         }
-        MeetingVo meeting = meetingService.getMeeting(meetingId);
+        MeetingVo meeting = meetingService.getMeeting(actor, meetingId);
         MeetingNotificationService.NotificationPlan plan = meetingNotificationService.buildPlan(
                 meeting.getTitle(),
                 null,

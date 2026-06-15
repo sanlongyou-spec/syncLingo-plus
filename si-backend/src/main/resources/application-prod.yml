@@ -5,6 +5,14 @@ logging:
     com.microsoft.cognitiveservices.speech: INFO
     com.si.backend.integration: INFO
 
+springdoc:
+  # 生产默认关闭 Swagger UI 与 /v3/api-docs，防止对公网暴露全部接口（含 admin）。
+  # 如需临时排障，可设环境变量 SPRINGDOC_ENABLED=true，并务必在 nginx 限制来源。
+  api-docs:
+    enabled: ${SPRINGDOC_ENABLED:false}
+  swagger-ui:
+    enabled: ${SPRINGDOC_ENABLED:false}
+
 spring:
   datasource:
     url: jdbc:mysql://${DB_HOST:host.docker.internal}:${DB_PORT:3306}/${DB_NAME:si_backend}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true

@@ -20,6 +20,11 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  */
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.SERVICE,
+        permission = com.si.backend.security.authorization.PermissionCode.TEAMS_BOT_QUERY,
+        scope = com.si.backend.security.authorization.ResourceScope.SERVICE,
+        expectedStatuses = {200, 400, 401, 403})
 @RequestMapping("/api/teams-bot")
 @RequiredArgsConstructor
 public class TeamsBotQueryController {

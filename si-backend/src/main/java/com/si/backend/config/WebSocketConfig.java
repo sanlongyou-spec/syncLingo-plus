@@ -23,6 +23,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final ShareWebSocketHandler shareWebSocketHandler;
     private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
+    private final CorsProperties corsProperties;
 
     @Value("${app.websocket.max-text-size:10485760}")
     private long maxTextSize;
@@ -42,7 +43,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(asrWebSocketHandler, Constants.WS_PATH_ASR)
                 .addInterceptors(jwtHandshakeInterceptor)
-                .setAllowedOrigins("*");
+                .setAllowedOriginPatterns(corsProperties.getAllowedOrigins().toArray(new String[0]));
         registry.addHandler(shareWebSocketHandler, Constants.WS_PATH_SHARE)
                 .setAllowedOrigins("*");
         registry.addHandler(shareAudioWebSocketHandler, Constants.WS_PATH_SHARE_AUDIO)

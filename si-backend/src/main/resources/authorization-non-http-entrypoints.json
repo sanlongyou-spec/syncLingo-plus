@@ -1,0 +1,222 @@
+[
+  {
+    "kind": "FRAMEWORK_HTTP",
+    "method": "GET",
+    "path": "/actuator/health",
+    "identity": "ANONYMOUS",
+    "permission": "HEALTH_READ",
+    "scope": "NONE",
+    "expectedStatuses": [200, 503],
+    "source": "si-backend/src/main/resources/application.yml"
+  },
+  {
+    "kind": "FRAMEWORK_HTTP",
+    "method": "GET",
+    "path": "/v3/api-docs",
+    "identity": "ANONYMOUS",
+    "permission": "API_DOCS_READ",
+    "scope": "NONE",
+    "expectedStatuses": [200, 404],
+    "source": "si-backend/src/main/resources/application.yml"
+  },
+  {
+    "kind": "FRAMEWORK_HTTP",
+    "method": "GET",
+    "path": "/swagger-ui.html",
+    "identity": "ANONYMOUS",
+    "permission": "API_DOCS_READ",
+    "scope": "NONE",
+    "expectedStatuses": [200, 302, 404],
+    "source": "si-backend/src/main/resources/application.yml"
+  },
+  {
+    "kind": "WEBSOCKET",
+    "method": "WS",
+    "path": "/ws/asr",
+    "identity": "USER",
+    "permission": "INTERPRETATION_OPERATE",
+    "scope": "OWN",
+    "expectedStatuses": [101, 401, 404],
+    "source": "com.si.backend.config.WebSocketConfig"
+  },
+  {
+    "kind": "WEBSOCKET",
+    "method": "WS",
+    "path": "/ws/share",
+    "identity": "ANONYMOUS",
+    "permission": "SHARE_READ",
+    "scope": "PUBLIC",
+    "expectedStatuses": [101, 404],
+    "source": "com.si.backend.config.WebSocketConfig"
+  },
+  {
+    "kind": "WEBSOCKET",
+    "method": "WS",
+    "path": "/ws/share-audio",
+    "identity": "ANONYMOUS",
+    "permission": "SHARE_READ",
+    "scope": "PUBLIC",
+    "expectedStatuses": [101, 404],
+    "source": "com.si.backend.config.WebSocketConfig"
+  },
+  {
+    "kind": "BOT_PROXY_OPERATION",
+    "method": "POST",
+    "path": "/bot-api/api/meetings/summary-file",
+    "identity": "USER",
+    "permission": "BOT_OPERATE",
+    "scope": "SELF",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "com.si.backend.controller.BotApiProxyController"
+  },
+  {
+    "kind": "BOT_PROXY_OPERATION",
+    "method": "POST",
+    "path": "/bot-api/api/meetings/summary",
+    "identity": "USER",
+    "permission": "BOT_OPERATE",
+    "scope": "SELF",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "com.si.backend.controller.BotApiProxyController"
+  },
+  {
+    "kind": "BOT_PROXY_OPERATION",
+    "method": "POST",
+    "path": "/bot-api/api/meetings/summary/chat",
+    "identity": "USER",
+    "permission": "BOT_OPERATE",
+    "scope": "SELF",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "com.si.backend.controller.BotApiProxyController"
+  },
+  {
+    "kind": "BOT_PROXY_OPERATION",
+    "method": "POST",
+    "path": "/bot-api/api/meetings/join",
+    "identity": "USER",
+    "permission": "BOT_OPERATE",
+    "scope": "SELF",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "com.si.backend.controller.BotApiProxyController"
+  },
+  {
+    "kind": "BOT_PROXY_OPERATION",
+    "method": "GET",
+    "path": "/bot-api/api/meetings/participants",
+    "identity": "USER",
+    "permission": "PARTICIPANT_READ",
+    "scope": "SELF",
+    "expectedStatuses": [200, 401, 403, 502],
+    "source": "com.si.backend.controller.BotApiProxyController"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "GET",
+    "path": "/callback",
+    "identity": "BOT_FRAMEWORK",
+    "permission": "BOT_CALLBACK",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 500],
+    "source": "bot/CallingBotSample/Controllers/CallingCallbackController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/callback",
+    "identity": "BOT_FRAMEWORK",
+    "permission": "BOT_CALLBACK",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 500],
+    "source": "bot/CallingBotSample/Controllers/CallingCallbackController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "GET",
+    "path": "/api/messages",
+    "identity": "BOT_FRAMEWORK",
+    "permission": "BOT_MESSAGES",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 500],
+    "source": "bot/CallingBotSample/Controllers/MessageBotController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/messages",
+    "identity": "BOT_FRAMEWORK",
+    "permission": "BOT_MESSAGES",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 500],
+    "source": "bot/CallingBotSample/Controllers/MessageBotController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/meetings/join",
+    "identity": "SERVICE",
+    "permission": "BOT_OPERATE",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 500, 502],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/meetings/summary",
+    "identity": "SERVICE",
+    "permission": "TEAMS_SEND",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/meetings/summary-file",
+    "identity": "SERVICE",
+    "permission": "TEAMS_SEND",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/meetings/notification",
+    "identity": "SERVICE",
+    "permission": "TEAMS_SEND",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "POST",
+    "path": "/api/meetings/summary/chat",
+    "identity": "SERVICE",
+    "permission": "TEAMS_SEND",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 400, 401, 403, 502],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "CSHARP_BOT_HTTP",
+    "method": "GET",
+    "path": "/api/meetings/participants",
+    "identity": "SERVICE",
+    "permission": "PARTICIPANT_READ",
+    "scope": "SERVICE",
+    "expectedStatuses": [200, 401, 403, 500],
+    "source": "bot/CallingBotSample/Controllers/MeetingSummaryController.cs"
+  },
+  {
+    "kind": "SCHEDULED",
+    "method": "TASK",
+    "path": "com.si.backend.service.PreMeetingService#evictExpiredDocs",
+    "identity": "SYSTEM",
+    "permission": "INTERNAL_ASYNC",
+    "scope": "ALL",
+    "expectedStatuses": [200],
+    "source": "com.si.backend.service.PreMeetingService"
+  }
+]

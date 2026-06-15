@@ -1,62 +1,93 @@
 package com.si.backend.controller;
 
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
+import com.si.backend.config.BotApiProxyProperties;
+import com.si.backend.integration.BotProxyIntegration;
+import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.util.AuthContext;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.HttpStatusCodeException;
-import org.springframework.web.client.RestTemplate;
 
-import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Transparent reverse-proxy for the C# Teams Calling Bot service.
- * All requests to /bot-api/** are forwarded to the bot (default :3978),
- * stripping the /bot-api prefix.
+ * Authenticated, allowlisted reverse proxy for the C# Teams Calling Bot.
  */
 @Slf4j
 @RestController
+@com.si.backend.security.authorization.AuthorizationSpec(
+        identity = com.si.backend.security.authorization.IdentityType.USER,
+        permission = com.si.backend.security.authorization.PermissionCode.BOT_OPERATE,
+        scope = com.si.backend.security.authorization.ResourceScope.SELF,
+        expectedStatuses = {200, 400, 401, 403, 502})
 @RequestMapping("/bot-api")
+@RequiredArgsConstructor
 public class BotApiProxyController {
 
-    @Value("${bot.api.url:http://localhost:3978}")
-    private String botApiUrl;
+    private static final String PROXY_PREFIX = "/bot-api";
+    private static final Map<String, Set<HttpMethod>> ALLOWED_OPERATIONS = Map.of(
+            "/api/meetings/summary-file", Set.of(HttpMethod.POST),
+            "/api/meetings/summary", Set.of(HttpMethod.POST),
+            "/api/meetings/summary/chat", Set.of(HttpMethod.POST),
+            "/api/meetings/join", Set.of(HttpMethod.POST),
+            "/api/meetings/participants", Set.of(HttpMethod.GET)
+    );
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final BotApiProxyProperties properties;
+    private final BotProxyIntegration integration;
 
     @RequestMapping("/**")
     public ResponseEntity<byte[]> proxy(
             HttpServletRequest request,
-            @RequestBody(required = false) byte[] body) {
-
-        String path = request.getRequestURI().substring("/bot-api".length());
-        String query = request.getQueryString();
-        String targetUrl = botApiUrl + path + (query != null ? "?" + query : "");
-
-        HttpHeaders headers = new HttpHeaders();
-        for (String name : Collections.list(request.getHeaderNames())) {
-            if (!"host".equalsIgnoreCase(name)) {
-                headers.set(name, request.getHeader(name));
-            }
-        }
-
-        HttpEntity<byte[]> entity = new HttpEntity<>(body, headers);
+            @RequestBody(required = false) byte[] body
+    ) {
+        AuthenticatedActor actor = AuthContext.requireActor();
+        requireAllowedUser(actor);
+        String path = request.getRequestURI().substring(PROXY_PREFIX.length());
         HttpMethod method = HttpMethod.valueOf(request.getMethod());
+        requireAllowedOperation(path, method);
 
-        log.debug("[BotApiProxy] {} {} -> {}", method, request.getRequestURI(), targetUrl);
+        HttpHeaders forwardedHeaders = new HttpHeaders();
+        copyHeader(request, forwardedHeaders, HttpHeaders.CONTENT_TYPE);
+        copyHeader(request, forwardedHeaders, HttpHeaders.ACCEPT);
 
-        try {
-            return restTemplate.exchange(targetUrl, method, entity, byte[].class);
-        } catch (HttpStatusCodeException e) {
-            return ResponseEntity.status(e.getStatusCode())
-                    .headers(e.getResponseHeaders())
-                    .body(e.getResponseBodyAsByteArray());
+        log.info("[BotApiProxyController] proxy start, userId={}, method={}, path={}",
+                actor.userId(), method, path);
+        ResponseEntity<byte[]> response = integration.forward(path, method, forwardedHeaders, body);
+        log.info("[BotApiProxyController] proxy end, userId={}, method={}, path={}, status={}",
+                actor.userId(), method, path, response.getStatusCode().value());
+        return response;
+    }
+
+    private void requireAllowedUser(AuthenticatedActor actor) {
+        if (properties.getAllowedUserIds().isEmpty()
+                || !properties.getAllowedUserIds().contains(actor.userId())) {
+            log.warn("[BotApiProxyController] user denied, userId={}", actor.userId());
+            throw BizException.of(ErrorCode.FORBIDDEN, "Bot operation is not allowed");
+        }
+    }
+
+    private void requireAllowedOperation(String path, HttpMethod method) {
+        Set<HttpMethod> allowedMethods = ALLOWED_OPERATIONS.get(path);
+        if (allowedMethods == null || !allowedMethods.contains(method)) {
+            log.warn("[BotApiProxyController] operation denied, method={}, path={}", method, path);
+            throw BizException.of(ErrorCode.FORBIDDEN, "Bot operation is not allowed");
+        }
+    }
+
+    private void copyHeader(HttpServletRequest request, HttpHeaders target, String headerName) {
+        String value = request.getHeader(headerName);
+        if (value != null && !value.isBlank()) {
+            target.set(headerName, value);
         }
     }
 }

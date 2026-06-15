@@ -34,26 +34,6 @@ public class AuthService {
         return response;
     }
 
-    public LoginResponse register(String username, String password) {
-        log.info("[AuthService] register start, username={}", username);
-        if (username == null || username.isBlank() || username.length() > 50) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "用户名不合法");
-        }
-        if (password == null || password.length() < 6) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "密码至少6位");
-        }
-        if (userMapper.findByUsername(username) != null) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "用户名已存在");
-        }
-        SiUser user = new SiUser();
-        user.setUsername(username);
-        user.setPassword(passwordEncoder.encode(password));
-        userMapper.insert(user);
-        LoginResponse response = new LoginResponse(user.getId(), createToken(user));
-        log.info("[AuthService] register end, username={}, userId={}", username, user.getId());
-        return response;
-    }
-
     private String createToken(SiUser user) {
         String secret = jwtProperties.getSecret() == null ? "" : jwtProperties.getSecret();
         return JwtUtil.createToken(user.getId(), user.getUsername(), jwtProperties.getExpirationMs(), secret);

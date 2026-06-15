@@ -5,6 +5,16 @@ export interface Result<T = unknown> {
   timestamp: string
 }
 
+export interface UserSummary {
+  id: number
+  username: string
+  nickname?: string | null
+  email?: string | null
+  role: string
+  status: string
+  createTime?: string | null
+}
+
 export interface WsMessage {
   type: string
   sessionId?: string

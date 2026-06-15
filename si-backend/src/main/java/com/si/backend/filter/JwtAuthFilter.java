@@ -1,6 +1,8 @@
 package com.si.backend.filter;
 
 import com.si.backend.config.JwtProperties;
+import com.si.backend.entity.SiUser;
+import com.si.backend.mapper.UserMapper;
 import com.si.backend.util.JwtUtil;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -27,6 +29,9 @@ import java.util.List;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtProperties jwtProperties;
+    private final UserMapper userMapper;
+
+    private static final String STATUS_DISABLED = "DISABLED";
 
     private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
 
@@ -35,10 +40,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             "/api/auth/**",
             "/api/health",
             "/api/interpretation/public/**",
-            "/actuator/**",
+            "/actuator/health",
             "/ws/**",
             "/api/admin/**",    // protected by its own api-secret
-            "/bot-api/**"       // protected by its own api-secret
+            // Swagger / OpenAPI：dev 放行便于联调；生产由 springdoc.*.enabled=false 关闭(返回 404)
+            "/swagger-ui/**",
+            "/swagger-ui.html",
+            "/v3/api-docs/**"
     );
 
     @Override
@@ -67,6 +75,24 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             return;
         }
 
+        // P1:按 userId 加载角色/状态。停用即时拒绝;DB 异常不锁人(降级为角色未知,交 REPORT_ONLY 观察)。
+        try {
+            SiUser user = userMapper.findById(userId);
+            if (user == null) {
+                log.warn("[JwtAuthFilter] token references unknown user, userId={}, path={}", userId, path);
+                sendUnauthorized(response, "Invalid token");
+                return;
+            }
+            if (STATUS_DISABLED.equalsIgnoreCase(user.getStatus())) {
+                log.warn("[JwtAuthFilter] disabled account rejected, userId={}, path={}", userId, path);
+                sendForbidden(response, "Account disabled");
+                return;
+            }
+            request.setAttribute("authenticatedRole", user.getRole());
+        } catch (Exception e) {
+            log.warn("[JwtAuthFilter] role/status load failed (degraded, role unknown), userId={}: {}", userId, e.getMessage());
+        }
+
         request.setAttribute("authenticatedUserId", userId);
         chain.doFilter(request, response);
     }
@@ -84,5 +110,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"code\":401,\"message\":\"" + message + "\",\"data\":null}");
+    }
+
+    private void sendForbidden(HttpServletResponse response, String message) throws IOException {
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        response.setContentType("application/json;charset=UTF-8");
+        response.getWriter().write("{\"code\":403,\"message\":\"" + message + "\",\"data\":null}");
     }
 }

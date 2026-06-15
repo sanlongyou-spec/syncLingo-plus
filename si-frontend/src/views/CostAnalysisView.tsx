@@ -164,7 +164,7 @@ type CostTab = 'sessions' | 'monthly'
 
 // ── 主组件 ────────────────────────────────────────────────
 export default function CostAnalysisView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID) || '1')
+  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
   const [sessions, setSessions]               = useState<InterpretationStatus[]>([])
   const [preMeetingUsage, setPreMeetingUsage] = useState<PreMeetingDailyUsage[]>([])
   const [loading, setLoading]                 = useState(true)

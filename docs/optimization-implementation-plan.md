@@ -1180,3 +1180,184 @@ npm.cmd run dev
 
 - 本机 MySQL 连接在后端启动阶段被重置，暂未完成真实历史数据页面的端到端保存点击验证。
 - 乱码自动刷新依赖原始发言文本和 LLM 服务可用；缺少原始文本时仅记录告警，不覆盖现有摘要。
+
+## 周度优化记录：2026-W25 用户管理与权限管理方案
+
+### 本周目标
+
+- 在现有登录认证基础上建立统一、可审计的 RBAC 权限体系，并按资源归属限制用户可访问的数据。
+- 明确 `admin`、`operator`、`viewer` 三类人员角色，以及 Bot、公开分享页等非人员调用方的独立认证边界。
+- 逐步移除前端传入 `userId` 决定数据归属的模式，防止通过修改参数访问或操作其他用户数据。
+- 在不影响正式会议同传、分享页和 Teams Bot 的前提下，分阶段启用权限拦截。
+
+### 当前代码基线与主要问题
+
+- 当前盘点范围包括 203 个后端主代码文件、18 个 Controller、98 个 HTTP 接口方法、31 个前端源文件、52 个当前 Teams Bot 源文件和 9 个 speaker-service 文件。
+- `si_user.role` 字段已存在，但注册时未赋值；登录响应、令牌、后端请求上下文和前端状态均不使用角色。
+- 当前令牌只包含 `userId / username / expiresAt`，后端过滤器只判断令牌是否有效，认证成功后仅写入 `authenticatedUserId`。
+- 18 个 Controller 中至少 12 个仍直接接收或使用前端传入的 `userId`；前端多个页面读取 `localStorage`，并在缺失时默认使用用户 `1`。
+- 多数会议、会话、资料、摘要、行动项、音频、术语、热词和费用接口没有统一的权限与资源归属校验。
+- `MeetingService.requireOwner()` 在无请求上下文时会放行，且文件摘要、内容读取、重新加载和下载等路径未统一校验 `meetingId` 与 `fileId` 归属。
+- ASR WebSocket 只在握手时验证令牌，不校验令牌用户是否有权启动、写入或停止消息中的 `sessionId`；分享 WebSocket 按 `sessionId` 公开连接。
+- `/api/interpretation/public/user/{userId}/active` 可按用户编号查询活动会话；`/bot-api/**` 被认证过滤器排除，但 Java 代理和 C# 业务接口没有服务间凭证校验。
+- 管理接口使用独立 `X-Admin-Secret`，日志下载还支持查询参数 secret；浏览器端不应持有或通过 URL 发送管理密钥。
+- 当前后端只有 `spring-security-crypto`，尚未使用完整 Spring Security；权限相关自动化测试为空，前端测试文件为 0。
+- 数据库结构变更主要由 Service 启动时执行 DDL；权限表、审计表和账号状态变更应改用可回滚的版本化迁移。
+- `schema.sql` 包含固定默认管理员密码，生产配置仍存在固定数据库密码和 JWT secret 默认值，必须在权限上线前清理。
+
+### 目标授权模型
+
+权限判断统一采用三层模型：
+
+1. **身份认证**：当前调用方是谁，区分人员用户、内部服务和公开分享访问者。
+2. **功能权限**：该身份能执行什么操作，例如查看会议、启动同传、管理用户。
+3. **数据范围**：该身份能对哪些资源执行操作，例如自己的会议、被分配的会议或全部会议。
+
+统一判断表达式：
+
+`允许访问 = 身份有效 AND 拥有功能权限 AND 满足资源数据范围`
+
+仅隐藏前端按钮不构成授权；所有敏感操作必须由后端再次判断。
+
+### 角色定义
+
+| 角色 / 身份 | 定位 | 默认数据范围 | 核心限制 |
+|---|---|---|---|
+| `ADMIN` | 系统管理员，负责账号、角色、系统配置、审计和支持排障 | `ALL` | 日常会议操作仍需记录管理员越权访问审计 |
+| `OPERATOR` | 秘书处或同传操作人员，负责会议准备、同传、摘要和通知 | `OWN + ASSIGNED` | 不得管理账号角色、下载系统日志或执行全局管理任务 |
+| `VIEWER` | 只读查看人员，查看被授权会议、记录和摘要 | `ASSIGNED`，必要时包含本人创建资源 | 不得创建、修改、删除、启动同传或发送 Teams 消息 |
+| `SERVICE` | Teams Bot、后台任务等非人员服务身份 | 明确到服务与接口 | 不使用普通用户 JWT，不出现在用户角色选择器中 |
+| `SHARE_CAPABILITY` | 分享页短期只读能力令牌 | 单个 `sessionId` | 仅允许读取指定公开会话，不代表系统用户 |
+
+第一阶段固定三个人员角色和权限映射，管理员页面只允许分配角色、启停账号和撤销会话，不开放任意自定义角色或权限组合。待固定矩阵稳定后，再评估数据库动态角色。
+
+### 权限码与角色矩阵
+
+| 权限域 | 权限码 | ADMIN | OPERATOR | VIEWER |
+|---|---|---:|---:|---:|
+| 账号 | `USER_READ`、`USER_MANAGE`、`ROLE_ASSIGN`、`SESSION_REVOKE` | 是 | 否 | 否 |
+| 人员目录 | `DIRECTORY_READ` | 是 | 是 | 否 |
+| 人员目录 | `DIRECTORY_MANAGE` | 是 | 否 | 否 |
+| 会议 | `MEETING_READ` | 全部 | 自有/被分配 | 被分配 |
+| 会议 | `MEETING_CREATE`、`MEETING_UPDATE`、`MEETING_DELETE` | 全部 | 自有/被分配 | 否 |
+| 同传 | `INTERPRETATION_READ` | 全部 | 自有/被分配 | 被分配 |
+| 同传 | `INTERPRETATION_OPERATE` | 全部 | 自有/被分配 | 否 |
+| 资料与出勤 | `MATERIAL_READ`、`ATTENDANCE_READ` | 全部 | 自有/被分配 | 被分配 |
+| 资料与出勤 | `MATERIAL_MANAGE`、`ATTENDANCE_MANAGE` | 全部 | 自有/被分配 | 否 |
+| 摘要与行动项 | `SUMMARY_READ`、`ACTION_ITEM_READ` | 全部 | 自有/被分配 | 被分配 |
+| 摘要与行动项 | `SUMMARY_EDIT`、`SUMMARY_REGENERATE`、`ACTION_ITEM_MANAGE` | 全部 | 自有/被分配 | 否 |
+| 术语与热词 | `TERMINOLOGY_READ`、`HOTWORD_READ` | 全部 | 自有 | 否 |
+| 术语与热词 | `TERMINOLOGY_MANAGE`、`HOTWORD_MANAGE` | 全部 | 自有 | 否 |
+| 通知与 Bot | `TEAMS_SEND`、`BOT_OPERATE` | 是 | 自有/被分配会议 | 否 |
+| 音频与导出 | `AUDIO_READ`、`EXPORT_READ` | 全部 | 自有/被分配 | 被分配 |
+| 音频 | `AUDIO_MANAGE` | 全部 | 自有 | 否 |
+| 费用 | `COST_READ_SELF` | 是 | 是 | 否 |
+| 费用 | `COST_READ_ALL` | 是 | 否 | 否 |
+| 系统管理 | `ADMIN_JOB_EXECUTE`、`LOG_READ`、`AUDIT_READ` | 是 | 否 | 否 |
+
+`ADMIN` 的 `ALL` 数据范围不是绕过授权，而是授权策略中的显式结果；每次访问其他用户资源时记录审计事件。
+
+### 数据范围与资源关系
+
+- `OWN`：资源的 `user_id` 等于当前认证用户。
+- `ASSIGNED`：当前用户存在于新增的 `meeting_member` 表中，且访问级别满足操作要求。
+- `ALL`：仅限管理员，并记录目标资源、原因、请求编号和结果。
+- 会话、资料、摘要、行动项、音频等子资源必须通过所属 `meetingId` 或 `sessionId` 反查父资源授权，不接受客户端声明归属。
+- 对没有 `meetingId` 的历史会话，暂以会话 `user_id` 作为所有者；迁移后优先绑定会议。
+
+建议新增：
+
+```text
+meeting_member(meeting_id, user_id, access_level, assigned_by, create_time)
+audit_log(actor_type, actor_id, role, permission, resource_type, resource_id,
+          action, result, request_id, ip, detail_json, create_time)
+share_token(id, token_hash, session_id, expires_at, revoked_at, create_time)
+```
+
+`meeting_member.access_level` 第一阶段只使用 `VIEW` 和 `OPERATE`，避免过早引入复杂 ACL。
+
+### 认证与后端改造
+
+1. 引入完整 Spring Security，使用 `SecurityFilterChain`、Bearer Token 过滤器和统一 `Authentication` 主体。
+2. 将自定义令牌替换为标准 JWT。至少包含 `sub`、`username`、`role`、`tokenVersion`、`jti`、`iat`、`exp`、`iss` 和 `aud`。
+3. 权限矩阵由服务端根据角色解析；JWT 包含角色但不长期固化全部权限，角色变化时递增 `token_version`，旧令牌立即失效。
+4. `si_user` 新增 `status`、`token_version`、`last_login_time`、`password_changed_at`；`role` 改为非空并只允许固定值。
+5. 建立 `AuthenticatedActor`，提供 `userId / username / role / permissions / tokenVersion`；异步任务必须显式传入 actor 或资源所有者，不能依赖线程请求上下文。
+6. 建立 `AccessPolicyService`，集中实现 `requirePermission()`、`requireMeetingAccess()`、`requireSessionAccess()`、`requireFileAccess()` 等资源授权，删除分散的 `requireSelf()` 与失效开放式 `requireOwner()`。
+7. Controller 保持 `controller -> facade -> service -> mapper` 分层；Controller 只声明权限和传递认证主体，资源授权放在统一策略层并由 Facade 调用。
+8. 认证失败返回 401，身份有效但权限不足返回 403，资源不存在或无权感知时可统一返回 404，避免资源枚举。
+9. 敏感操作写审计日志；禁止记录 JWT、分享令牌、服务密钥、密码或完整查询字符串。
+
+### 用户管理接口与管理员页面
+
+新增人员账号接口：
+
+```http
+GET    /api/auth/me
+PUT    /api/me/profile
+PUT    /api/me/password
+GET    /api/admin/users
+POST   /api/admin/users
+PUT    /api/admin/users/{id}
+PUT    /api/admin/users/{id}/role
+PUT    /api/admin/users/{id}/status
+POST   /api/admin/users/{id}/reset-password
+POST   /api/admin/users/{id}/revoke-sessions
+GET    /api/admin/audit-logs
+```
+
+- 生产环境关闭公开注册；如必须保留，注册账号只能进入 `PENDING` 或最低权限 `VIEWER`，由管理员启用。
+- 管理员不能停用或降级系统中最后一个有效管理员。
+- 密码重置使用一次性临时密码或邀请链接，并要求首次登录修改；禁止返回密码哈希。
+- 用户列表支持用户名、姓名、邮箱、角色和状态筛选；角色与状态修改必须二次确认并写审计。
+- 前端新增 `AuthProvider` 和权限守卫；登录后调用 `/api/auth/me`，不再由各页面直接读取 `localStorage.userId`。
+- 全局响应拦截器统一处理 401 退出登录和 403 无权限提示；路由、导航和按钮按权限显示，但不替代后端授权。
+
+### 现有接口迁移规则
+
+1. **本人资源接口**：移除 `userId` 参数，由认证主体推导。包括会议列表/创建、会话列表、术语、热词、语言偏好、音频、本人费用、会前用量和跨会议问答。
+2. **资源接口**：按 `meetingId / sessionId / fileId / actionItemId / summaryId` 反查父资源，再校验权限与数据范围。包括会议资料、摘要、发言摘要、行动项、记录、说话人映射、开始/停止同传和下载。
+3. **全局管理接口**：系统人员目录写操作、用户管理、全部费用、日志和重建任务只允许管理员；人员目录读取允许操作员。
+4. **公开分享接口**：删除按 `userId` 查询活动会话的公开入口；分享 URL 使用不可猜测、可过期、可撤销的能力令牌，HTTP 与分享 WebSocket 均校验同一令牌。
+5. **ASR WebSocket**：握手后写入完整认证主体；首个 `start` 消息校验 `INTERPRETATION_OPERATE` 和会话归属，并将该连接绑定到一个授权会话；后续 audio/stop 只能操作已绑定会话。
+6. **Teams Bot**：Java `/bot-api/**` 必须先校验人员权限，再由 Java 使用独立服务密钥调用 C# Bot；C# 业务接口校验该服务密钥。Bot Framework `/api/messages` 继续使用平台认证，不与业务代理密钥混用。
+7. **管理接口**：浏览器使用管理员 JWT 和权限；`X-Admin-Secret` 仅保留给受控运维自动化，禁止查询参数 secret，并记录调用主体。
+
+### 数据库与配置迁移
+
+- 引入 Flyway 或 Liquibase，权限相关表结构、角色回填和索引全部通过版本化迁移执行，不在 Service `@PostConstruct` 中新增权限 DDL。
+- 将现有用户角色回填规则明确化：当前唯一受控管理员账号设为 `ADMIN`；秘书处实际操作账号设为 `OPERATOR`；其他账号默认 `VIEWER` 或 `PENDING`。
+- 上线前删除固定默认管理员密码，要求通过部署密钥或一次性初始化流程创建首个管理员。
+- 生产环境对 `DB_PASSWORD`、`JWT_SECRET`、`ADMIN_API_SECRET`、`TEAMS_BOT_API_SECRET` 做启动必填校验，禁止使用仓库默认值。
+- JWT 密钥轮换采用 `kid` 或双密钥过渡；访问令牌建议 30 分钟，角色/状态变更通过 `token_version` 立即撤销。
+
+### 分阶段实施顺序
+
+| 阶段 | 内容 | 完成门槛 |
+|---|---|---|
+| 0. 基线与报告模式 | 固化 98 个接口策略清单；确定现有账号角色；新增越权报告日志 | 不拦截生产业务，但能统计 userId 不一致和缺失策略 |
+| 1. 身份基础 | Spring Security、标准 JWT、`AuthenticatedActor`、账号状态、tokenVersion、`/api/auth/me` | 登录、过期、禁用、撤销和角色变化测试通过 |
+| 2. 权限与用户管理 | 权限枚举、固定矩阵、统一策略服务、用户管理接口和管理员页、审计日志 | admin/operator/viewer 功能边界测试通过 |
+| 3. 收口前端 userId | 本人接口从认证主体取 userId；移除前端默认用户 1 和散落 localStorage 读取 | 修改 userId 参数不能访问其他用户数据 |
+| 4. 资源授权 | meeting_member、会议及全部子资源授权、ASR WebSocket 会话绑定 | own/assigned/other 三类资源矩阵通过 |
+| 5. 公共与服务边界 | 分享能力令牌、Bot 服务密钥、管理员接口分离 | 分享令牌过期/撤销和 Bot 未授权测试通过 |
+| 6. 强制执行与清理 | 从 `REPORT_ONLY` 切换 `ENFORCE`，删除兼容参数和旧鉴权路径 | 无受保护接口缺少显式策略，完整回归通过 |
+
+切换期间使用 `AUTHZ_MODE=REPORT_ONLY|ENFORCE`。报告模式只记录本应拒绝的请求；确认正式会议、分享页和 Bot 没有误拦截后，再按接口域逐步强制执行。
+
+### 验收标准
+
+- 所有 98 个 HTTP 接口、3 个 WebSocket 路径和 C# Bot 业务接口都有明确的公开、人员权限、服务身份或分享能力令牌策略。
+- 所有本人资源接口不再接受决定归属的 `userId`；前端不再默认使用用户 `1`。
+- `ADMIN / OPERATOR / VIEWER` 对自己的、被分配的和其他人的资源均符合权限矩阵。
+- 禁用账号、角色变更和撤销会话能使已有令牌失效；无效、过期、篡改令牌返回 401。
+- 资源越权返回 403 或防枚举 404；敏感操作和管理员跨用户访问均有审计记录。
+- ASR WebSocket 不能操作未授权会话；公开分享令牌只能读取一个指定会话并支持过期、撤销。
+- Java Bot 代理和 C# Bot 业务接口均拒绝缺少或错误服务凭证的调用。
+- 后端完整测试、前端构建与浏览器权限流程、Bot 构建、数据库迁移和端到端正式会议回归全部通过。
+
+### 遗留问题与实施决策
+
+- 需由业务确认现有账号的初始角色，以及操作员是否允许修改被分配会议还是仅操作同传。本方案默认被分配操作员可操作会议，查看者只读。
+- 第一阶段不支持任意自定义角色；若未来确有多部门差异，再增加 `role / permission / role_permission / user_role` 动态模型。
+- 权限改造涉及大量历史接口和跨模块契约，必须按阶段提交和部署，不能一次性整体强制拦截。

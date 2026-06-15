@@ -5,6 +5,7 @@
 export const STORAGE_KEYS = {
   USER_ID: 'si_user_id',
   TOKEN: 'si_token',
+  ROLE: 'si_role',
   CURRENT_SESSION_ID: 'si_current_session_id',
   MEETING_SUMMARY_INCLUDE_CHAT: 'si_meeting_summary_include_chat',
   SPEAKER_SUMMARY_REQUIREMENTS: 'si_speaker_summary_requirements',
@@ -18,6 +19,7 @@ export const ROUTES = {
   TERMINOLOGY: '#/terminology',
   TEAMS_BOT: '#/teams-bot',
   COST_ANALYSIS: '#/cost-analysis',
+  USER_MANAGEMENT: '#/user-management',
 } as const
 
 export const TEAMS_BOT_STORAGE_KEYS = {
