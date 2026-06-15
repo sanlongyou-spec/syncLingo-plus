@@ -112,7 +112,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setText(text);
                     out.setLanguage(language);
                     out.setSpeakerId(speakerId);
-                    out.setSpeakerName(realtimeFacade.getCachedSpeakerName(sessionId, speakerId));
+                    out.setSpeakerName(speakerId);
                     sendMessage(session, out);
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },
@@ -129,7 +129,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setText(text);
                     out.setLanguage(language);
                     out.setSpeakerId(speakerId);
-                    out.setSpeakerName(realtimeFacade.getCachedSpeakerName(sessionId, speakerId));
+                    out.setSpeakerName(speakerId);
                     sendMessage(session, out);
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },

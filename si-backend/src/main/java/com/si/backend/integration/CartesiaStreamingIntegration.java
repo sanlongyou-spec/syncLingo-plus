@@ -214,6 +214,14 @@ public class CartesiaStreamingIntegration {
 
         private static final int WS_WRITE_TIMEOUT_SECONDS = 30;
         private static final int WS_PING_INTERVAL_SECONDS = 20;
+        /**
+         * 空闲超过该毫秒数的连接不再复用，强制重建。取值小于 ping 间隔的 1 个周期，
+         * 这样在 okhttp ping 还来不及发现“静默死连接”之前，我们已主动弃用它，
+         * 避免把 TTS 请求 send 进一个表面 open 实际已死的 socket（send 会成功入队但永无响应）。
+         */
+        private static final long WS_IDLE_STALE_MS = 15_000L;
+        /** 单次合成的看门狗超时：超时仍未收到 DONE，判定连接失效并回调失败，防止借出的连接永不归还。 */
+        private static final int WS_GENERATION_TIMEOUT_SECONDS = 30;
 
         /** 所有 CartesiaWsClient 共享同一 OkHttpClient，复用连接池，避免每次合成重建 TCP 连接 */
         private static final okhttp3.OkHttpClient WS_HTTP_CLIENT = new okhttp3.OkHttpClient.Builder()
@@ -221,6 +229,14 @@ public class CartesiaStreamingIntegration {
                 .writeTimeout(WS_WRITE_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .pingInterval(WS_PING_INTERVAL_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
                 .build();
+
+        /** 合成看门狗调度器（守护线程），全 client 共享 */
+        private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
+                java.util.concurrent.Executors.newScheduledThreadPool(2, r -> {
+                    Thread t = new Thread(r, "cartesia-watchdog");
+                    t.setDaemon(true);
+                    return t;
+                });
 
         private final CartesiaProperties properties;
         private final ObjectMapper objectMapper;
@@ -234,6 +250,10 @@ public class CartesiaStreamingIntegration {
         private volatile java.util.function.Consumer<String> curOnError;
         private volatile String pendingPayload;
         private volatile boolean generationActive = false;
+        /** 最近一次连接活动（onOpen / 收到音频块 / DONE）时间，用于判断空闲死连接 */
+        private volatile long lastActivityMs = 0L;
+        /** 当前合成的看门狗任务句柄，DONE/ERROR 时取消 */
+        private volatile java.util.concurrent.ScheduledFuture<?> watchdogTask;
 
         // 当前合成的延迟分析字段
         private volatile long synthStartMs;
@@ -275,10 +295,45 @@ public class CartesiaStreamingIntegration {
             String contextId = java.util.UUID.randomUUID().toString();
             String payload = toJson(buildTtsRequest(text, sampleRate, speed, language, currentVoiceId, contextId));
 
+            // 健康检查：空闲过久的连接可能已静默死亡（send 仍会成功入队但永无响应），强制重建
+            boolean stale = (System.currentTimeMillis() - lastActivityMs) > WS_IDLE_STALE_MS;
             okhttp3.WebSocket ws = this.webSocket;
-            boolean reused = open && ws != null && safeSend(ws, payload);
+            boolean reused = !stale && open && ws != null && safeSend(ws, payload);
+            if (stale && open) {
+                log.debug("[CartesiaWsClient] idle connection stale (>{}ms), forcing reconnect, voiceId={}",
+                        WS_IDLE_STALE_MS, voiceId);
+            }
             if (!reused) {
                 openAndSend(payload);
+            }
+            scheduleWatchdog();
+        }
+
+        /** 启动单次合成看门狗：超时仍 generationActive 则判定连接失效并回调失败。 */
+        private void scheduleWatchdog() {
+            cancelWatchdog();
+            watchdogTask = WATCHDOG.schedule(() -> {
+                if (!generationActive) return;
+                log.error("[CartesiaWsClient] generation watchdog timeout after {}s, invalidating connection, voiceId={}",
+                        WS_GENERATION_TIMEOUT_SECONDS, voiceId);
+                okhttp3.WebSocket dead;
+                synchronized (this) {
+                    open = false;
+                    dead = this.webSocket;
+                    this.webSocket = null;
+                }
+                if (dead != null) {
+                    try { dead.cancel(); } catch (Exception ignored) { /* 忽略取消异常 */ }
+                }
+                completeOnce(false, "TTS 合成超时");
+            }, WS_GENERATION_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        private void cancelWatchdog() {
+            java.util.concurrent.ScheduledFuture<?> t = watchdogTask;
+            if (t != null) {
+                t.cancel(false);
+                watchdogTask = null;
             }
         }
 
@@ -317,6 +372,7 @@ public class CartesiaStreamingIntegration {
                 @Override
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
                     open = true;
+                    lastActivityMs = System.currentTimeMillis();
                     String p = pendingPayload;
                     pendingPayload = null;
                     if (p != null) {
@@ -333,6 +389,7 @@ public class CartesiaStreamingIntegration {
                 @Override
                 public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
                     byte[] pcm = bytes.toByteArray();
+                    lastActivityMs = System.currentTimeMillis();
                     int idx = ++chunkCount;
                     totalPcmBytes += pcm.length;
                     if (idx == 1) {
@@ -372,6 +429,7 @@ public class CartesiaStreamingIntegration {
                     case Constants.CARTESIA_MSG_TYPE_CHUNK -> {
                         String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
                         if (!audioData.isBlank()) {
+                            lastActivityMs = System.currentTimeMillis();
                             byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
                             int idx = ++chunkCount;
                             totalPcmBytes += pcm.length;
@@ -387,6 +445,7 @@ public class CartesiaStreamingIntegration {
                         }
                     }
                     case Constants.CARTESIA_MSG_TYPE_DONE -> {
+                        lastActivityMs = System.currentTimeMillis();
                         log.debug("[CartesiaWsClient] done voiceId={} chunks={} totalBytes={} totalMs={}",
                                 voiceId, chunkCount, totalPcmBytes, System.currentTimeMillis() - synthStartMs);
                         // 不关连接：保留长连接给下一句复用（Cartesia 推荐）。
@@ -419,6 +478,7 @@ public class CartesiaStreamingIntegration {
                 generationActive = false;
             }
             if (!fire) return;
+            cancelWatchdog();
             if (success) {
                 Runnable cb = curOnComplete;
                 if (cb != null) cb.run();

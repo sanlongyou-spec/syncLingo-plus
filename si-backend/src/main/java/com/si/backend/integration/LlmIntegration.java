@@ -118,6 +118,15 @@ public class LlmIntegration {
             .build();
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /** 通用 LLM 文本请求的默认超时（聊天、文档总结等）。 */
+    private static final Duration DEFAULT_LLM_TIMEOUT = Duration.ofSeconds(120);
+    /**
+     * 发言摘要请求的超时上限。发言摘要在后台异步线程池执行，DeepSeek 延迟不稳定（实测 13~66s）。
+     * 设为 90s：高于实测最大值留足余量，又能在请求真正卡死时及时释放执行线程、走重试，
+     * 避免单个卡死请求长期占用 SUMMARY_EXECUTOR 线程导致后续摘要排队。
+     */
+    private static final Duration SPEAKER_SUMMARY_TIMEOUT = Duration.ofSeconds(90);
+
     private final OpenAiProperties openAiProperties;
 
     /**
@@ -272,7 +281,8 @@ public class LlmIntegration {
                 openAiProperties.getDocumentSummaryModel(),
                 systemPrompt,
                 userMessage,
-                1200L
+                1200L,
+                SPEAKER_SUMMARY_TIMEOUT
         );
         log.info("[LlmIntegration] summarizeSpeakerSegment end, resultLen={}", result.length());
         return result;
@@ -287,7 +297,8 @@ public class LlmIntegration {
                 openAiProperties.getDocumentSummaryModel(),
                 systemPrompt,
                 userMessage,
-                1200L
+                1200L,
+                SPEAKER_SUMMARY_TIMEOUT
         );
         log.info("[LlmIntegration] summarizeSpeakerSegmentRetry end, resultLen={}", result.length());
         return result;
@@ -480,6 +491,16 @@ public class LlmIntegration {
             String userMessage,
             long maxOutputTokens
     ) throws IOException {
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, DEFAULT_LLM_TIMEOUT);
+    }
+
+    private String createTextResponse(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxOutputTokens,
+            Duration requestTimeout
+    ) throws IOException {
         if (userMessage == null || userMessage.isBlank()) {
             return "";
         }
@@ -496,7 +517,7 @@ public class LlmIntegration {
                 .uri(URI.create(chatUrl))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + openAiProperties.getApiKey())
-                .timeout(Duration.ofSeconds(120))
+                .timeout(requestTimeout)
                 .POST(HttpRequest.BodyPublishers.ofString(requestBodyJson, StandardCharsets.UTF_8));
         if (openAiProperties.getReferer() != null && !openAiProperties.getReferer().isBlank()) {
             reqBuilder.header("HTTP-Referer", openAiProperties.getReferer());

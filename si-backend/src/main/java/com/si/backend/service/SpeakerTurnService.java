@@ -33,7 +33,6 @@ public class SpeakerTurnService {
     private static final long MIN_SPEAKING_DURATION_MS = 90_000L;
 
     private final SpeakerSummaryService speakerSummaryService;
-    private final SessionSpeakerNameService sessionSpeakerNameService;
 
     private static final Executor SUMMARY_EXECUTOR = new ThreadPoolExecutor(
             2, 6, 60L, TimeUnit.SECONDS,
@@ -180,14 +179,11 @@ public class SpeakerTurnService {
     }
 
     private void triggerSummaryAsync(String sessionId, String speakerId, String text, long durationMs, String reason) {
-        String name = sessionSpeakerNameService.getName(sessionId, speakerId);
-        if (name == null || name.isBlank()) name = speakerId;
-        final String speakerName = name;
-        log.info("[SpeakerTurnService] triggerSummaryAsync, sessionId={}, speakerId={}, speakerName={}, textLen={}, durationMs={}, reason={}",
-                sessionId, speakerId, speakerName, text.length(), durationMs, reason);
+        log.info("[SpeakerTurnService] triggerSummaryAsync, sessionId={}, speakerId={}, textLen={}, durationMs={}, reason={}",
+                sessionId, speakerId, text.length(), durationMs, reason);
         CompletableFuture.runAsync(() -> {
             try {
-                speakerSummaryService.summarize(speakerName, text, sessionId, speakerId);
+                speakerSummaryService.summarize(speakerId, text, sessionId, speakerId);
                 log.info("[SpeakerTurnService] summary done, sessionId={}, speakerId={}", sessionId, speakerId);
             } catch (Exception e) {
                 log.warn("[SpeakerTurnService] summary failed, sessionId={}, speakerId={}: {}",

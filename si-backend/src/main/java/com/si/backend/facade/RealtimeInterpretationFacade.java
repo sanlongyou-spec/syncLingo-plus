@@ -7,7 +7,6 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
-import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
@@ -37,7 +36,6 @@ public class RealtimeInterpretationFacade {
     private final InterpretationSessionService sessionService;
     private final CartesiaProperties cartesiaProperties;
     private final InterpretationRecordService recordService;
-    private final SessionSpeakerNameService sessionSpeakerNameService;
     private final AudioRecordService audioRecordService;
     private final SpeakerTurnService speakerTurnService;
 
@@ -147,7 +145,6 @@ public class RealtimeInterpretationFacade {
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
         speakerTurnService.cleanupSession(sessionId);
-        sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 
@@ -181,17 +178,13 @@ public class RealtimeInterpretationFacade {
         if (text == null || text.isBlank()) return;
         if (!isPipelineActive(sessionId, "process_final_start")) return;
 
-        String speakerName = sessionSpeakerNameService.getName(sessionId, speakerId);
-        log.debug("[RealtimeInterpretationFacade] speaker lookup sessionId={} speakerId={} speakerName={}",
-                sessionId, speakerId, speakerName != null ? speakerName : "not mapped");
-
         // 根据 speakerId 跟踪说话人切换，切换确认后触发异步发言摘要
         speakerTurnService.processRecognized(sessionId, speakerId, text);
 
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
-        log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, speakerId={}, speakerName={}, detected={}, sourceLang={}, targetLangs={}",
-                sessionId, speakerId, speakerName, detectedLang, sourceLang, targetLangs);
+        log.info("[RealtimeInterpretationFacade] processFinalRecognition, sessionId={}, speakerId={}, detected={}, sourceLang={}, targetLangs={}",
+                sessionId, speakerId, detectedLang, sourceLang, targetLangs);
 
         String prevLang = sessionLastSourceLang.put(sessionId, sourceLang);
         if (prevLang != null && !prevLang.equals(sourceLang)) {
@@ -203,14 +196,13 @@ public class RealtimeInterpretationFacade {
             resolvedVoiceId = sessionService.getSession(sessionId).map(InterpretationSession::getVoiceId).orElse(null);
         }
         final String finalVoiceId = resolvedVoiceId;
-        final String finalSpeakerName = speakerName;
 
         targetLangs.forEach(targetLang -> {
             if (!isPipelineActive(sessionId, "before_target_translate")) return;
             TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang);
             CompletableFuture.runAsync(
                     () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId,
-                            sessionId, speakerId, finalSpeakerName, speechStartAtMs, reservation),
+                            sessionId, speakerId, speakerId, speechStartAtMs, reservation),
                     TRANSLATION_EXECUTOR
             ).exceptionally(ex -> {
                 completeTtsReservation(reservation, "parallel_translate_error");
@@ -610,12 +602,7 @@ public class RealtimeInterpretationFacade {
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
         speakerTurnService.cleanupSession(sessionId);
-        sessionSpeakerNameService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
-    }
-
-    public String getCachedSpeakerName(String sessionId, String speakerId) {
-        return sessionSpeakerNameService.getName(sessionId, speakerId);
     }
 
     public String translateText(String text, String targetLang) {

@@ -6,7 +6,6 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
-import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
@@ -46,7 +45,6 @@ class RealtimeInterpretationOrderTest {
         InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
         CartesiaProperties cartesiaProperties = new CartesiaProperties();
         InterpretationRecordService recordService = mock(InterpretationRecordService.class);
-        SessionSpeakerNameService speakerNameService = mock(SessionSpeakerNameService.class);
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
         SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
 
@@ -57,7 +55,6 @@ class RealtimeInterpretationOrderTest {
                 sessionService,
                 cartesiaProperties,
                 recordService,
-                speakerNameService,
                 audioRecordService,
                 speakerTurnService
         );
