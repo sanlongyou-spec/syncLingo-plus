@@ -226,6 +226,16 @@ export default function UserShareView() {
     audioEl.play().catch(() => { /* requires user gesture — already inside click handler */ })
     audioElRef.current = audioEl
 
+    // Keep a silent looping source connected to dest so the MediaStream is never truly
+    // silent. Without this, browsers detect silence between TTS sentences and auto-pause
+    // the <audio> element, dropping live stream frames that can never be recovered.
+    const silenceBuffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
+    const keepAlive = ctx.createBufferSource()
+    keepAlive.buffer = silenceBuffer
+    keepAlive.loop = true
+    keepAlive.connect(dest)
+    keepAlive.start()
+
     // The browser can suspend the <audio> element during silent gaps between TTS sentences.
     // Recover immediately on pause/stalled events; heartbeat catches browsers that skip events.
     const recoverAudioEl = () => {
