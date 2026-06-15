@@ -124,6 +124,7 @@ export default function UserShareView() {
   const pingTimerRef = useRef<number | null>(null)
   // 记录两次上报之间的"峰值倍速"(加速在句中才涨, 句首采样会漏掉, 故记峰值)
   const maxRateRef = useRef(1.0)
+  const visListenerRef = useRef<(() => void) | null>(null)
 
   const reportLatency = (
     sessionId: string,
@@ -179,6 +180,10 @@ export default function UserShareView() {
     pendingMarkerRef.current = null
     rttRef.current = 0
     lastPingSentRef.current = 0
+    if (visListenerRef.current) {
+      document.removeEventListener('visibilitychange', visListenerRef.current)
+      visListenerRef.current = null
+    }
   }, [])
 
   const startAudio = (lang: string) => {
@@ -227,12 +232,30 @@ export default function UserShareView() {
       if (audioElRef.current === audioEl && audioEl.paused) {
         audioEl.play().catch(() => {})
       }
+      // Resume AudioContext if browser suspended it (background tab, power saving, etc.)
+      if (audioCtxRef.current === ctx && ctx.state === 'suspended') {
+        void ctx.resume()
+      }
     }
     audioEl.addEventListener('pause', recoverAudioEl)
     audioEl.addEventListener('stalled', recoverAudioEl)
     audioElHeartbeatRef.current = window.setInterval(recoverAudioEl, 2000)
 
-    const myGen = audioGenRef.current  // capture generation for this startAudio call
+    // Resume AudioContext immediately when tab becomes visible again
+    const handleVisibilityChange = () => {
+      if (!document.hidden && audioCtxRef.current === ctx && ctx.state === 'suspended') {
+        void ctx.resume()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    visListenerRef.current = handleVisibilityChange
+
+    // startStream: set up WebSocket + decoder only; reuses the AudioContext above.
+    // Called on initial start AND on WebSocket reconnect — AudioContext and scheduleRef
+    // are NEVER reset here, so queued audio is never discarded on reconnect.
+    const startStream = () => {
+      audioGenRef.current++
+      const myGen = audioGenRef.current  // capture generation for this decoder session
 
     const handleAudioData = (data: unknown) => {
       const audioData = data as {
@@ -344,19 +367,26 @@ export default function UserShareView() {
       }
     }
     ws.onclose = () => {
-      if (audioWsRef.current === ws
-        && selectedLangRef.current === canonical
-        && activeSessionIdRef.current === sessionId) {
-        window.setTimeout(() => {
-          if (audioWsRef.current === ws
-            && selectedLangRef.current === canonical
-            && activeSessionIdRef.current === sessionId) {
-            startAudio(canonical)
-          }
-        }, 2000)
-      }
+      if (audioWsRef.current !== ws
+        || selectedLangRef.current !== canonical
+        || activeSessionIdRef.current !== sessionId
+        || audioCtxRef.current !== ctx) return
+      // Keep AudioContext and all scheduled audio intact; only reconnect WS + decoder.
+      // This prevents any queued audio from being discarded on a transient network drop.
+      window.setTimeout(() => {
+        if (audioWsRef.current !== ws
+          || selectedLangRef.current !== canonical
+          || activeSessionIdRef.current !== sessionId
+          || audioCtxRef.current !== ctx) return
+        if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
+        try { decoderRef.current?.close() } catch { /* already closed */ }
+        startStream()
+      }, 2000)
     }
-  }
+  } // end startStream
+
+  startStream()
+}
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
