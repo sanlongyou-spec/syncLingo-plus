@@ -4,40 +4,39 @@ import com.si.backend.common.BizException;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.security.AnonymousRequestRateLimiter;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
- * Verifies anonymous compatibility endpoints use server-observed addresses and strict latency fields.
+ * Verifies anonymous compatibility endpoints are sunset where needed and still validate latency fields.
  */
 class PublicInterpretationEndpointSecurityTest {
 
     private final InterpretationFacade facade = mock(InterpretationFacade.class);
     private final AnonymousRequestRateLimiter limiter = mock(AnonymousRequestRateLimiter.class);
-    private final InterpretationController controller = new InterpretationController(facade, limiter);
+    private final com.si.backend.service.ShareTokenService shareTokenService =
+            mock(com.si.backend.service.ShareTokenService.class);
+    private final InterpretationController controller = new InterpretationController(facade, limiter, shareTokenService);
 
     @Test
-    void activeLookup_ignoresSpoofedForwardedForHeader() {
+    void legacyActiveLookup_isGoneWithoutResolvingUserSession() {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setRemoteAddr("10.0.0.8");
         request.addHeader("X-Forwarded-For", "203.0.113.99");
 
-        controller.getActiveSessionForUser(7L, request);
+        BizException error = assertThrows(
+                BizException.class,
+                () -> controller.getActiveSessionForUser(7L, request)
+        );
 
-        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-        verify(limiter).requireAllowed(eq("public-active"), key.capture(), anyInt(), anyLong());
-        assertEquals("10.0.0.8:7", key.getValue());
+        assertEquals(410, error.getCode());
+        verifyNoInteractions(facade, limiter);
     }
 
     @Test

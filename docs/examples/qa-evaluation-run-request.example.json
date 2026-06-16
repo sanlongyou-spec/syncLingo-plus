@@ -1,0 +1,55 @@
+{
+  "mail": "alice@example.com",
+  "userPrincipalName": "alice@example.com",
+  "displayName": "Alice",
+  "minAnswerCoverage": 0.6,
+  "minSourceCoverage": 0.6,
+  "cases": [
+    {
+      "id": "baseline-cross-meeting-001",
+      "question": "上周哪些会议提到了项目延期？分别是谁提出的？",
+      "expectedAnswerPoints": [
+        "项目延期",
+        "提出人",
+        "会议名称或日期"
+      ],
+      "expectedSourceKeywords": [
+        "延期"
+      ]
+    },
+    {
+      "id": "baseline-action-item-001",
+      "question": "最近会议里 Alice 负责哪些待办？截止时间是什么？",
+      "expectedAnswerPoints": [
+        "Alice",
+        "待办",
+        "截止时间"
+      ],
+      "expectedSourceKeywords": [
+        "Alice"
+      ]
+    },
+    {
+      "id": "baseline-follow-up-001",
+      "question": "那这些事项现在还有哪些没完成？",
+      "history": [
+        {
+          "role": "user",
+          "content": "最近会议里 Alice 负责哪些待办？截止时间是什么？"
+        },
+        {
+          "role": "assistant",
+          "content": "Alice 负责供应商确认和测试数据整理，来源为上周项目例会。"
+        }
+      ],
+      "expectedAnswerPoints": [
+        "未完成",
+        "Alice",
+        "待办"
+      ],
+      "expectedSourceKeywords": [
+        "项目例会"
+      ]
+    }
+  ]
+}

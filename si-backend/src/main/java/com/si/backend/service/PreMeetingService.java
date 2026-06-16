@@ -2,6 +2,7 @@ package com.si.backend.service;
 
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.config.OpenAiProperties;
 import com.si.backend.dto.PreMeetingChatRequest.ChatTurn;
 import com.si.backend.dto.PreMeetingParticipantRequest;
 import com.si.backend.entity.InterpretationResult;
@@ -109,6 +110,7 @@ public class PreMeetingService {
     private final InterpretationResultMapper interpretationResultMapper;
     private final VectorSearchService vectorSearchService;
     private final RagEnhancementService ragEnhancementService;
+    private final OpenAiProperties openAiProperties;
     private final com.si.backend.mapper.InterpretationSessionMapper interpretationSessionMapper;
     private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
     private final com.si.backend.mapper.PersistentPreMeetingFileMapper persistentFileMapper;
@@ -1922,12 +1924,21 @@ public class PreMeetingService {
             // P0: multi-query expansion → merged recall → LLM rerank (all no-ops when flags off).
             // P1-4: split multi-hop / comparison questions into sub-questions, then expand each.
             List<String> queries = new ArrayList<>();
+            int maxQueries = openAiProperties.getRagMaxQueries() > 0 ? openAiProperties.getRagMaxQueries() : 9;
             for (String sub : ragEnhancementService.decompose(question)) {
                 for (String q : ragEnhancementService.expandQueries(sub)) {
                     if (queries.stream().noneMatch(q::equalsIgnoreCase)) queries.add(q);
+                    if (queries.size() >= maxQueries) break;
                 }
+                if (queries.size() >= maxQueries) break;
             }
-            List<VectorSearchService.SearchResult> hits = multiQueryRecall(userId, queries, filter, 40);
+            int perQueryTopK = openAiProperties.getRagRecallPerQueryTopK() > 0
+                    ? openAiProperties.getRagRecallPerQueryTopK()
+                    : 40;
+            long recallStart = System.currentTimeMillis();
+            List<VectorSearchService.SearchResult> hits = multiQueryRecall(userId, queries, filter, perQueryTopK);
+            log.info("[PreMeetingService] multiQueryRecall done, userId={}, queries={}, perQueryTopK={}, hits={}, costMs={}",
+                    userId, queries.size(), perQueryTopK, hits.size(), System.currentTimeMillis() - recallStart);
             if (hits.isEmpty()) {
                 log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions=0, sources=0", userId);
                 return new UnifiedContextResult("", List.of());

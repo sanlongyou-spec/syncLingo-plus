@@ -1,4 +1,6 @@
 import client from './client'
+import { clearAccessToken, setAccessToken } from './authToken'
+import { STORAGE_KEYS } from '../constants'
 import type {
   Result,
   UserSummary,
@@ -25,6 +27,7 @@ import type {
   MeetingParticipant,
   MeetingParticipantsResponse,
   Meeting,
+  MeetingMember,
   MeetingFile,
   MeetingNotificationPreview,
   MeetingNotificationRecipient,
@@ -32,6 +35,8 @@ import type {
   SpeakerSummaryResult,
   SpeakerSummaryRecord,
   MeetingActionItem,
+  SupportAccessGrant,
+  AuditLog,
   CostRates,
   MonthlyCostSummary,
   AudioRecord,
@@ -66,6 +71,14 @@ const ensureResultData = <T>(result: Result<T>, fallback: string): Result<T> => 
   return result
 }
 
+const resultFromError = <T>(error: unknown): Result<T> | null => {
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (data && typeof data === 'object' && 'code' in data && 'message' in data) {
+    return data as Result<T>
+  }
+  return null
+}
+
 export const startInterpretation = (params: StartInterpretationParams): Promise<Result<string>> =>
   client.post<Result<string>>('/api/interpretation/start', params).then(r => r.data)
 
@@ -75,8 +88,8 @@ export const stopInterpretation = (sessionId: string): Promise<Result<Record<str
 export const getCostRates = (): Promise<Result<CostRates>> =>
   client.get<Result<CostRates>>('/api/cost/rates').then(r => r.data)
 
-export const getCostMonthlySummary = (userId: number): Promise<Result<MonthlyCostSummary[]>> =>
-  client.get<Result<MonthlyCostSummary[]>>('/api/cost/monthly-summary', { params: { userId } }).then(r => r.data)
+export const getCostMonthlySummary = (): Promise<Result<MonthlyCostSummary[]>> =>
+  client.get<Result<MonthlyCostSummary[]>>('/api/cost/monthly-summary').then(r => r.data)
 
 export const getInterpretationStatus = (sessionId: string): Promise<Result<InterpretationStatus>> =>
   client.get<Result<InterpretationStatus>>(`/api/interpretation/status/${sessionId}`).then(r => r.data)
@@ -90,8 +103,36 @@ export const getPublicInterpretationResults = (sessionId: string): Promise<Resul
 export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSessionInfo>> =>
   client.get<Result<PublicSessionInfo>>(`/api/interpretation/public/${sessionId}/info`).then(r => r.data)
 
-export const getActiveSessionForUser = (userId: number): Promise<Result<string | null>> =>
-  client.get<Result<string | null>>(`/api/interpretation/public/user/${userId}/active`).then(r => r.data)
+export interface ShareTokenIssued {
+  id: number
+  token: string
+  kind: string
+}
+
+// P4 频道分享令牌:所有者为自己签发不可枚举、可撤销的令牌(原始 token 仅此一次返回)。
+export const mintChannelShareToken = (): Promise<Result<ShareTokenIssued>> =>
+  client.post<Result<ShareTokenIssued>>('/api/share-tokens/channel').then(r => r.data)
+
+// P4 匿名听众用分享令牌解析当前可收听的 sessionId(替代按 userId 枚举)。
+export const resolveShareToken = (token: string): Promise<Result<string | null>> =>
+  client.get<Result<string | null>>('/api/interpretation/public/share-resolve', { params: { token } }).then(r => r.data)
+
+export interface ShareWsTicket {
+  ticket: string
+}
+
+export const mintShareWsTicket = (token: string, lang?: string): Promise<Result<ShareWsTicket>> =>
+  client.post<Result<ShareWsTicket>>('/api/interpretation/public/share-ws-tickets', null, {
+    params: { token, ...(lang ? { lang } : {}) },
+  }).then(r => r.data)
+
+export interface WsTicket {
+  ticket: string
+}
+
+// P5 WebSocket 一次性握手票据:连接 ASR WS 前换取,避免把长效 JWT 放进 query。
+export const mintWsTicket = (): Promise<Result<WsTicket>> =>
+  client.post<Result<WsTicket>>('/api/ws-tickets').then(r => r.data)
 
 export interface PublicLatencyReport {
   sessionId: string
@@ -108,17 +149,17 @@ export interface PublicLatencyReport {
 export const reportPublicLatency = (params: PublicLatencyReport): Promise<Result<void>> =>
   client.post<Result<void>>('/api/interpretation/public/latency', params).then(r => r.data)
 
-export const getUserInterpretationSessions = (userId: number, keyword = ''): Promise<Result<InterpretationStatus[]>> =>
-  client.get<Result<InterpretationStatus[]>>(`/api/interpretation/users/${userId}/sessions`, { params: { keyword } }).then(r => r.data)
+export const getUserInterpretationSessions = (keyword = ''): Promise<Result<InterpretationStatus[]>> =>
+  client.get<Result<InterpretationStatus[]>>('/api/interpretation/sessions', { params: { keyword } }).then(r => r.data)
 
-export const updateInterpretationSessionTitle = (sessionId: string, userId: number, title: string): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/interpretation/${sessionId}/title`, { title }, { params: { userId } }).then(r => r.data)
+export const updateInterpretationSessionTitle = (sessionId: string, title: string): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/interpretation/${sessionId}/title`, { title }).then(r => r.data)
 
-export const deleteInterpretationSession = (sessionId: string, userId: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/interpretation/${sessionId}`, { params: { userId } }).then(r => r.data)
+export const deleteInterpretationSession = (sessionId: string): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/interpretation/${sessionId}`).then(r => r.data)
 
-export const translateText = (text: string, sourceLang: string, targetLang: string, userId = 1): Promise<Result<string>> =>
-  client.post<Result<string>>('/api/translate', { text, sourceLang, targetLang, userId }).then(r => r.data)
+export const translateText = (text: string, sourceLang: string, targetLang: string): Promise<Result<string>> =>
+  client.post<Result<string>>('/api/translate', { text, sourceLang, targetLang }).then(r => r.data)
 
 export const getSessionSpeakerIdentities = (sessionId: string): Promise<Result<SessionSpeakerIdentity[]>> =>
   client.get<Result<SessionSpeakerIdentity[]>>(`/api/interpretation/session-speakers/${sessionId}`).then(r => r.data)
@@ -133,63 +174,115 @@ export const mapSessionSpeakerIdentity = (
     { personName },
   ).then(r => r.data)
 
-export const login = (username: string, password: string): Promise<Result<{ userId: number; token: string }>> =>
-  client.post<Result<{ userId: number; token: string }>>('/api/auth/login', { username, password }).then(r => r.data)
+export interface CaptchaChallenge {
+  captchaId: string
+  question: string
+  expiresInSeconds: number
+}
 
-export const getTerminologies = (userId: number, keyword = '', enabled?: boolean): Promise<Result<Terminology[]>> =>
-  client.get<Result<Terminology[]>>('/api/terminology', { params: { userId, keyword, enabled } }).then(r => r.data)
+export interface LoginResult {
+  userId: number
+  token: string
+}
 
-export const createTerminology = (userId: number, params: Terminology): Promise<Result<Terminology>> =>
-  client.post<Result<Terminology>>('/api/terminology', params, { params: { userId } }).then(r => r.data)
+export const issueLoginCaptcha = (username: string): Promise<Result<CaptchaChallenge>> =>
+  client.get<Result<CaptchaChallenge>>('/api/auth/captcha', { params: { username } }).then(r => r.data)
 
-export const updateTerminology = (userId: number, id: number, params: Terminology): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/terminology/${id}`, params, { params: { userId } }).then(r => r.data)
+export const login = (
+  username: string,
+  password: string,
+  captchaId?: string,
+  captchaAnswer?: string,
+): Promise<Result<LoginResult>> =>
+  client.post<Result<LoginResult>>(
+    '/api/auth/login',
+    { username, password, captchaId, captchaAnswer },
+  ).then(r => r.data).catch(error => {
+    const result = resultFromError<LoginResult>(error)
+    if (result) return result
+    throw error
+  })
 
-export const updateTerminologyEnabled = (userId: number, id: number, enabled: boolean): Promise<Result<void>> =>
-  client.patch<Result<void>>(`/api/terminology/${id}/enabled`, null, { params: { userId, enabled } }).then(r => r.data)
+export const refreshAuth = async (): Promise<Result<LoginResult>> => {
+  const result = await client.post<Result<LoginResult>>('/api/auth/refresh', {}).then(r => r.data)
+  if (result.code === RESULT_OK_CODE && result.data?.token) {
+    setAccessToken(result.data.token)
+  }
+  return result
+}
 
-export const deleteTerminology = (userId: number, id: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/terminology/${id}`, { params: { userId } }).then(r => r.data)
+export const logout = async (): Promise<Result<void>> => {
+  try {
+    return await client.post<Result<void>>('/api/auth/logout', {}).then(r => r.data)
+  } finally {
+    clearAccessToken()
+    localStorage.removeItem(STORAGE_KEYS.TOKEN)
+    localStorage.removeItem(STORAGE_KEYS.USER_ID)
+    localStorage.removeItem(STORAGE_KEYS.ROLE)
+  }
+}
 
-export const createHotwordsFromTerminology = (userId: number, terminologyId: number): Promise<Result<AsrHotword[]>> =>
-  client.post<Result<AsrHotword[]>>(`/api/asr-hotwords/from-terminology/${terminologyId}`, null, { params: { userId } }).then(r => r.data)
+export const changeOwnPassword = (
+  currentPassword: string,
+  newPassword: string,
+): Promise<Result<void>> =>
+  client.post<Result<void>>('/api/account/password', { currentPassword, newPassword }).then(r => r.data)
+
+export const logoutAllDevices = (): Promise<Result<void>> =>
+  client.post<Result<void>>('/api/account/logout-all', {}).then(r => r.data)
+
+export const getTerminologies = (keyword = '', enabled?: boolean): Promise<Result<Terminology[]>> =>
+  client.get<Result<Terminology[]>>('/api/terminology', { params: { keyword, enabled } }).then(r => r.data)
+
+export const createTerminology = (params: Terminology): Promise<Result<Terminology>> =>
+  client.post<Result<Terminology>>('/api/terminology', params).then(r => r.data)
+
+export const updateTerminology = (id: number, params: Terminology): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/terminology/${id}`, params).then(r => r.data)
+
+export const updateTerminologyEnabled = (id: number, enabled: boolean): Promise<Result<void>> =>
+  client.patch<Result<void>>(`/api/terminology/${id}/enabled`, null, { params: { enabled } }).then(r => r.data)
+
+export const deleteTerminology = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/terminology/${id}`).then(r => r.data)
+
+export const createHotwordsFromTerminology = (terminologyId: number): Promise<Result<AsrHotword[]>> =>
+  client.post<Result<AsrHotword[]>>(`/api/asr-hotwords/from-terminology/${terminologyId}`).then(r => r.data)
 
 export const getAsrHotwords = (
-  userId: number,
   keyword = '',
   enabled?: boolean,
   language?: string,
   category?: string,
 ): Promise<Result<AsrHotword[]>> =>
-  client.get<Result<AsrHotword[]>>('/api/asr-hotwords', { params: { userId, keyword, enabled, language, category } }).then(r => r.data)
+  client.get<Result<AsrHotword[]>>('/api/asr-hotwords', { params: { keyword, enabled, language, category } }).then(r => r.data)
 
-export const createAsrHotword = (userId: number, params: AsrHotword): Promise<Result<AsrHotword>> =>
-  client.post<Result<AsrHotword>>('/api/asr-hotwords', params, { params: { userId } }).then(r => r.data)
+export const createAsrHotword = (params: AsrHotword): Promise<Result<AsrHotword>> =>
+  client.post<Result<AsrHotword>>('/api/asr-hotwords', params).then(r => r.data)
 
-export const updateAsrHotword = (userId: number, id: number, params: AsrHotword): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/asr-hotwords/${id}`, params, { params: { userId } }).then(r => r.data)
+export const updateAsrHotword = (id: number, params: AsrHotword): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/asr-hotwords/${id}`, params).then(r => r.data)
 
-export const updateAsrHotwordEnabled = (userId: number, id: number, enabled: boolean): Promise<Result<void>> =>
-  client.patch<Result<void>>(`/api/asr-hotwords/${id}/enabled`, null, { params: { userId, enabled } }).then(r => r.data)
+export const updateAsrHotwordEnabled = (id: number, enabled: boolean): Promise<Result<void>> =>
+  client.patch<Result<void>>(`/api/asr-hotwords/${id}/enabled`, null, { params: { enabled } }).then(r => r.data)
 
-export const deleteAsrHotword = (userId: number, id: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/asr-hotwords/${id}`, { params: { userId } }).then(r => r.data)
+export const deleteAsrHotword = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/asr-hotwords/${id}`).then(r => r.data)
 
-export const createAsrHotwordsBatch = (userId: number, params: AsrHotword[]): Promise<Result<AsrHotword[]>> =>
-  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/batch', params, { params: { userId } }).then(r => r.data)
+export const createAsrHotwordsBatch = (params: AsrHotword[]): Promise<Result<AsrHotword[]>> =>
+  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/batch', params).then(r => r.data)
 
 export const addMeetingHotwords = (
-  userId: number,
   names: string[],
   venue?: string,
 ): Promise<Result<AsrHotword[]>> =>
-  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/from-meeting', { names, venue }, { params: { userId } }).then(r => r.data)
+  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/from-meeting', { names, venue }).then(r => r.data)
 
-export const previewHotwordsFromSession = (sessionId: string, userId: number): Promise<Result<HotwordSuggestion[]>> =>
-  client.get<Result<HotwordSuggestion[]>>(`/api/asr-hotwords/extract-preview/${sessionId}`, { params: { userId } }).then(r => r.data)
+export const previewHotwordsFromSession = (sessionId: string): Promise<Result<HotwordSuggestion[]>> =>
+  client.get<Result<HotwordSuggestion[]>>(`/api/asr-hotwords/extract-preview/${sessionId}`).then(r => r.data)
 
-export const confirmHotwordsFromSession = (userId: number, hotwords: HotwordSuggestion[]): Promise<Result<AsrHotword[]>> =>
-  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/extract-confirm', hotwords, { params: { userId } }).then(r => r.data)
+export const confirmHotwordsFromSession = (hotwords: HotwordSuggestion[]): Promise<Result<AsrHotword[]>> =>
+  client.post<Result<AsrHotword[]>>('/api/asr-hotwords/extract-confirm', hotwords).then(r => r.data)
 
 export const getSystemUsers = (keyword = ''): Promise<Result<SystemUserInfo[]>> =>
   client.get<Result<SystemUserInfo[]>>('/api/system-users', { params: { keyword } }).then(r => r.data)
@@ -218,23 +311,21 @@ export interface TerminologyImportResult {
   totalCount: number
 }
 
-export const importTerminology = (userId: number, file: File): Promise<Result<TerminologyImportResult>> => {
+export const importTerminology = (file: File): Promise<Result<TerminologyImportResult>> => {
   const form = new FormData()
   form.append('file', file)
   return client.post<Result<TerminologyImportResult>>('/api/terminology/import', form, {
-    params: { userId },
     headers: { 'Content-Type': undefined },
   }).then(r => r.data)
 }
 
-export const getUserLanguagePreference = (userId: number): Promise<Result<UserLanguagePreference>> =>
-  client.get<Result<UserLanguagePreference>>('/api/language-preferences', { params: { userId } }).then(r => r.data)
+export const getUserLanguagePreference = (): Promise<Result<UserLanguagePreference>> =>
+  client.get<Result<UserLanguagePreference>>('/api/language-preferences').then(r => r.data)
 
 export const saveUserLanguagePreference = (
-  userId: number,
   params: Pick<UserLanguagePreference, 'defaultSourceLang' | 'enabledLanguages'>,
 ): Promise<Result<UserLanguagePreference>> =>
-  client.put<Result<UserLanguagePreference>>('/api/language-preferences', params, { params: { userId } }).then(r => r.data)
+  client.put<Result<UserLanguagePreference>>('/api/language-preferences', params).then(r => r.data)
 
 export const getMeetingSummary = (sessionId: string): Promise<Result<MeetingSummaryVo>> =>
   client.get<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`).then(r => r.data)
@@ -242,23 +333,20 @@ export const getMeetingSummary = (sessionId: string): Promise<Result<MeetingSumm
 export const regenerateMeetingSummary = (sessionId: string, customRequirements?: string): Promise<Result<MeetingSummaryVo>> =>
   client.post<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`, customRequirements ? { customRequirements } : undefined).then(r => r.data)
 
-export const uploadPreMeetingFile = (file: File, userId?: number): Promise<Result<PreMeetingFile[]>> => {
+export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[]>> => {
   const form = new FormData()
   form.append('file', file)
-  const params = userId != null ? { userId } : {}
   return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
     headers: { 'Content-Type': undefined },
-    params,
   }).then(r => r.data)
 }
 
 export const summarizePreMeetingFile = (
   fileId: string,
   requirements: string,
-  userId?: number,
   meetingId?: number | null,
 ): Promise<Result<PreMeetingSummaryResult>> =>
-  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, userId, meetingId }, {
+  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, meetingId }, {
     timeout: 300_000,
   }).then(r => ensureResultData(r.data, '生成总结失败'))
 
@@ -300,8 +388,8 @@ export const exportPreMeetingAttendanceDocx = (
       throw new Error(await getApiErrorMessage(error, '导出实际参会名单失败'))
     })
 
-export const getPreMeetingUsage = (userId: number, days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
-  client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { userId, days } }).then(r => r.data)
+export const getPreMeetingUsage = (days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
+  client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { days } }).then(r => r.data)
 
 export interface SummaryExportFormat {
   bodyFont?: string
@@ -329,7 +417,6 @@ export const chatWithPreMeeting = (
     fileId?: string
     sessionId?: string
     crossMeeting?: boolean
-    userId?: number
     days?: number
   },
 ): Promise<Result<PreMeetingChatResponse>> =>
@@ -339,7 +426,6 @@ export const chatWithPreMeeting = (
     fileId: options?.fileId || null,
     sessionId: options?.sessionId || null,
     crossMeeting: options?.crossMeeting || false,
-    userId: options?.userId ?? null,
     days: options?.days || 0,
   }, { timeout: 120_000 }).then(r => r.data)
 
@@ -435,7 +521,6 @@ export const getMeetingParticipants = (): Promise<MeetingParticipantsResponse> =
 // ── Meeting management ───────────────────────────────────────────────────────
 
 export const createMeeting = (params: {
-  userId: number
   title: string
   scheduledTime?: string
   note?: string
@@ -446,8 +531,8 @@ export const createMeeting = (params: {
     return r.data
   })
 
-export const getMeetings = (userId: number): Promise<Result<Meeting[]>> =>
-  client.get<Result<Meeting[]>>('/api/meetings', { params: { userId } }).then(r => r.data)
+export const getMeetings = (): Promise<Result<Meeting[]>> =>
+  client.get<Result<Meeting[]>>('/api/meetings').then(r => r.data)
 
 export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Result<MeetingFile>> => {
   const form = new FormData()
@@ -468,7 +553,6 @@ export const loadMeetingFileForSummary = (meetingId: number, fileId: number): Pr
   client.post<Result<PreMeetingSummaryResult>>(`/api/meetings/${meetingId}/files/${fileId}/load`, {}).then(r => r.data)
 
 export const generateSpeakerSummary = (params: {
-  userId: number
   sessionId: string
   speakerId?: string
   speakerName?: string
@@ -546,17 +630,48 @@ export const sendMeetingNotification = (
 export const deleteMeeting = (meetingId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}`).then(r => r.data)
 
+export const listMeetingMembers = (meetingId: number): Promise<Result<MeetingMember[]>> =>
+  client.get<Result<MeetingMember[]>>(`/api/meetings/${meetingId}/members`).then(r => r.data)
+
+export const assignMeetingMember = (
+  meetingId: number,
+  userId: number,
+  accessLevel: 'VIEW' | 'OPERATE',
+): Promise<Result<MeetingMember>> =>
+  client.post<Result<MeetingMember>>(`/api/meetings/${meetingId}/members`, { userId, accessLevel }).then(r => r.data)
+
+export const revokeMeetingMember = (meetingId: number, userId: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/meetings/${meetingId}/members/${userId}`).then(r => r.data)
+
+export const requestSupportGrant = (
+  meetingId: number,
+  reason: string,
+  ttlMinutes: number,
+): Promise<Result<number>> =>
+  client.post<Result<number>>('/api/support-grants', { meetingId, reason, ttlMinutes }).then(r => r.data)
+
+export const approveSupportGrant = (id: number): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/support-grants/${id}/approve`).then(r => r.data)
+
+export const revokeSupportGrant = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/support-grants/${id}`).then(r => r.data)
+
+export const listSupportGrants = (limit = 100): Promise<Result<SupportAccessGrant[]>> =>
+  client.get<Result<SupportAccessGrant[]>>('/api/support-grants', { params: { limit } }).then(r => r.data)
+
+export const listAuditLogs = (limit = 100): Promise<Result<AuditLog[]>> =>
+  client.get<Result<AuditLog[]>>('/api/users/audit', { params: { limit } }).then(r => r.data)
+
 export const getActionItems = (sessionId: string): Promise<Result<MeetingActionItem[]>> =>
   client.get<Result<MeetingActionItem[]>>(`/api/meetings/sessions/${encodeURIComponent(sessionId)}/action-items`).then(r => r.data)
 
 export const extractActionItems = (
   sessionId: string,
   meetingId?: number | null,
-  userId?: number | null,
 ): Promise<Result<MeetingActionItem[]>> =>
   client.post<Result<MeetingActionItem[]>>(
     `/api/meetings/sessions/${encodeURIComponent(sessionId)}/action-items/extract`,
-    { meetingId, userId },
+    { meetingId },
     { timeout: 60_000 },
   ).then(r => r.data)
 
@@ -567,23 +682,22 @@ export const deleteActionItem = (id: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/action-items/${id}`).then(r => r.data)
 
 export const getAudioRecords = (
-  userId: number,
   keyword?: string,
   page?: number,
   size?: number,
 ): Promise<Result<{ items: AudioRecord[]; total: number }>> =>
   client.get<Result<{ items: AudioRecord[]; total: number }>>('/api/audio-records', {
-    params: { userId, keyword: keyword || '', page: page ?? 1, size: size ?? 50 },
+    params: { keyword: keyword || '', page: page ?? 1, size: size ?? 50 },
   }).then(r => r.data)
 
-export const renameAudioRecord = (id: number, userId: number, name: string): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/audio-records/${id}/name`, null, { params: { userId, name } }).then(r => r.data)
+export const renameAudioRecord = (id: number, name: string): Promise<Result<void>> =>
+  client.put<Result<void>>(`/api/audio-records/${id}/name`, null, { params: { name } }).then(r => r.data)
 
-export const deleteAudioRecord = (id: number, userId: number): Promise<Result<void>> =>
-  client.delete<Result<void>>(`/api/audio-records/${id}`, { params: { userId } }).then(r => r.data)
+export const deleteAudioRecord = (id: number): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/audio-records/${id}`).then(r => r.data)
 
-export const getAudioDownloadUrl = (id: number, userId: number): string =>
-  `/api/audio-records/${id}/download?userId=${userId}`
+export const getAudioDownloadUrl = (id: number): string =>
+  `/api/audio-records/${id}/download`
 
 export const getSummaryRecipients = (): Promise<Result<string[]>> =>
   client.get<Result<string[]>>('/api/user/preference/summary-recipients').then(r => r.data)

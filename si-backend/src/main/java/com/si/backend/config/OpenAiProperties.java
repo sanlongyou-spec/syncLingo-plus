@@ -46,6 +46,8 @@ public class OpenAiProperties {
 
     private String embeddingModel = "openai/text-embedding-3-small";
 
+    private String embeddingProfile = "default";
+
     /**
      * Optional separate endpoint for embeddings. OpenRouter has no /embeddings API, so when
      * chat runs on OpenRouter, embeddings must use a different provider. Blank = reuse baseUrl.
@@ -59,6 +61,8 @@ public class OpenAiProperties {
 
     private float embeddingMinScore = 0.3f;
 
+    private int embeddingCandidateLimit = 2000;
+
     public String effectiveEmbeddingBaseUrl() {
         return (embeddingBaseUrl != null && !embeddingBaseUrl.isBlank()) ? embeddingBaseUrl : baseUrl;
     }
@@ -70,19 +74,28 @@ public class OpenAiProperties {
     // ── RAG quality (P0): query expansion + reranking. Default off — flip on to enable. ──
 
     /** Rewrite/expand the question into several queries before retrieval (multi-query recall). */
-    private boolean ragQueryExpansionEnabled = false;
+    private boolean ragQueryExpansionEnabled = true;
 
     /** How many extra reformulations to generate (besides the original question). */
     private int ragQueryExpansionCount = 2;
 
     /** Rerank recalled chunks with the LLM and keep the most relevant ones. */
-    private boolean ragRerankEnabled = false;
+    private boolean ragRerankEnabled = true;
 
     /** Model used for query expansion / reranking. Blank = reuse summaryModel. */
     private String ragHelperModel;
 
     /** How many chunks to keep after reranking (fed into the answer context). */
     private int ragRerankTopK = 12;
+
+    /** Per expanded query recall limit before merge/rerank. */
+    private int ragRecallPerQueryTopK = 40;
+
+    /** Cap the total expanded/decomposed query count per user question. */
+    private int ragMaxQueries = 9;
+
+    /** Short timeout for helper LLM calls; failures fall back to the original retrieval path. */
+    private int ragHelperTimeoutSeconds = 20;
 
     public String effectiveRagHelperModel() {
         return (ragHelperModel != null && !ragHelperModel.isBlank()) ? ragHelperModel : summaryModel;

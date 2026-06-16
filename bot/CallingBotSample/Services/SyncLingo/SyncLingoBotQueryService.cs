@@ -2,11 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
-using System.Net.Http.Json;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using CallingBotSample.Options;
+using CallingBotSample.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -20,6 +22,8 @@ namespace CallingBotSample.Services.SyncLingo
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
         private const string BotSecretHeader = "X-SyncLingo-Bot-Secret";
+        /// <summary>上行签名 keyId,Java 侧用它选择对应的验签密钥。</summary>
+        private const string UpstreamKeyId = "csharp-bot";
 
         private readonly HttpClient httpClient;
         private readonly BotOptions botOptions;
@@ -38,6 +42,7 @@ namespace CallingBotSample.Services.SyncLingo
         public async Task StreamQueryAsync(
             TeamsBotUserContext userContext,
             string message,
+            IReadOnlyList<SyncLingoBotChatTurn>? history,
             Func<string, Task> chunkCallback,
             CancellationToken cancellationToken)
         {
@@ -57,17 +62,13 @@ namespace CallingBotSample.Services.SyncLingo
                 Mail = userContext.Mail,
                 UserPrincipalName = userContext.UserPrincipalName,
                 DisplayName = userContext.DisplayName,
-                Message = message ?? string.Empty
+                Message = message ?? string.Empty,
+                History = history == null ? null : new List<SyncLingoBotChatTurn>(history)
             };
 
             try
             {
-                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
-                {
-                    Content = JsonContent.Create(request, options: JsonOptions)
-                };
-                if (!string.IsNullOrWhiteSpace(botOptions.BackendApiSecret))
-                    httpRequest.Headers.Add(BotSecretHeader, botOptions.BackendApiSecret);
+                using var httpRequest = BuildSignedRequest(endpoint, request);
 
                 using var response = await httpClient.SendAsync(
                     httpRequest,
@@ -100,6 +101,8 @@ namespace CallingBotSample.Services.SyncLingo
                         logger.LogWarning("[SyncLingoBotQueryService] StreamQuery received [ERROR]");
                         break;
                     }
+                    if (data.StartsWith("[STATUS]", StringComparison.OrdinalIgnoreCase))
+                        continue;
                     if (!string.IsNullOrEmpty(data))
                         await chunkCallback(data);
                 }
@@ -116,7 +119,11 @@ namespace CallingBotSample.Services.SyncLingo
             }
         }
 
-        public async Task<SyncLingoBotQueryResponse> QueryAsync(TeamsBotUserContext userContext, string message, CancellationToken cancellationToken)
+        public async Task<SyncLingoBotQueryResponse> QueryAsync(
+            TeamsBotUserContext userContext,
+            string message,
+            IReadOnlyList<SyncLingoBotChatTurn>? history,
+            CancellationToken cancellationToken)
         {
             logger.LogInformation("[SyncLingoBotQueryService] Query start, aadId={AadId}, upn={Upn}, messageLen={MessageLen}",
                 userContext.AadId, userContext.UserPrincipalName, message?.Length ?? 0);
@@ -131,17 +138,13 @@ namespace CallingBotSample.Services.SyncLingo
                 Mail = userContext.Mail,
                 UserPrincipalName = userContext.UserPrincipalName,
                 DisplayName = userContext.DisplayName,
-                Message = message ?? string.Empty
+                Message = message ?? string.Empty,
+                History = history == null ? null : new List<SyncLingoBotChatTurn>(history)
             };
 
             try
             {
-                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
-                {
-                    Content = JsonContent.Create(request, options: JsonOptions)
-                };
-                if (!string.IsNullOrWhiteSpace(botOptions.BackendApiSecret))
-                    httpRequest.Headers.Add(BotSecretHeader, botOptions.BackendApiSecret);
+                using var httpRequest = BuildSignedRequest(endpoint, request);
 
                 using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -185,6 +188,37 @@ namespace CallingBotSample.Services.SyncLingo
             }
         }
 
+        /// <summary>
+        /// 构造发往 Java 后端的请求:序列化为确定字节(便于签名),附带静态 api-secret,
+        /// 并在配置了 upstream-key 时附加 HMAC 服务签名(对相同字节签名,与 Java 验签一致)。
+        /// </summary>
+        private HttpRequestMessage BuildSignedRequest(Uri endpoint, SyncLingoBotQueryRequest request)
+        {
+            var json = JsonSerializer.Serialize(request, JsonOptions);
+            var bodyBytes = Encoding.UTF8.GetBytes(json);
+
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = new ByteArrayContent(bodyBytes)
+            };
+            httpRequest.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+
+            if (!string.IsNullOrWhiteSpace(botOptions.BackendApiSecret))
+                httpRequest.Headers.Add(BotSecretHeader, botOptions.BackendApiSecret);
+
+            var upstreamKey = botOptions.ServiceSignatureUpstreamKey;
+            if (!string.IsNullOrWhiteSpace(upstreamKey))
+            {
+                var rawQuery = endpoint.Query.TrimStart('?');
+                var headers = ServiceSignature.Sign(
+                    upstreamKey, UpstreamKeyId, "POST", endpoint.AbsolutePath, rawQuery, bodyBytes);
+                foreach (var kv in headers)
+                    httpRequest.Headers.Add(kv.Key, kv.Value);
+            }
+
+            return httpRequest;
+        }
+
         private static SyncLingoBotQueryResponse ErrorResponse(string text)
         {
             return new SyncLingoBotQueryResponse
@@ -207,6 +241,8 @@ namespace CallingBotSample.Services.SyncLingo
         public string? DisplayName { get; set; }
 
         public string Message { get; set; } = string.Empty;
+
+        public List<SyncLingoBotChatTurn>? History { get; set; }
     }
 
     public class SyncLingoBotQueryResponse

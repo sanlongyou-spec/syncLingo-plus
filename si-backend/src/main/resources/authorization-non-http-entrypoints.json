@@ -218,5 +218,15 @@
     "scope": "ALL",
     "expectedStatuses": [200],
     "source": "com.si.backend.service.PreMeetingService"
+  },
+  {
+    "kind": "SCHEDULED",
+    "method": "TASK",
+    "path": "com.si.backend.service.AuditOutboxDispatcher#dispatchScheduled",
+    "identity": "SYSTEM",
+    "permission": "INTERNAL_ASYNC",
+    "scope": "ALL",
+    "expectedStatuses": [200],
+    "source": "com.si.backend.service.AuditOutboxDispatcher"
   }
 ]

@@ -47,18 +47,16 @@ const downloadBlob = (blob: Blob, filename: string) => {
   URL.revokeObjectURL(url)
 }
 
-const persistKnownParticipants = (incoming: MeetingParticipant[], userId?: number) => {
+const persistKnownParticipants = (incoming: MeetingParticipant[]) => {
   const validParticipants = incoming.filter(p => p.aadId)
   if (validParticipants.length === 0) return
   // Add participant display names to the ASR hotword list (fire-and-forget, deduped server-side).
-  if (userId != null) {
-    const names = incoming
-      .map(p => p.displayName?.trim())
-      .filter((name): name is string => !!name)
-    if (names.length > 0) {
-      addMeetingHotwords(userId, names).catch(error =>
-        console.warn('[TeamsBotView] add meeting hotwords failed:', error))
-    }
+  const names = incoming
+    .map(p => p.displayName?.trim())
+    .filter((name): name is string => !!name)
+  if (names.length > 0) {
+    addMeetingHotwords(names).catch(error =>
+      console.warn('[TeamsBotView] add meeting hotwords failed:', error))
   }
   try {
     const saved = localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.ALL_KNOWN_PARTICIPANTS)
@@ -97,8 +95,6 @@ const attendanceStatusClass = (status: string) => {
 }
 
 export default function TeamsBotView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
-
   // ── 全局状态 ─────────────────────────────────────────
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
@@ -154,7 +150,7 @@ export default function TeamsBotView() {
 
   // ── 加载会议列表，并恢复上次选中的会议 ──────────────────
   useEffect(() => {
-    getMeetings(userId).then(res => {
+    getMeetings().then(res => {
       const list = res.data || []
       setMeetings(list)
       const saved = localStorage.getItem(TEAMS_BOT_STORAGE_KEYS.LAST_SELECTED_MEETING_ID)
@@ -170,7 +166,7 @@ export default function TeamsBotView() {
         }
       }
     }).catch(() => {})
-  }, [userId])
+  }, [])
 
 
   const handleMeetingSelect = (id: number | null) => {
@@ -205,7 +201,7 @@ export default function TeamsBotView() {
     if (!title) { setError('请先输入会议名称'); return }
     setError('')
     try {
-      const res = await createMeeting({ userId, title })
+      const res = await createMeeting({ title })
       const m = res.data
       setMeetings(prev => [m, ...prev.filter(x => x.id !== m.id)])
       setSelectedMeetingId(m.id)
@@ -228,7 +224,7 @@ export default function TeamsBotView() {
     setScheduleLoading(true)
     setError('')
     try {
-      const res = await uploadPreMeetingFile(file, userId)
+      const res = await uploadPreMeetingFile(file)
       const added = res.data || []
       if (added.length === 0) throw new Error('未解析到可用的会议安排文件')
       const first = added[0]
@@ -236,7 +232,7 @@ export default function TeamsBotView() {
       const title = first.meetingTitle || file.name.replace(/\.[^.]+$/, '')
       setMeetingName(title)
       // auto-create meeting in DB so it appears in InterpretationView
-      const mRes = await createMeeting({ userId, title })
+      const mRes = await createMeeting({ title })
       const newMeeting = mRes.data
       setSelectedMeetingId(newMeeting.id)
       localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.LAST_SELECTED_MEETING_ID, String(newMeeting.id))
@@ -275,7 +271,7 @@ export default function TeamsBotView() {
       // auto-create meeting if name is set and none selected
       let meetingId = selectedMeetingId
       if (!meetingId && meetingName.trim()) {
-        const res = await createMeeting({ userId, title: meetingName.trim() })
+        const res = await createMeeting({ title: meetingName.trim() })
         const m = res.data
         setMeetings(prev => [m, ...prev])
         setSelectedMeetingId(m.id)
@@ -289,7 +285,7 @@ export default function TeamsBotView() {
         dbFileId = res.data.id
       }
       // also store in prepFiles for AI summary
-      const res2 = await uploadPreMeetingFile(file, userId)
+      const res2 = await uploadPreMeetingFile(file)
       const added = res2.data || []
       setPrepFiles(prev => [...prev, ...added])
       if (added.length > 0 && !selectedFileId) setSelectedFileId(added[0].fileId)
@@ -352,7 +348,7 @@ export default function TeamsBotView() {
     setError('')
     const combined = [defaultReqDraft.trim(), extraReq.trim()].filter(Boolean).join('\n')
     try {
-      const res = await summarizePreMeetingFile(fileId, combined, userId, selectedMeetingId)
+      const res = await summarizePreMeetingFile(fileId, combined, selectedMeetingId)
       setSummaryMap(prev => ({ ...prev, [fileId]: res.data }))
       const dbFileId = preMeetingToDbFileId[fileId]
       const mid = selectedMeetingId
@@ -383,7 +379,7 @@ export default function TeamsBotView() {
     const currentSessionId = localStorage.getItem(STORAGE_KEYS.CURRENT_SESSION_ID)
     if (!currentSessionId || !title.trim()) return
     try {
-      await updateInterpretationSessionTitle(currentSessionId, userId, title.trim())
+      await updateInterpretationSessionTitle(currentSessionId, title.trim())
     } catch { /* silent */ }
   }
 
@@ -476,7 +472,7 @@ export default function TeamsBotView() {
         data = await getMeetingParticipants()
       }
       setParticipants(data.participants)
-      persistKnownParticipants(data.participants, userId)
+      persistKnownParticipants(data.participants)
       if (data.callId) setActiveCallId(data.callId)
       if (data.threadId) {
         localStorage.setItem(TEAMS_BOT_STORAGE_KEYS.MEETING_THREAD_ID, data.threadId)

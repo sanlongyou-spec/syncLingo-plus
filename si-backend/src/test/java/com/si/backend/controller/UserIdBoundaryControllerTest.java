@@ -1,6 +1,5 @@
 package com.si.backend.controller;
 
-import com.si.backend.common.BizException;
 import com.si.backend.dto.TranslateTextRequest;
 import com.si.backend.facade.TranslateFacade;
 import com.si.backend.service.AsrHotwordService;
@@ -14,12 +13,12 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
- * Verifies remaining legacy userId parameters cannot select another user's data.
+ * Verifies P5 user-owned endpoints derive the owner from the authenticated actor, not client userId input.
  */
 class UserIdBoundaryControllerTest {
 
@@ -29,20 +28,20 @@ class UserIdBoundaryControllerTest {
     }
 
     @Test
-    void translateWithAnotherUserId_isRejected() {
+    void translate_usesAuthenticatedActorUserId() {
         TranslateFacade facade = mock(TranslateFacade.class);
         TranslateController controller = new TranslateController(facade);
-        TranslateTextRequest request = new TranslateTextRequest(9L, "hello", "en", "id");
+        TranslateTextRequest request = new TranslateTextRequest("hello", "en", "id");
+        when(facade.translate("hello", "en", "id", 5L)).thenReturn("halo");
         bindActor(5L);
 
-        BizException error = assertThrows(BizException.class, () -> controller.translate(request));
+        assertEquals("halo", controller.translate(request).getData());
 
-        assertEquals(403, error.getCode());
-        verifyNoInteractions(facade);
+        verify(facade).translate("hello", "en", "id", 5L);
     }
 
     @Test
-    void preMeetingUsageWithAnotherUserId_isRejected() {
+    void preMeetingUsage_usesAuthenticatedActorUserId() {
         PreMeetingService preMeetingService = mock(PreMeetingService.class);
         PreMeetingController controller = new PreMeetingController(
                 preMeetingService,
@@ -52,10 +51,9 @@ class UserIdBoundaryControllerTest {
         );
         bindActor(5L);
 
-        BizException error = assertThrows(BizException.class, () -> controller.getUsage(9L, 365));
+        controller.getUsage(365);
 
-        assertEquals(403, error.getCode());
-        verifyNoInteractions(preMeetingService);
+        verify(preMeetingService).getDailyUsage(5L, 365);
     }
 
     private void bindActor(Long userId) {

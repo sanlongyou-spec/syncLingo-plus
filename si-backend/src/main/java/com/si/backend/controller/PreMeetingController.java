@@ -50,9 +50,8 @@ public class PreMeetingController {
 
     @PostMapping("/upload")
     public Result<List<PreMeetingFileVo>> upload(
-            @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "userId", required = false) Long userId) {
-        userId = AuthContext.requireSelf(userId);
+            @RequestParam("file") MultipartFile file) {
+        Long userId = AuthContext.requireActor().userId();
         if (file == null || file.isEmpty()) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的文件");
         }
@@ -89,7 +88,7 @@ public class PreMeetingController {
     public Result<PreMeetingSummaryVo> summarize(@RequestBody PreMeetingSummarizeRequest request) {
         try {
             AuthenticatedActor actor = AuthContext.requireActor();
-            long userId = AuthContext.requireSelf(actor, request.getUserId());
+            long userId = actor.userId();
             if (request.getMeetingId() != null) {
                 resourceOwnershipPolicy.requireOwnedMeeting(actor, request.getMeetingId());
             }
@@ -266,7 +265,7 @@ public class PreMeetingController {
             PreMeetingChatVo result;
             if (request.isCrossMeeting()) {
                 result = preMeetingService.chatCrossMeeting(
-                        AuthContext.requireSelf(actor, request.getUserId()),
+                        actor.userId(),
                         request.getQuestion(),
                         request.getHistory(),
                         request.getDays());
@@ -291,10 +290,8 @@ public class PreMeetingController {
 
     @GetMapping("/usage")
     public Result<List<PreMeetingDailyUsageVo>> getUsage(
-            @RequestParam long userId,
             @RequestParam(defaultValue = "365") int days) {
-        userId = AuthContext.requireSelf(userId);
-        return Result.ok(preMeetingService.getDailyUsage(userId, days));
+        return Result.ok(preMeetingService.getDailyUsage(AuthContext.requireActor().userId(), days));
     }
 
     @PostMapping("/export/{fileId}")

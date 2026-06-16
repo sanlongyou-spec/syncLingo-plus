@@ -2,10 +2,12 @@ package com.si.backend.controller;
 
 import com.si.backend.common.Result;
 import com.si.backend.dto.CreateUserRequest;
+import com.si.backend.entity.AuditLog;
 import com.si.backend.security.authorization.AuthorizationSpec;
 import com.si.backend.security.authorization.IdentityType;
 import com.si.backend.security.authorization.PermissionCode;
 import com.si.backend.security.authorization.ResourceScope;
+import com.si.backend.service.AuditService;
 import com.si.backend.service.UserAdminService;
 import com.si.backend.util.AuthContext;
 import com.si.backend.vo.UserSummaryVo;
@@ -27,6 +29,7 @@ import java.util.Map;
 public class UserAdminController {
 
     private final UserAdminService userAdminService;
+    private final AuditService auditService;
 
     @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.ACCOUNT_SELF,
             scope = ResourceScope.SELF, expectedStatuses = {200, 401})
@@ -74,5 +77,13 @@ public class UserAdminController {
         AuthContext.requireAdmin();
         userAdminService.resetPassword(id, body.get("password"));
         return Result.ok();
+    }
+
+    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.AUDIT_READ,
+            scope = ResourceScope.ALL, expectedStatuses = {200, 401, 403})
+    @GetMapping("/audit")
+    public Result<List<AuditLog>> auditLogs(@RequestParam(required = false, defaultValue = "100") int limit) {
+        AuthContext.requireAdmin();
+        return Result.ok(auditService.getRecent(limit));
     }
 }

@@ -13,8 +13,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TranslateTextRequest {
 
-    private Long userId;
-
     @NotBlank(message = "text cannot be blank")
     private String text;
 

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 @Slf4j
@@ -99,9 +100,14 @@ public class VectorSearchService {
         if (queryVec == null || queryVec.length == 0) return List.of();
         int limit = topK > 0 ? topK : openAiProperties.getEmbeddingTopK();
         float minScore = openAiProperties.getEmbeddingMinScore();
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        int candidateLimit = openAiProperties.getEmbeddingCandidateLimit() > 0
+                ? openAiProperties.getEmbeddingCandidateLimit()
+                : 2000;
 
         List<InterpretationEmbedding> candidates =
-                embeddingMapper.findByUserId(userId, filterMeetingId, filterSpeakerName, filterSince);
+                deduplicateBySource(embeddingMapper.findByUserId(
+                        userId, filterMeetingId, filterSpeakerName, filterSince, profile, candidateLimit));
         int m = candidates.size();
         if (m == 0) return List.of();
 
@@ -128,8 +134,8 @@ public class VectorSearchService {
         final double[] rank = ranking;
         java.util.Arrays.sort(order, (a, b) -> Double.compare(rank[b], rank[a]));
 
-        log.debug("[VectorSearchService] search userId={}, candidates={}, hybrid={}, topK={}",
-                userId, m, hybrid, limit);
+        log.debug("[VectorSearchService] search userId={}, profile={}, candidates={}, hybrid={}, topK={}",
+                userId, profile, m, hybrid, limit);
 
         List<SearchResult> results = new ArrayList<>(Math.min(limit, m));
         for (int idx : order) {
@@ -153,5 +159,25 @@ public class VectorSearchService {
             if (results.size() >= limit) break;
         }
         return results;
+    }
+
+    private static List<InterpretationEmbedding> deduplicateBySource(List<InterpretationEmbedding> rows) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        LinkedHashMap<String, InterpretationEmbedding> deduped = new LinkedHashMap<>();
+        for (InterpretationEmbedding row : rows) {
+            deduped.putIfAbsent(sourceKey(row), row);
+        }
+        return new ArrayList<>(deduped.values());
+    }
+
+    private static String sourceKey(InterpretationEmbedding row) {
+        if (row == null) return "null";
+        if (row.getSourceType() != null && row.getSourceId() != null) {
+            return row.getSourceType() + ":" + row.getSourceId();
+        }
+        if (row.getResultId() != null) {
+            return "result:" + row.getResultId();
+        }
+        return "row:" + row.getId();
     }
 }

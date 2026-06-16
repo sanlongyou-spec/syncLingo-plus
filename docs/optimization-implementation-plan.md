@@ -1361,3 +1361,52 @@ GET    /api/admin/audit-logs
 - 需由业务确认现有账号的初始角色，以及操作员是否允许修改被分配会议还是仅操作同传。本方案默认被分配操作员可操作会议，查看者只读。
 - 第一阶段不支持任意自定义角色；若未来确有多部门差异，再增加 `role / permission / role_permission / user_role` 动态模型。
 - 权限改造涉及大量历史接口和跨模块契约，必须按阶段提交和部署，不能一次性整体强制拦截。
+
+## Weekly Optimization Record: 2026-W25 AI Q&A Optimization Final Implementation
+
+### Goal
+
+- Implement the final Track B AI Q&A optimization path, not a minimum version.
+- Preserve all existing server data and avoid destructive vector rebuilds.
+- Deliver evaluation baseline, retrieval optimization, grounded answers, multi-turn context, streaming latency safeguards, and automated verification.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Final plan document | Done | See `docs/ai-qa-optimization-final-plan-2026-W25.md`. |
+| Data-safe embedding profile | Done | Added model, dimension, profile, hash, status, and timestamp metadata. |
+| Profile-aware rebuild | Done | Rebuild and regeneration paths write only the active profile while preserving legacy/default vectors. |
+| Evaluation baseline and runner | Done | Added deterministic scoring service plus admin score/run endpoints, a reusable request template, and a local report runner for generated-answer coverage reports. |
+| RAG quality tuning | Done | Enabled fail-open query expansion and rerank by default; added helper timeout, max query cap, per-query recall cap, and recall/rerank timing metrics. |
+| Grounded source answer | Done | Added grounded context requirements and structured source anchors before LLM answer generation. |
+| Multi-turn streaming Q&A | Done | Added optional Teams Bot history, bounded backend history, and Bot-side recent chat window. |
+| Latency safeguards | Done | Added stream status events; C# Bot filters status markers from user-visible output. |
+
+### Data Safety Rules
+
+- Do not run `TRUNCATE interpretation_embedding`.
+- Do not clear and rebuild production embeddings as the optimization path.
+- Do not overwrite older profile embeddings when introducing a new profile.
+- Business cleanup deletes embeddings only for deleted source resources.
+- Keep rollback possible by switching retrieval profile/configuration.
+
+### Affected Modules
+
+- Backend RAG and embedding services.
+- Embedding mapper and migration scripts.
+- Teams Bot Q&A streaming path.
+- Backend automated tests.
+- Canonical optimization and validation documents.
+
+### Acceptance Criteria
+
+- Existing data remains searchable.
+- New and legacy/default embedding profiles can coexist.
+- Query rewrite, expansion, decomposition, hybrid retrieval, rerank, source grounding, and multi-turn context have automated coverage.
+- Baseline and optimized evaluation reports can be generated.
+- `mvn test` passes before manual validation.
+
+### Residual Issues
+
+- Production migration still requires backup and rehearsal on a copied database before enabling profile-aware rebuild on the server.

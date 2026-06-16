@@ -1,5 +1,6 @@
 package com.si.backend.service;
 
+import com.si.backend.config.OpenAiProperties;
 import com.si.backend.entity.InterpretationEmbedding;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.MeetingActionItem;
@@ -72,6 +73,7 @@ public class ContentEmbeddingService {
     private final LlmIntegration llmIntegration;
     private final InterpretationEmbeddingMapper embeddingMapper;
     private final InterpretationSessionMapper sessionMapper;
+    private final OpenAiProperties openAiProperties;
 
     // ── Embed triggers ────────────────────────────────────────────────────
 
@@ -216,7 +218,8 @@ public class ContentEmbeddingService {
 
     private void contentEmbeddingDeleteByType(String type, Long refId) {
         try {
-            embeddingMapper.deleteBySourceTypeAndRefId(type, refId);
+            String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+            embeddingMapper.deleteBySourceTypeAndRefIdAndProfile(type, refId, profile);
         } catch (Exception e) {
             log.debug("[ContentEmbeddingService] insight pre-delete skipped, type={}, refId={}: {}", type, refId, e.getMessage());
         }
@@ -274,7 +277,8 @@ public class ContentEmbeddingService {
     }
 
     private int rebuildMeetingSummaries(int limit) {
-        var candidates = embeddingMapper.findSessionsWithSummaryWithoutEmbedding(limit);
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findSessionsWithSummaryWithoutEmbedding(limit, profile);
         int count = 0;
         for (var c : candidates) {
             try {
@@ -293,7 +297,8 @@ public class ContentEmbeddingService {
     }
 
     private int rebuildSpeakerSummaries(int limit) {
-        var candidates = embeddingMapper.findSpeakerSummariesWithoutEmbedding(limit);
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findSpeakerSummariesWithoutEmbedding(limit, profile);
         int count = 0;
         for (var c : candidates) {
             try {
@@ -313,7 +318,8 @@ public class ContentEmbeddingService {
     }
 
     private int rebuildFileSummaries(int limit) {
-        var candidates = embeddingMapper.findFileSummariesWithoutEmbedding(limit);
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findFileSummariesWithoutEmbedding(limit, profile);
         int count = 0;
         for (var c : candidates) {
             try {
@@ -332,7 +338,8 @@ public class ContentEmbeddingService {
     }
 
     private int rebuildFileContents(int limit) {
-        var candidates = embeddingMapper.findFileContentsWithoutEmbedding(limit);
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findFileContentsWithoutEmbedding(limit, profile);
         int count = 0;
         for (var c : candidates) {
             try {
@@ -358,7 +365,8 @@ public class ContentEmbeddingService {
     }
 
     private int rebuildActionItems(int limit) {
-        var candidates = embeddingMapper.findActionItemsWithoutEmbedding(limit);
+        String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findActionItemsWithoutEmbedding(limit, profile);
         int count = 0;
         for (var c : candidates) {
             try {
@@ -424,9 +432,10 @@ public class ContentEmbeddingService {
         emb.setChunkText(text);
         emb.setTranslatedText(translatedText);
         emb.setChunkStart(chunkStart);
-        emb.setEmbedding(VectorSearchService.toBytes(vec));
+        InterpretationResultService.applyEmbeddingMetadata(emb, vec, toEmbed, openAiProperties);
         embeddingMapper.upsertContent(emb);
-        log.debug("[ContentEmbeddingService] upserted type={}, sourceId={}", sourceType, sourceId);
+        log.debug("[ContentEmbeddingService] upserted type={}, sourceId={}, profile={}, dims={}",
+                sourceType, sourceId, emb.getEmbeddingProfile(), emb.getEmbeddingDim());
     }
 
     private SessionContext resolveSession(Long meetingId) {

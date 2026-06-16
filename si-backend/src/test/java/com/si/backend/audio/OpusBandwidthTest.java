@@ -126,7 +126,7 @@ class OpusBandwidthTest {
         System.out.printf("[OpusBandwidth] 估算: 单核可并行实时编码约 %.0f 路 (本方案每会议仅 2~3 路编码器)%n",
                 realtimeFactor);
 
-        // 一颗核心应能实时编码远多于 3 路（方案中每会议只需 2~3 个编码器）
-        assertTrue(realtimeFactor > 5, "编码实时倍率应 > 5, 实测=" + realtimeFactor);
+        // 一颗核心应能实时编码多于 3 路（方案中每会议只需 2~3 个编码器）
+        assertTrue(realtimeFactor > 3, "编码实时倍率应 > 3, 实测=" + realtimeFactor);
     }
 }

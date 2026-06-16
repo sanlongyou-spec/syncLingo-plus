@@ -39,6 +39,14 @@ public interface UserMapper {
     @Update("ALTER TABLE si_user ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'")
     void addStatusColumnIfNotExists();
 
+    /** P5:为存量库补 token_version 列(列已存在时 MySQL 抛 Duplicate column,由调用方忽略)。 */
+    @Update("ALTER TABLE si_user ADD COLUMN token_version INT NOT NULL DEFAULT 0")
+    void addTokenVersionColumnIfNotExists();
+
+    /** P5:令牌版本自增,使该用户既有令牌即时失效(改密/撤销)。 */
+    @Update("UPDATE si_user SET token_version = token_version + 1, update_time = NOW() WHERE id = #{id}")
+    int incrementTokenVersion(@Param("id") Long id);
+
     // ── P1 用户管理 ──────────────────────────────────────────────
     @Select("SELECT * FROM si_user ORDER BY id ASC")
     java.util.List<SiUser> findAll();

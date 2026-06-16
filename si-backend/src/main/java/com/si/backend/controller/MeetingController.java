@@ -58,11 +58,31 @@ public class MeetingController {
     private final MeetingInsightService meetingInsightService;
     private final MeetingNotificationFacade meetingNotificationFacade;
     private final PreMeetingService preMeetingService;
+    private final com.si.backend.service.MeetingMemberService meetingMemberService;
+
+    // ── P3 会议成员授权(owner/ADMIN 管理;owner 只能授 VIEW,OPERATE 须 ADMIN)──
+    @GetMapping("/{meetingId}/members")
+    public Result<List<com.si.backend.vo.MeetingMemberVo>> listMembers(@PathVariable Long meetingId) {
+        return Result.ok(meetingMemberService.list(AuthContext.requireActor(), meetingId));
+    }
+
+    @PostMapping("/{meetingId}/members")
+    public Result<com.si.backend.vo.MeetingMemberVo> assignMember(
+            @PathVariable Long meetingId, @RequestBody Map<String, Object> body) {
+        Long targetUserId = body.get("userId") == null ? null : Long.valueOf(String.valueOf(body.get("userId")));
+        String level = body.get("accessLevel") == null ? null : String.valueOf(body.get("accessLevel"));
+        return Result.ok(meetingMemberService.assign(AuthContext.requireActor(), meetingId, targetUserId, level));
+    }
+
+    @DeleteMapping("/{meetingId}/members/{userId}")
+    public Result<Void> revokeMember(@PathVariable Long meetingId, @PathVariable Long userId) {
+        meetingMemberService.revoke(AuthContext.requireActor(), meetingId, userId);
+        return Result.ok();
+    }
 
     @PostMapping
     public Result<MeetingVo> create(@Valid @RequestBody CreateMeetingRequest request) {
         AuthenticatedActor actor = AuthContext.requireActor();
-        AuthContext.requireSelf(actor, request.getUserId());
         log.info("[MeetingController] create, userId={}, title={}", actor.userId(), request.getTitle());
         return Result.ok(meetingService.createMeeting(
                 actor, request.getTitle(),
@@ -70,9 +90,8 @@ public class MeetingController {
     }
 
     @GetMapping
-    public Result<List<MeetingVo>> list(@RequestParam Long userId) {
+    public Result<List<MeetingVo>> list() {
         AuthenticatedActor actor = AuthContext.requireActor();
-        AuthContext.requireSelf(actor, userId);
         return Result.ok(meetingService.getMeetings(actor));
     }
 

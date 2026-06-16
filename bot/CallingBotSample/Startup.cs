@@ -4,6 +4,7 @@
 using CallingBotSample.Bots;
 using CallingBotSample.Cache;
 using CallingBotSample.Options;
+using CallingBotSample.Security;
 using CallingBotSample.Services.BotFramework;
 using CallingBotSample.Services.MicrosoftGraph;
 using CallingBotSample.Services.MeetingSummary;
@@ -67,6 +68,7 @@ namespace CallingBotSample
                .UseStaticFiles()
                .UseWebSockets()
                .UseRouting()
+               .UseMiddleware<TeamsBotInboundSignatureMiddleware>()
                .UseAuthorization()
                .UseEndpoints(endpoints => endpoints.MapControllers());
         }

@@ -1,16 +1,19 @@
 package com.si.backend.ws;
 
 import com.si.backend.audio.OpusStreamEncoder;
+import com.si.backend.common.Constants;
+import com.si.backend.service.ShareWsTicketService;
 import io.github.jaredmdobson.concentus.OpusException;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.BinaryWebSocketHandler;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
 
     /** 二进制帧首字节类型标记 */
@@ -54,14 +58,18 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     private final Map<String, AudioSubscriber> connectionMap = new ConcurrentHashMap<>();
     /** sessionId::lang -> Opus 编码器 */
     private final Map<String, OpusStreamEncoder> encoders = new ConcurrentHashMap<>();
+    private final ShareWsTicketService shareWsTicketService;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        String sessionId = queryParam(session.getUri(), "sessionId");
-        String lang = normalizeLang(queryParam(session.getUri(), "lang"));
+        String ticket = UriComponentsBuilder.fromUri(session.getUri()).build()
+                .getQueryParams()
+                .getFirst(Constants.WS_QUERY_PARAM_TICKET);
+        ShareWsTicketService.Entry entry = shareWsTicketService.consume(ticket);
+        String sessionId = entry != null ? entry.sessionId() : null;
+        String lang = entry != null ? normalizeLang(entry.lang()) : null;
         if (sessionId == null || sessionId.isBlank() || lang == null) {
-            log.warn("[ShareAudioWebSocketHandler] missing sessionId/lang, close, connectionId={}, uri={}",
-                    session.getId(), session.getUri());
+            log.warn("[ShareAudioWebSocketHandler] missing/invalid share ticket, close, connectionId={}", session.getId());
             closeQuietly(session);
             return;
         }
@@ -211,7 +219,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         }
     }
 
-    static String normalizeLang(String lang) {
+    public static String normalizeLang(String lang) {
         if (lang == null) {
             return null;
         }
@@ -227,19 +235,6 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         }
         if (lower.startsWith("en")) {
             return "en";
-        }
-        return lower;
-    }
-
-    private static String queryParam(URI uri, String name) {
-        if (uri == null || uri.getQuery() == null) {
-            return null;
-        }
-        for (String pair : uri.getQuery().split("&")) {
-            int eq = pair.indexOf('=');
-            if (eq > 0 && pair.substring(0, eq).equals(name)) {
-                return pair.substring(eq + 1);
-            }
         }
         return null;
     }

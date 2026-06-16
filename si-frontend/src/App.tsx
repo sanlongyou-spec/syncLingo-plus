@@ -1,6 +1,7 @@
 /**
  * 应用根组件，路由配置
  */
+import { useEffect, useState } from 'react'
 import { HashRouter, Navigate, Routes, Route, useLocation } from 'react-router-dom'
 import InterpretationView from './views/InterpretationView'
 import LoginView from './views/LoginView'
@@ -10,18 +11,63 @@ import TerminologyView from './views/TerminologyView'
 import TeamsBotView from './views/TeamsBotView'
 import CostAnalysisView from './views/CostAnalysisView'
 import UserManagementView from './views/UserManagementView'
+import AccountSecurityView from './views/AccountSecurityView'
+import SecurityOperationsView from './views/SecurityOperationsView'
 import { STORAGE_KEYS } from './constants'
+import { refreshAuth } from './api'
+import { clearAccessToken, getAccessToken } from './api/authToken'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
-  const token = localStorage.getItem(STORAGE_KEYS.TOKEN)
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
-  if (!token || !Number.isSafeInteger(userId) || userId <= 0) {
-    localStorage.removeItem(STORAGE_KEYS.TOKEN)
-    localStorage.removeItem(STORAGE_KEYS.USER_ID)
-    localStorage.removeItem(STORAGE_KEYS.ROLE)
+  const [status, setStatus] = useState<'checking' | 'authenticated' | 'anonymous'>(() => {
+    const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
+    if (getAccessToken()) return 'authenticated'
+    return Number.isSafeInteger(userId) && userId > 0 ? 'checking' : 'anonymous'
+  })
+
+  useEffect(() => {
+    if (status !== 'checking') return
+    let cancelled = false
+
+    refreshAuth()
+      .then(res => {
+        if (cancelled) return
+        if (res.code === 200 && res.data?.token) {
+          localStorage.setItem(STORAGE_KEYS.USER_ID, String(res.data.userId))
+          localStorage.removeItem(STORAGE_KEYS.TOKEN)
+          setStatus('authenticated')
+        } else {
+          clearStoredAuth()
+          setStatus('anonymous')
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        clearStoredAuth()
+        setStatus('anonymous')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [status])
+
+  if (status === 'checking') {
+    return <div className="auth-loading">正在恢复登录...</div>
+  }
+
+  if (status !== 'authenticated') {
+    clearStoredAuth()
     return <Navigate to="/login" replace />
   }
+
   return children
+}
+
+function clearStoredAuth() {
+  clearAccessToken()
+  localStorage.removeItem(STORAGE_KEYS.TOKEN)
+  localStorage.removeItem(STORAGE_KEYS.USER_ID)
+  localStorage.removeItem(STORAGE_KEYS.ROLE)
 }
 
 function AuthenticatedWorkspace() {
@@ -55,6 +101,16 @@ function AuthenticatedWorkspace() {
           <UserManagementView />
         </div>
       )}
+      {location.pathname === '/account-security' && (
+        <div className="route-overlay" role="dialog" aria-modal="true">
+          <AccountSecurityView />
+        </div>
+      )}
+      {location.pathname === '/security-operations' && (
+        <div className="route-overlay" role="dialog" aria-modal="true">
+          <SecurityOperationsView />
+        </div>
+      )}
     </>
   )
 }
@@ -64,7 +120,8 @@ const App = () => {
     <HashRouter>
       <Routes>
         <Route path="/login" element={<LoginView />} />
-        <Route path="/share/user/:userId" element={<UserShareView />} />
+        {/* P4 不可枚举的频道分享令牌链接 */}
+        <Route path="/share/token/:token" element={<UserShareView />} />
         <Route path="*" element={<RequireAuth><AuthenticatedWorkspace /></RequireAuth>} />
       </Routes>
     </HashRouter>

@@ -4,7 +4,7 @@
  */
 import type { WsMessage } from '../types'
 import { WS_DEFAULTS } from '../api/constants'
-import { STORAGE_KEYS } from '../constants'
+import { mintWsTicket } from '../api'
 
 type MessageHandler = (msg: WsMessage) => void
 
@@ -26,10 +26,7 @@ export class AsrWebSocket {
     this.reconnectAttempts = 0
     this.destroyed = false
 
-    const token = localStorage.getItem(STORAGE_KEYS.TOKEN)
-    const fullUrl = token
-      ? `${this.url}?token=${encodeURIComponent(token)}`
-      : this.url
+    const fullUrl = await this.buildAuthenticatedUrl()
 
     return new Promise((resolve, reject) => {
       this.socket = new WebSocket(fullUrl)
@@ -59,6 +56,18 @@ export class AsrWebSocket {
         this.attemptReconnect()
       }
     })
+  }
+
+  /**
+   * P5:优先用一次性票据(每次连接/重连重新申请),避免把长效 JWT 放进 query;
+   * 票据获取失败时直接终止连接,不再回退旧版 token。
+   */
+  private async buildAuthenticatedUrl(): Promise<string> {
+    const res = await mintWsTicket()
+    if (res.code === 200 && res.data?.ticket) {
+      return `${this.url}?ticket=${encodeURIComponent(res.data.ticket)}`
+    }
+    throw new Error(res.message || 'WebSocket 票据获取失败')
   }
 
   onMessage(handler: MessageHandler): void {

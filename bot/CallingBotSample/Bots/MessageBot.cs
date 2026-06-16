@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -20,6 +21,12 @@ namespace CallingBotSample.Bots
 {
     public class MessageBot : TeamsActivityHandler
     {
+        private const int MaxHistoryTurns = 6;
+        private const int MaxHistoryChars = 1200;
+
+        private static readonly ConcurrentDictionary<string, Queue<SyncLingoBotChatTurn>> ChatHistory =
+            new ConcurrentDictionary<string, Queue<SyncLingoBotChatTurn>>();
+
         private static readonly HashSet<string> CommandPrefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "help", "hi", "hello", "帮助", "菜单", "说明", "？", "?",
@@ -107,8 +114,66 @@ namespace CallingBotSample.Bots
                 return;
             }
 
-            var response = await syncLingoBotQueryService.QueryAsync(userContext, message, cancellationToken);
+            var historyKey = BuildHistoryKey(turnContext, userContext);
+            var history = SnapshotHistory(historyKey);
+            var response = await syncLingoBotQueryService.QueryAsync(userContext, message, history, cancellationToken);
+            RememberHistory(historyKey, message, response.ReplyText);
             await SendBotResponseAsync(turnContext, response, cancellationToken);
+        }
+
+        private static string BuildHistoryKey(ITurnContext<IMessageActivity> turnContext, TeamsBotUserContext userContext)
+        {
+            return FirstNonBlank(
+                turnContext.Activity.Conversation?.Id,
+                userContext.AadId,
+                userContext.UserPrincipalName,
+                userContext.Mail,
+                "unknown");
+        }
+
+        private static IReadOnlyList<SyncLingoBotChatTurn> SnapshotHistory(string key)
+        {
+            if (!ChatHistory.TryGetValue(key, out var queue))
+                return Array.Empty<SyncLingoBotChatTurn>();
+            lock (queue)
+            {
+                return queue
+                    .Select(t => new SyncLingoBotChatTurn { Role = t.Role, Content = t.Content })
+                    .ToList();
+            }
+        }
+
+        private static void RememberHistory(string key, string userMessage, string? assistantMessage)
+        {
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(userMessage))
+                return;
+            var queue = ChatHistory.GetOrAdd(key, _ => new Queue<SyncLingoBotChatTurn>());
+            lock (queue)
+            {
+                queue.Enqueue(new SyncLingoBotChatTurn
+                {
+                    Role = "user",
+                    Content = TruncateForHistory(userMessage)
+                });
+                if (!string.IsNullOrWhiteSpace(assistantMessage))
+                {
+                    queue.Enqueue(new SyncLingoBotChatTurn
+                    {
+                        Role = "assistant",
+                        Content = TruncateForHistory(NormalizeAnswerText(assistantMessage))
+                    });
+                }
+                while (queue.Count > MaxHistoryTurns)
+                    queue.Dequeue();
+            }
+        }
+
+        private static string TruncateForHistory(string text)
+        {
+            var normalized = Regex.Replace(text ?? string.Empty, "\\s+", " ").Trim();
+            return normalized.Length <= MaxHistoryChars
+                ? normalized
+                : normalized.Substring(0, MaxHistoryChars);
         }
 
         private static async Task SendBotResponseAsync(

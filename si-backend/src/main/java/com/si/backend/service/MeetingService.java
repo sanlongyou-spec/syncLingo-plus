@@ -35,6 +35,7 @@ public class MeetingService {
     private final com.si.backend.mapper.InterpretationSessionMapper sessionMapper;
     private final com.si.backend.mapper.MeetingActionItemMapper actionItemMapper;
     private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @PostConstruct
     public void initTables() {
@@ -94,7 +95,7 @@ public class MeetingService {
     }
 
     public MeetingVo getMeeting(AuthenticatedActor actor, Long meetingId) {
-        Meeting meeting = requireOwner(actor, meetingId);
+        Meeting meeting = requireView(actor, meetingId);
         return toVo(meeting, fileMapper.findByMeetingId(meetingId));
     }
 
@@ -120,7 +121,7 @@ public class MeetingService {
     }
 
     public List<MeetingFileVo> getFiles(AuthenticatedActor actor, Long meetingId) {
-        requireOwner(actor, meetingId);
+        requireView(actor, meetingId);
         return fileMapper.findByMeetingId(meetingId).stream().map(this::toFileVo).toList();
     }
 
@@ -137,7 +138,7 @@ public class MeetingService {
     }
 
     public PersistentPreMeetingFile getFileWithContent(AuthenticatedActor actor, Long meetingId, Long fileId) {
-        requireOwner(actor, meetingId);
+        requireView(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findById(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         requireFileBelongsToMeeting(f, meetingId);
@@ -159,7 +160,7 @@ public class MeetingService {
     }
 
     public PersistentPreMeetingFile getFileForDownload(AuthenticatedActor actor, Long meetingId, Long fileId) {
-        requireOwner(actor, meetingId);
+        requireView(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findByIdForDownload(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         requireFileBelongsToMeeting(f, meetingId);
@@ -168,7 +169,7 @@ public class MeetingService {
 
     /** Full record incl. both extracted text and original bytes — used to re-load a file for re-summary. */
     public PersistentPreMeetingFile getFileFull(AuthenticatedActor actor, Long meetingId, Long fileId) {
-        requireOwner(actor, meetingId);
+        requireView(actor, meetingId);
         PersistentPreMeetingFile f = fileMapper.findByIdFull(fileId);
         if (f == null) throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在");
         requireFileBelongsToMeeting(f, meetingId);
@@ -176,7 +177,7 @@ public class MeetingService {
     }
 
     public String getMeetingNoticeText(AuthenticatedActor actor, Long meetingId) {
-        requireOwner(actor, meetingId);
+        requireView(actor, meetingId);
         List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
         PersistentPreMeetingFile notice = files.stream()
                 .filter(file -> file.getFileName() != null
@@ -202,7 +203,7 @@ public class MeetingService {
 
     @Transactional
     public void deleteMeeting(AuthenticatedActor actor, Long meetingId) {
-        requireOwner(actor, meetingId);
+        resourceOwnershipPolicy.requireOwnedMeeting(actor, meetingId);   // P3:删除整场会议仅 owner(OPERATE 成员不可删)
         log.info("[MeetingService] deleteMeeting start, meetingId={}", meetingId);
 
         // Collect the meeting's sessions BEFORE soft-deleting them, to clean their per-session data.
@@ -232,20 +233,16 @@ public class MeetingService {
                 meetingId, sessions, sessionIds.size());
     }
 
-    private Meeting requireMeeting(Long meetingId) {
-        Meeting m = meetingMapper.findById(meetingId);
-        if (m == null) throw BizException.of(ErrorCode.NOT_FOUND, "会议不存在");
-        return m;
+    /** 写操作:owner 或被授予 OPERATE 的成员(P3)。 */
+    private Meeting requireOwner(AuthenticatedActor actor, Long meetingId) {
+        return resourceOwnershipPolicy.requireMeetingAccess(
+                actor, meetingId, com.si.backend.security.AccessLevel.OPERATE);
     }
 
-    private Meeting requireOwner(AuthenticatedActor actor, Long meetingId) {
-        Meeting m = requireMeeting(meetingId);
-        if (actor == null || actor.userId() == null || !actor.userId().equals(m.getUserId())) {
-            log.warn("[MeetingService] ownership violation, meetingId={}, ownerId={}, actorId={}",
-                    meetingId, m.getUserId(), actor == null ? null : actor.userId());
-            throw BizException.of(ErrorCode.NOT_FOUND, "会议不存在");
-        }
-        return m;
+    /** 读操作:owner 或被授予 VIEW/OPERATE 的成员(P3,使 VIEWER 能看被分配会议)。 */
+    private Meeting requireView(AuthenticatedActor actor, Long meetingId) {
+        return resourceOwnershipPolicy.requireMeetingAccess(
+                actor, meetingId, com.si.backend.security.AccessLevel.VIEW);
     }
 
     private void requireFileBelongsToMeeting(PersistentPreMeetingFile file, Long meetingId) {

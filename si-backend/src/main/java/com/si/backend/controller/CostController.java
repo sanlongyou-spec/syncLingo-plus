@@ -59,8 +59,8 @@ public class CostController {
             scope = com.si.backend.security.authorization.ResourceScope.SELF,
             expectedStatuses = {200, 401, 403})
     @GetMapping("/monthly-summary")
-    public Result<List<Map<String, Object>>> getMonthlySummary(@RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人成本,越权→403
+    public Result<List<Map<String, Object>>> getMonthlySummary() {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[CostController] getMonthlySummary userId={}", userId);
         List<Map<String, Object>> rows = sessionMapper.monthlySummaryByUser(userId);
         CostRatesProperties.Rates r = costRates.getRates();

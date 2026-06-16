@@ -22,7 +22,7 @@ import {
   updateTerminology,
   updateTerminologyEnabled,
 } from '../api'
-import { ROUTES, STORAGE_KEYS } from '../constants'
+import { ROUTES } from '../constants'
 import type { AsrHotword, HotwordSuggestion, InterpretationStatus, SystemUserInfo, Terminology } from '../types'
 import './InterpretationView.css'
 import './TerminologyView.css'
@@ -77,7 +77,6 @@ function groupBy<T>(items: T[], key: (item: T) => string): [string, T[]][] {
 }
 
 export default function TerminologyView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
   const [activeTab, setActiveTab] = useState<Tab>('terminology')
   const [terms, setTerms] = useState<Terminology[]>([])
   const [hotwords, setHotwords] = useState<AsrHotword[]>([])
@@ -132,10 +131,10 @@ export default function TerminologyView() {
     setError('')
     try {
       if (activeTab === 'terminology') {
-        const res = await getTerminologies(userId, keyword, enabledParam)
+        const res = await getTerminologies(keyword, enabledParam)
         setTerms(res.data || [])
       } else if (activeTab === 'hotwords') {
-        const res = await getAsrHotwords(userId, keyword, enabledParam, languageFilter, categoryFilter)
+        const res = await getAsrHotwords(keyword, enabledParam, languageFilter, categoryFilter)
         setHotwords(res.data || [])
       } else {
         const res = await getSystemUsers(keyword)
@@ -174,7 +173,7 @@ export default function TerminologyView() {
     setExtractSelected(new Set())
     setExtractLoading(true)
     try {
-      const res = await getUserInterpretationSessions(userId)
+      const res = await getUserInterpretationSessions()
       setExtractSessions((res.data || []).filter(s => s.status === 'STOPPED').slice(0, 20))
     } catch {
       setExtractSessions([])
@@ -188,7 +187,7 @@ export default function TerminologyView() {
     setExtractLoading(true)
     setError('')
     try {
-      const res = await previewHotwordsFromSession(extractSessionId, userId)
+      const res = await previewHotwordsFromSession(extractSessionId)
       const suggestions = res.data || []
       setExtractSuggestions(suggestions)
       setExtractSelected(new Set(
@@ -219,7 +218,7 @@ export default function TerminologyView() {
     if (selected.length === 0) { setExtractModal(false); return }
     setExtractLoading(true)
     try {
-      await confirmHotwordsFromSession(userId, selected)
+      await confirmHotwordsFromSession(selected)
       setExtractModal(false)
       setActiveTab('hotwords')
       await loadItems()
@@ -239,9 +238,9 @@ export default function TerminologyView() {
         throw new Error('至少填写中文，以及印尼语或英语中的一种')
       }
       if (editingTermId) {
-        await updateTerminology(userId, editingTermId, termForm)
+        await updateTerminology(editingTermId, termForm)
       } else {
-        await createTerminology(userId, termForm)
+        await createTerminology(termForm)
       }
       setEditingTermId(null)
       setTermForm(EMPTY_TERM_FORM)
@@ -260,9 +259,9 @@ export default function TerminologyView() {
     try {
       if (!hotwordForm.phrase) throw new Error('请填写热词')
       if (editingHotwordId) {
-        await updateAsrHotword(userId, editingHotwordId, hotwordForm)
+        await updateAsrHotword(editingHotwordId, hotwordForm)
       } else {
-        await createAsrHotword(userId, hotwordForm)
+        await createAsrHotword(hotwordForm)
       }
       setEditingHotwordId(null)
       setHotwordForm(EMPTY_HOTWORD_FORM)
@@ -327,7 +326,7 @@ export default function TerminologyView() {
     setTermImportMessage('')
     setError('')
     try {
-      const res = await importTerminology(userId, file)
+      const res = await importTerminology(file)
       const data = res.data
       setTermImportMessage(
         data ? `已导入 ${data.createdCount} 条，跳过重复 ${data.skippedCount} 条` : '导入完成'
@@ -343,7 +342,7 @@ export default function TerminologyView() {
   const submitBulkHotwords = async () => {
     const rows = bulkHotwords.split(/\r?\n/).map(v => v.trim()).filter(Boolean)
     if (rows.length === 0) return
-    await createAsrHotwordsBatch(userId, rows.map(phrase => ({
+    await createAsrHotwordsBatch(rows.map(phrase => ({
       phrase,
       language: hotwordForm.language,
       category: hotwordForm.category,
@@ -371,13 +370,13 @@ export default function TerminologyView() {
 
   const removeTerm = async (item: Terminology) => {
     if (!item.id || !window.confirm('删除这个术语？')) return
-    await deleteTerminology(userId, item.id)
+    await deleteTerminology(item.id)
     await loadItems()
   }
 
   const removeHotword = async (item: AsrHotword) => {
     if (!item.id || !window.confirm('删除这个热词？')) return
-    await deleteAsrHotword(userId, item.id)
+    await deleteAsrHotword(item.id)
     await loadItems()
   }
 
@@ -389,19 +388,19 @@ export default function TerminologyView() {
 
   const toggleTermEnabled = async (item: Terminology) => {
     if (!item.id) return
-    await updateTerminologyEnabled(userId, item.id, item.enabled === false)
+    await updateTerminologyEnabled(item.id, item.enabled === false)
     await loadItems()
   }
 
   const toggleHotwordEnabled = async (item: AsrHotword) => {
     if (!item.id) return
-    await updateAsrHotwordEnabled(userId, item.id, item.enabled === false)
+    await updateAsrHotwordEnabled(item.id, item.enabled === false)
     await loadItems()
   }
 
   const addAsHotwords = async (item: Terminology) => {
     if (!item.id) return
-    await createHotwordsFromTerminology(userId, item.id)
+    await createHotwordsFromTerminology(item.id)
     setActiveTab('hotwords')
   }
 

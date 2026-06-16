@@ -20,6 +20,8 @@ export const ROUTES = {
   TEAMS_BOT: '#/teams-bot',
   COST_ANALYSIS: '#/cost-analysis',
   USER_MANAGEMENT: '#/user-management',
+  ACCOUNT_SECURITY: '#/account-security',
+  SECURITY_OPERATIONS: '#/security-operations',
 } as const
 
 export const TEAMS_BOT_STORAGE_KEYS = {
@@ -38,6 +40,7 @@ export const HTTP_STATUS = {
   OK: 200,
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,
+  CAPTCHA_REQUIRED: 428,
   NOT_FOUND: 404,
   SERVER_ERROR: 500,
 } as const

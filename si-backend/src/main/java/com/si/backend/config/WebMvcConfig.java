@@ -17,7 +17,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // P1 角色功能权限执行(默认 REPORT_ONLY,只观察不拦截)
+        // P5 角色功能权限执行(默认 ENFORCE,可通过 app.authz.mode 显式降级)
         registry.addInterceptor(authorizationEnforcementInterceptor).addPathPatterns("/api/**");
     }
 

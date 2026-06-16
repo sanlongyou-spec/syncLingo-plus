@@ -6,7 +6,6 @@ import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.service.SpeakerSummaryService;
 import com.si.backend.service.ResourceOwnershipPolicy;
 import com.si.backend.security.AuthenticatedActor;
-import com.si.backend.util.AuthContext;
 import com.si.backend.vo.SpeakerSummaryRecordVo;
 import com.si.backend.vo.SpeakerSummaryVo;
 import lombok.RequiredArgsConstructor;
@@ -29,7 +28,6 @@ public class SpeakerSummaryFacade {
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     public SpeakerSummaryVo summarize(AuthenticatedActor actor, SpeakerSummaryRequest request) {
-        AuthContext.requireSelf(actor, request.getUserId());
         resourceOwnershipPolicy.requireOwnedSession(actor, request.getSessionId());
         String speakerName = resolveSpeakerName(request.getSpeakerName(), request.getSpeakerId());
         log.info("[SpeakerSummaryFacade] summarize start, sessionId={}, speaker={}, textLen={}",

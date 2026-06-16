@@ -1,7 +1,7 @@
 package com.si.backend.facade;
 
-import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.common.BizException;
 import com.si.backend.dto.StartInterpretationRequest;
 import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.service.InterpretationRecordService;
@@ -13,9 +13,16 @@ import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.UserLanguagePreferenceService;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -42,19 +49,26 @@ class InterpretationFacadeSecurityTest {
     );
 
     @Test
-    void startWithAnotherUserId_isRejectedBeforeSessionCreation() {
+    void start_usesAuthenticatedActorUserIdForSessionCreation() {
         StartInterpretationRequest request = new StartInterpretationRequest();
-        request.setUserId(9L);
         request.setSourceLang("zh-CN");
         request.setTargetLang("id-ID");
+        when(languagePreferenceService.resolveEnabledLanguages(5L, null))
+                .thenReturn(List.of("zh-CN", "id-ID"));
 
-        BizException error = assertThrows(
-                BizException.class,
-                () -> facade.startInterpretation(new AuthenticatedActor(5L), request)
+        facade.startInterpretation(new AuthenticatedActor(5L), request);
+
+        verify(sessionService).startSession(
+                anyString(),
+                eq(5L),
+                eq("zh-CN"),
+                eq("id-ID"),
+                any(),
+                any(),
+                any(),
+                anyList(),
+                any()
         );
-
-        assertEquals(403, error.getCode());
-        verifyNoInteractions(sessionService);
     }
 
     @Test

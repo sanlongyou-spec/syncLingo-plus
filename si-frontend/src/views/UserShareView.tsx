@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
-import { getActiveSessionForUser, getPublicInterpretationResults, getPublicSessionInfo, reportPublicLatency } from '../api'
+import { getPublicInterpretationResults, getPublicSessionInfo, mintShareWsTicket, reportPublicLatency, resolveShareToken } from '../api'
 import { WS_DEFAULTS } from '../api/constants'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import type { InterpretationResultItem, WsMessage } from '../types'
@@ -86,7 +86,7 @@ const upsertTranslation = (
 }
 
 export default function UserShareView() {
-  const { userId = '' } = useParams()
+  const { token = '' } = useParams()
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [items, setItems] = useState<DisplayShareItem[]>([])
   const [currentRecognizing, setCurrentRecognizing] = useState('')
@@ -216,7 +216,7 @@ export default function UserShareView() {
     // startStream: set up WebSocket + decoder only; reuses the AudioContext above.
     // Called on initial start AND on WebSocket reconnect — AudioContext and scheduleRef
     // are NEVER reset here, so queued audio is never discarded on reconnect.
-    const startStream = () => {
+    const startStream = async () => {
       audioGenRef.current++
       const myGen = audioGenRef.current  // capture generation for this decoder session
 
@@ -292,7 +292,10 @@ export default function UserShareView() {
     decoder.configure({ codec: 'opus', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 1 })
     decoderRef.current = decoder
 
-    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share-audio?sessionId=${encodeURIComponent(sessionId)}&lang=${canonical}`
+    const ticketRes = await mintShareWsTicket(token, canonical)
+    const ticket = ticketRes.data?.ticket
+    if (!ticket) return
+    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share-audio?ticket=${encodeURIComponent(ticket)}`
     const ws = new WebSocket(wsUrl)
     ws.binaryType = 'arraybuffer'
     audioWsRef.current = ws
@@ -343,12 +346,12 @@ export default function UserShareView() {
           || audioCtxRef.current !== ctx) return
         if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
         try { decoderRef.current?.close() } catch { /* already closed */ }
-        startStream()
+        void startStream()
       }, 2000)
     }
   } // end startStream
 
-  startStream()
+  void startStream()
 }
 
   useEffect(() => {
@@ -426,14 +429,14 @@ export default function UserShareView() {
     }
   }
 
-  const connectWs = useCallback((sessionId: string) => {
+  const connectWs = useCallback(async (sessionId: string) => {
     wsStoppedRef.current = false
-    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share`
+    const ticketRes = await mintShareWsTicket(token)
+    const ticket = ticketRes.data?.ticket
+    if (!ticket || wsStoppedRef.current || activeSessionIdRef.current !== sessionId) return
+    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share?ticket=${encodeURIComponent(ticket)}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type: 'start', sessionId }))
-    }
     ws.onmessage = event => {
       try {
         handleWsMessage(JSON.parse(event.data) as WsMessage)
@@ -443,10 +446,10 @@ export default function UserShareView() {
     }
     ws.onclose = () => {
       if (!wsStoppedRef.current && activeSessionIdRef.current === sessionId) {
-        window.setTimeout(() => connectWs(sessionId), 2000)
+        window.setTimeout(() => { void connectWs(sessionId) }, 2000)
       }
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const disconnectWs = useCallback(() => {
     wsStoppedRef.current = true
@@ -456,13 +459,13 @@ export default function UserShareView() {
 
   // Poll for active session
   useEffect(() => {
-    if (!userId) return
+    if (!token) return
     let pollStopped = false
     let resultTimer: ReturnType<typeof setInterval> | null = null
 
     const poll = async () => {
       try {
-        const res = await getActiveSessionForUser(Number(userId))
+        const res = await resolveShareToken(token)
         if (pollStopped) return
         const newSessionId = res.data || null
         const prevSessionId = activeSessionIdRef.current
@@ -482,7 +485,7 @@ export default function UserShareView() {
           setIsWaiting(!newSessionId)
 
           if (newSessionId) {
-            connectWs(newSessionId)
+            void connectWs(newSessionId)
             getPublicSessionInfo(newSessionId)
               .then(infoRes => {
                 if (!pollStopped && activeSessionIdRef.current === newSessionId) {
@@ -537,7 +540,7 @@ export default function UserShareView() {
       disconnectWs()
       stopAudio()
     }
-  }, [userId, connectWs, disconnectWs, clearSessionState, stopAudio])
+  }, [token, connectWs, disconnectWs, clearSessionState, stopAudio])
 
   const notice = noticeLang ? MUTE_NOTICE[noticeLang] : null
 

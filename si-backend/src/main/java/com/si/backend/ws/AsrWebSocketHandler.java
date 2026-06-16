@@ -39,6 +39,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final ShareWebSocketHandler shareWebSocketHandler;
     private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
+    private final UserWebSocketRegistry userWebSocketRegistry;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
@@ -67,6 +68,10 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         log.info("[AsrWebSocketHandler] connection established, sessionId={}", session.getId());
         sessions.put(session.getId(), session);
         outboundSenderMap.put(session.getId(), new OutboundMessageSender(session));
+        AuthenticatedActor actor = resolveActor(session);
+        if (actor != null) {
+            userWebSocketRegistry.register(actor.userId(), session);
+        }
     }
 
     @Override
@@ -247,6 +252,10 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("[AsrWebSocketHandler] connection closed, sessionId={}, status={}", session.getId(), status);
+        AuthenticatedActor actor = resolveActor(session);
+        if (actor != null) {
+            userWebSocketRegistry.unregister(actor.userId(), session);
+        }
         sessions.remove(session.getId());
         OutboundMessageSender sender = outboundSenderMap.remove(session.getId());
         if (sender != null) {

@@ -485,6 +485,15 @@ public class LlmIntegration {
         return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens);
     }
 
+    public String complete(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxOutputTokens,
+            Duration requestTimeout) throws IOException {
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, requestTimeout);
+    }
+
     private String createTextResponse(
             String model,
             String systemPrompt,

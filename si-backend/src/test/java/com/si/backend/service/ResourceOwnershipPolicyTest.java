@@ -34,16 +34,76 @@ class ResourceOwnershipPolicyTest {
     private final SpeakerSummaryRecordMapper speakerSummaryMapper = mock(SpeakerSummaryRecordMapper.class);
     private final MeetingActionItemMapper actionItemMapper = mock(MeetingActionItemMapper.class);
     private final SessionAudioRecordMapper audioRecordMapper = mock(SessionAudioRecordMapper.class);
+    private final com.si.backend.mapper.MeetingMemberMapper meetingMemberMapper =
+            mock(com.si.backend.mapper.MeetingMemberMapper.class);
+    private final com.si.backend.mapper.SupportAccessGrantMapper supportAccessGrantMapper =
+            mock(com.si.backend.mapper.SupportAccessGrantMapper.class);
     private final ResourceOwnershipPolicy policy = new ResourceOwnershipPolicy(
             sessionService,
             meetingMapper,
             fileMapper,
             speakerSummaryMapper,
             actionItemMapper,
-            audioRecordMapper
+            audioRecordMapper,
+            meetingMemberMapper,
+            supportAccessGrantMapper
     );
 
     private static final AuthenticatedActor ACTOR = new AuthenticatedActor(5L);
+
+    private com.si.backend.entity.Meeting meeting(long id, long ownerId) {
+        com.si.backend.entity.Meeting m = new com.si.backend.entity.Meeting();
+        m.setId(id);
+        m.setUserId(ownerId);
+        return m;
+    }
+
+    private com.si.backend.entity.MeetingMember member(long meetingId, long userId, String level) {
+        com.si.backend.entity.MeetingMember mm = new com.si.backend.entity.MeetingMember();
+        mm.setMeetingId(meetingId);
+        mm.setUserId(userId);
+        mm.setAccessLevel(level);
+        return mm;
+    }
+
+    @Test
+    void meetingAccess_ownerAllowed() {
+        when(meetingMapper.findById(7L)).thenReturn(meeting(7L, 5L));
+        org.junit.jupiter.api.Assertions.assertEquals(7L,
+                policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.OPERATE).getId());
+    }
+
+    @Test
+    void meetingAccess_assignedViewAllowsView_butNotOperate() {
+        when(meetingMapper.findById(7L)).thenReturn(meeting(7L, 9L)); // 非 owner
+        when(meetingMemberMapper.findMember(7L, 5L)).thenReturn(member(7L, 5L, "VIEW"));
+        // VIEW 满足 VIEW
+        org.junit.jupiter.api.Assertions.assertEquals(7L,
+                policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.VIEW).getId());
+        // VIEW 不满足 OPERATE → 404
+        BizException e = assertThrows(BizException.class,
+                () -> policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.OPERATE));
+        assertEquals(404, e.getCode());
+    }
+
+    @Test
+    void meetingAccess_assignedOperateSatisfiesViewAndOperate() {
+        when(meetingMapper.findById(7L)).thenReturn(meeting(7L, 9L));
+        when(meetingMemberMapper.findMember(7L, 5L)).thenReturn(member(7L, 5L, "OPERATE"));
+        org.junit.jupiter.api.Assertions.assertEquals(7L,
+                policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.VIEW).getId());
+        org.junit.jupiter.api.Assertions.assertEquals(7L,
+                policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.OPERATE).getId());
+    }
+
+    @Test
+    void meetingAccess_nonMemberDenied404() {
+        when(meetingMapper.findById(7L)).thenReturn(meeting(7L, 9L));
+        when(meetingMemberMapper.findMember(7L, 5L)).thenReturn(null);
+        BizException e = assertThrows(BizException.class,
+                () -> policy.requireMeetingAccess(ACTOR, 7L, com.si.backend.security.AccessLevel.VIEW));
+        assertEquals(404, e.getCode());
+    }
 
     @Test
     void ownedSession_returnsAuthorizedResource() {

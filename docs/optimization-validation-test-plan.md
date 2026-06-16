@@ -1348,3 +1348,78 @@ git diff --check
 - 已执行：完成接口、认证、前端、WebSocket、Teams Bot、数据库结构和现有测试覆盖盘点；本次仅修改规划文档。
 - 遗留问题：需先确认现有账号角色回填清单和 operator 对被分配会议的修改范围。
 - 需回归项：全部权限矩阵、正式会议同传、分享页持续收听、Teams Bot 主动消息、历史数据读取与导出。
+
+## Weekly Validation Record: 2026-W25 AI Q&A Optimization Final Implementation
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W25 AI Q&A Optimization Final Implementation`.
+- Detailed plan: `docs/ai-qa-optimization-final-plan-2026-W25.md`.
+
+### Validation Goals
+
+- Prove existing server data is not deleted or overwritten by the optimization.
+- Prove old/default and new embedding profiles can coexist.
+- Prove Q&A quality changes are measured against a baseline.
+- Prove grounded source output, multi-turn context, and streaming completion paths work.
+
+### Log, API, and Database Validation First
+
+```powershell
+cd D:\data\syncLingo-++\si-backend
+mvn.cmd test
+
+cd D:\data\syncLingo-++
+git diff --check
+```
+
+Database checks before and after any server-side migration or profile rebuild:
+
+```sql
+SELECT COUNT(*) FROM interpretation_embedding;
+SELECT embedding_profile, embedding_model, embedding_dim, index_status, COUNT(*)
+FROM interpretation_embedding
+GROUP BY embedding_profile, embedding_model, embedding_dim, index_status;
+```
+
+Pass criteria:
+
+- Row count must not decrease during optimization except for explicit business deletion tests.
+- New profile rows can be added without deleting default/legacy rows.
+- Retrieval logs include candidate count, profile, hybrid status, and rerank status.
+- No logs include full sensitive transcript text.
+
+### Automated Behavior Validation
+
+- Profile normalization and content hash tests pass.
+- Profile-aware vector search reads the requested profile and default/legacy fallback.
+- Current profile writes metadata on new embeddings.
+- Teams Bot bounded history and grounded source context tests pass.
+- Q&A evaluation scoring tests pass for pass/fail and mismatched-answer-count paths.
+- Rebuild logic creates missing profile rows without overwriting older profile rows.
+- RAG helper failures fail open.
+- Streaming Q&A emits answer chunks and a final source block.
+
+### Manual Validation After Automation
+
+- Copy `docs/examples/qa-evaluation-run-request.example.json`, replace the identity and expected keywords with real server data, then call `POST /api/admin/qa-evaluation/run` with `X-Admin-Secret`.
+- Preferred local command: `powershell -ExecutionPolicy Bypass -File scripts\run-qa-evaluation.ps1 -BaseUrl http://localhost:8080 -AdminSecret $env:ADMIN_API_SECRET -RequestFile docs\examples\qa-evaluation-run-request.example.json`.
+- Ask real cross-meeting questions against historical server data.
+- Ask follow-up questions with pronouns and omitted subjects.
+- Confirm source meeting, speaker, time, and file/chunk references are correct.
+- Confirm old data remains searchable after enabling the optimized profile.
+- Confirm perceived first-token latency and total response time are acceptable.
+
+### Result Record
+
+- Pass / Fail: Automated backend and Bot build checks passed; production data validation remains manual.
+- Automated tests executed:
+  - `powershell -ExecutionPolicy Bypass -File scripts\run-qa-evaluation.ps1 -AdminSecret dummy -DryRun` passed.
+  - `mvn -q "-Dtest=QaEvaluationFacadeTest,QaEvaluationServiceTest" test` passed.
+  - `mvn -q -DskipTests compile` passed.
+  - `mvn -q "-Dtest=HybridRetrievalTest,AgenticDecisionParseTest,QaEvaluationFacadeTest,QaEvaluationServiceTest,TeamsBotQueryHistoryTest" test` passed.
+  - `mvn -q "-Dtest=QaEvaluationFacadeTest,QaEvaluationServiceTest,TeamsBotQueryHistoryTest,EmbeddingProfileMetadataTest,VectorSearchProfileTest" test` passed.
+  - `mvn -q test` passed.
+  - `dotnet build CallingBotSample.csproj` passed with existing nullable/deprecation warnings and 0 errors.
+  - `git diff --check` passed with line-ending warnings only.
+- Residual issues: Production migration requires backup and rehearsal before enabling on the server; final retrieval tuning needs real historical data questions and baseline/post-optimization comparison reports.

@@ -30,11 +30,22 @@ class MeetingServiceSecurityTest {
     private final InterpretationSessionMapper sessionMapper = mock(InterpretationSessionMapper.class);
     private final MeetingActionItemMapper actionItemMapper = mock(MeetingActionItemMapper.class);
     private final SpeakerSummaryRecordMapper speakerSummaryMapper = mock(SpeakerSummaryRecordMapper.class);
+    private final InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+    private final com.si.backend.mapper.SessionAudioRecordMapper audioRecordMapper =
+            mock(com.si.backend.mapper.SessionAudioRecordMapper.class);
+    private final com.si.backend.mapper.MeetingMemberMapper meetingMemberMapper =
+            mock(com.si.backend.mapper.MeetingMemberMapper.class);
+    private final com.si.backend.mapper.SupportAccessGrantMapper supportAccessGrantMapper =
+            mock(com.si.backend.mapper.SupportAccessGrantMapper.class);
 
     private MeetingService service;
 
     @BeforeEach
     void setUp() {
+        // 真实归属策略(注入 mock mapper),使 owner/成员判定真实运行
+        ResourceOwnershipPolicy policy = new ResourceOwnershipPolicy(
+                sessionService, meetingMapper, fileMapper, speakerSummaryMapper,
+                actionItemMapper, audioRecordMapper, meetingMemberMapper, supportAccessGrantMapper);
         service = new MeetingService(
                 meetingMapper,
                 fileMapper,
@@ -42,7 +53,8 @@ class MeetingServiceSecurityTest {
                 embeddingService,
                 sessionMapper,
                 actionItemMapper,
-                speakerSummaryMapper
+                speakerSummaryMapper,
+                policy
         );
     }
 

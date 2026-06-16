@@ -34,11 +34,10 @@ public class AudioRecordController {
 
     @GetMapping
     public Result<Map<String, Object>> list(
-            @RequestParam Long userId,
             @RequestParam(required = false, defaultValue = "") String keyword,
             @RequestParam(required = false, defaultValue = "1") int page,
             @RequestParam(required = false, defaultValue = "20") int size) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
+        Long userId = AuthContext.requireActor().userId();
         List<SessionAudioRecord> items = audioRecordService.search(userId, keyword, page, size);
         long total = audioRecordService.count(userId, keyword);
         return Result.ok(Map.of("items", items, "total", total));
@@ -47,27 +46,22 @@ public class AudioRecordController {
     @PutMapping("/{id}/name")
     public Result<Void> rename(
             @PathVariable Long id,
-            @RequestParam Long userId,
             @RequestParam String name) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
+        Long userId = AuthContext.requireActor().userId();
         boolean ok = audioRecordService.rename(userId, id, name);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
 
     @DeleteMapping("/{id}")
-    public Result<Void> delete(
-            @PathVariable Long id,
-            @RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音,越权→403
+    public Result<Void> delete(@PathVariable Long id) {
+        Long userId = AuthContext.requireActor().userId();
         boolean ok = audioRecordService.delete(userId, id);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
 
     @GetMapping("/{id}/download")
-    public ResponseEntity<Resource> download(
-            @PathVariable Long id,
-            @RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人录音下载,越权→403
+    public ResponseEntity<Resource> download(@PathVariable Long id) {
+        Long userId = AuthContext.requireActor().userId();
         File file = audioRecordService.getFile(userId, id);
         if (file == null) {
             return ResponseEntity.notFound().build();

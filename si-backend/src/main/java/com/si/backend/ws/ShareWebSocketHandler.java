@@ -3,6 +3,7 @@ package com.si.backend.ws;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.si.backend.common.Constants;
 import com.si.backend.dto.WsMessage;
+import com.si.backend.service.ShareWsTicketService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -10,6 +11,7 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
 import java.util.Map;
@@ -22,8 +24,23 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ShareWebSocketHandler extends TextWebSocketHandler {
 
     private final ObjectMapper objectMapper;
+    private final ShareWsTicketService shareWsTicketService;
     private final Map<String, Set<WebSocketSession>> sessionSubscribers = new ConcurrentHashMap<>();
     private final Map<String, String> connectionSessionMap = new ConcurrentHashMap<>();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) {
+        String ticket = UriComponentsBuilder.fromUri(session.getUri()).build()
+                .getQueryParams()
+                .getFirst(Constants.WS_QUERY_PARAM_TICKET);
+        ShareWsTicketService.Entry entry = shareWsTicketService.consume(ticket);
+        if (entry == null || entry.sessionId() == null || entry.sessionId().isBlank()) {
+            log.warn("[ShareWebSocketHandler] missing/invalid share ticket, connectionId={}", session.getId());
+            closeQuietly(session);
+            return;
+        }
+        subscribe(session, entry.sessionId());
+    }
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
@@ -34,18 +51,8 @@ public class ShareWebSocketHandler extends TextWebSocketHandler {
             if (!Constants.WS_MSG_TYPE_START.equals(msg.getType())) {
                 return;
             }
-            String sessionId = msg.getSessionId();
-            if (sessionId == null || sessionId.isBlank()) {
-                return;
-            }
-            connectionSessionMap.put(session.getId(), sessionId);
-            sessionSubscribers.computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet()).add(session);
-
-            WsMessage reply = new WsMessage();
-            reply.setType(Constants.WS_MSG_TYPE_STARTED);
-            reply.setSessionId(sessionId);
-            sendMessage(session, reply);
-            log.info("[ShareWebSocketHandler] subscribed, sessionId={}, connectionId={}", sessionId, session.getId());
+            log.debug("[ShareWebSocketHandler] ignoring client message after ticket handshake, connectionId={}",
+                    session.getId());
         } catch (Exception e) {
             log.warn("[ShareWebSocketHandler] subscribe failed, connectionId={}", session.getId(), e);
         }
@@ -99,6 +106,25 @@ public class ShareWebSocketHandler extends TextWebSocketHandler {
                 log.warn("[ShareWebSocketHandler] send failed, connectionId={}, type={}",
                         session.getId(), msg.getType(), e);
             }
+        }
+    }
+
+    private void subscribe(WebSocketSession session, String sessionId) {
+        connectionSessionMap.put(session.getId(), sessionId);
+        sessionSubscribers.computeIfAbsent(sessionId, key -> ConcurrentHashMap.newKeySet()).add(session);
+
+        WsMessage reply = new WsMessage();
+        reply.setType(Constants.WS_MSG_TYPE_STARTED);
+        reply.setSessionId(sessionId);
+        sendMessage(session, reply);
+        log.info("[ShareWebSocketHandler] subscribed, sessionId={}, connectionId={}", sessionId, session.getId());
+    }
+
+    private void closeQuietly(WebSocketSession session) {
+        try {
+            session.close(CloseStatus.POLICY_VIOLATION);
+        } catch (IOException ignored) {
+            // ignore
         }
     }
 }

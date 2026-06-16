@@ -25,5 +25,11 @@ public class InterpretationEmbedding {
     /** Start offset of this chunk within the original source text (for Small-to-Big window expansion). */
     private Integer chunkStart;
     private byte[] embedding;
+    private String embeddingModel;
+    private Integer embeddingDim;
+    private String embeddingProfile;
+    private String contentHash;
+    private String indexStatus;
+    private LocalDateTime lastEmbeddedAt;
     private LocalDateTime createTime;
 }

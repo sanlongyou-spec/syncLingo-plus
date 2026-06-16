@@ -25,8 +25,20 @@
           <if test="filterSince != null and filterSince != ''">
               AND COALESCE(s.start_time, m.scheduled_time, m.create_time) &gt;= #{filterSince}
           </if>
-        ORDER BY e.id DESC
-        LIMIT 2000
+          AND COALESCE(e.index_status, 'READY') = 'READY'
+          AND (
+              e.embedding_profile = #{embeddingProfile}
+              OR e.embedding_profile = 'default'
+              OR e.embedding_profile IS NULL
+          )
+        ORDER BY
+          CASE
+            WHEN e.embedding_profile = #{embeddingProfile} THEN 0
+            WHEN e.embedding_profile = 'default' THEN 1
+            ELSE 2
+          END,
+          e.id DESC
+        LIMIT #{candidateLimit}
     </select>
 
     <select id="findResultsWithoutEmbedding" resultType="com.si.backend.dto.EmbedCandidate">
@@ -36,7 +48,8 @@
                r.translated_text AS translatedText,
                r.speaker_name    AS speakerName
         FROM interpretation_result r
-                 LEFT JOIN interpretation_embedding e ON r.id = e.result_id
+                 LEFT JOIN interpretation_embedding e
+                           ON r.id = e.result_id AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND r.source_text IS NOT NULL
           AND r.source_text != ''
@@ -53,6 +66,7 @@
         FROM interpretation_session s
                  LEFT JOIN interpretation_embedding e
                            ON e.source_type = 'meeting_summary' AND e.ref_id = s.id
+                              AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND s.meeting_summary IS NOT NULL
           AND s.meeting_summary != ''
@@ -70,6 +84,7 @@
         FROM speaker_summary ss
                  LEFT JOIN interpretation_embedding e
                            ON e.source_type = 'speaker_summary' AND e.ref_id = ss.id
+                              AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND ss.summary IS NOT NULL
           AND ss.summary != ''
@@ -85,6 +100,7 @@
         FROM pre_meeting_file_persistent f
                  LEFT JOIN interpretation_embedding e
                            ON e.source_type = 'file_summary' AND e.ref_id = f.id
+                              AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND f.summary IS NOT NULL
           AND f.summary != ''
@@ -100,6 +116,7 @@
         FROM pre_meeting_file_persistent f
                  LEFT JOIN interpretation_embedding e
                            ON e.source_type = 'file_content' AND e.ref_id = f.id
+                              AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND f.file_content IS NOT NULL
           AND f.file_content != ''
@@ -116,6 +133,7 @@
         FROM meeting_action_item ai
                  LEFT JOIN interpretation_embedding e
                            ON e.source_type = 'action_item' AND e.ref_id = ai.id
+                              AND e.embedding_profile = #{embeddingProfile}
         WHERE e.id IS NULL
           AND ai.content IS NOT NULL
           AND ai.content != ''

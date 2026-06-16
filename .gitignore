@@ -82,5 +82,7 @@ si-frontend/dist/
 # Teams Bot 构建产物与密钥(服务器自有 appsettings, 勿入库)
 bot/CallingBotSample/bin/
 bot/CallingBotSample/obj/
+bot/CallingBotSample.Tests/bin/
+bot/CallingBotSample.Tests/obj/
 bot/CallingBotSample/appsettings.json
 bot/CallingBotSample/appsettings.*.json

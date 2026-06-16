@@ -7,10 +7,12 @@ import com.si.backend.entity.SiUser;
 import com.si.backend.mapper.UserMapper;
 import com.si.backend.security.Role;
 import com.si.backend.vo.UserSummaryVo;
+import com.si.backend.ws.UserWebSocketRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Set;
@@ -27,6 +29,8 @@ public class UserAdminService {
     private static final Set<String> VALID_STATUS = Set.of("ACTIVE", "PENDING", "DISABLED");
 
     private final UserMapper userMapper;
+    private final AuditService auditService;
+    private final UserWebSocketRegistry userWebSocketRegistry;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     public List<UserSummaryVo> list() {
@@ -38,6 +42,7 @@ public class UserAdminService {
         return toVo(requireUser(id));
     }
 
+    @Transactional
     public UserSummaryVo create(CreateUserRequest req) {
         String username = req.getUsername() == null ? "" : req.getUsername().trim();
         if (username.isBlank() || username.length() > 50) {
@@ -58,9 +63,11 @@ public class UserAdminService {
         user.setRole(role.name());
         userMapper.insert(user);
         log.info("[UserAdminService] create user, id={}, username={}, role={}", user.getId(), username, role);
+        auditService.recordCritical("USER_CREATE", "SUCCESS", "USER", String.valueOf(user.getId()), "username=" + username + ", role=" + role);
         return toVo(userMapper.findById(user.getId()));
     }
 
+    @Transactional
     public UserSummaryVo updateRole(Long id, String roleRaw) {
         SiUser target = requireUser(id);
         Role newRole = requireValidRole(roleRaw);
@@ -69,10 +76,14 @@ public class UserAdminService {
             throw BizException.of(ErrorCode.BAD_REQUEST, "不能降级系统中最后一个有效管理员");
         }
         userMapper.updateRole(id, newRole.name());
+        userMapper.incrementTokenVersion(id);
+        userWebSocketRegistry.closeUser(id);
         log.info("[UserAdminService] updateRole, id={}, role={}", id, newRole);
+        auditService.recordCritical("ROLE_CHANGE", "SUCCESS", "USER", String.valueOf(id), "role=" + newRole);
         return toVo(userMapper.findById(id));
     }
 
+    @Transactional
     public UserSummaryVo updateStatus(Long id, String statusRaw) {
         SiUser target = requireUser(id);
         String status = statusRaw == null ? "" : statusRaw.trim().toUpperCase();
@@ -83,17 +94,28 @@ public class UserAdminService {
             throw BizException.of(ErrorCode.BAD_REQUEST, "不能停用系统中最后一个有效管理员");
         }
         userMapper.updateStatus(id, status);
+        // P5:停用即作废其既有令牌(WS/HTTP 立即失效),不止依赖状态判断。
+        if ("DISABLED".equals(status)) {
+            userMapper.incrementTokenVersion(id);
+            userWebSocketRegistry.closeUser(id);
+        }
         log.info("[UserAdminService] updateStatus, id={}, status={}", id, status);
+        auditService.recordCritical("STATUS_CHANGE", "SUCCESS", "USER", String.valueOf(id), "status=" + status);
         return toVo(userMapper.findById(id));
     }
 
+    @Transactional
     public void resetPassword(Long id, String newPassword) {
         requireUser(id);
         if (newPassword == null || newPassword.length() < 6) {
             throw BizException.of(ErrorCode.BAD_REQUEST, "密码至少 6 位");
         }
         userMapper.updatePassword(id, passwordEncoder.encode(newPassword));
+        // P5:改密后令旧令牌即时失效,强制重新登录。
+        userMapper.incrementTokenVersion(id);
+        userWebSocketRegistry.closeUser(id);
         log.info("[UserAdminService] resetPassword, id={}", id);
+        auditService.recordCritical("PASSWORD_RESET", "SUCCESS", "USER", String.valueOf(id), "admin reset password");
     }
 
     private SiUser requireUser(Long id) {

@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
 import com.si.backend.dto.SaveInterpretationResultRequest;
+import com.si.backend.config.OpenAiProperties;
 import com.si.backend.entity.InterpretationEmbedding;
 import com.si.backend.entity.InterpretationResult;
 import com.si.backend.entity.InterpretationSession;
@@ -14,6 +15,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -26,6 +30,7 @@ public class InterpretationResultService {
     private final InterpretationEmbeddingMapper embeddingMapper;
     private final InterpretationSessionMapper sessionMapper;
     private final LlmIntegration llmIntegration;
+    private final OpenAiProperties openAiProperties;
 
     @PostConstruct
     public void initTable() {
@@ -38,9 +43,19 @@ public class InterpretationResultService {
         addColumnIfMissing("source_type",         embeddingMapper::addSourceTypeColumnIfNotExists);
         addColumnIfMissing("source_id",           embeddingMapper::addSourceIdColumnIfNotExists);
         addColumnIfMissing("ref_id",              embeddingMapper::addRefIdColumnIfNotExists);
-        addColumnIfMissing("uk_emb_source index", embeddingMapper::addSourceUniqueIndexIfNotExists);
         addColumnIfMissing("idx_emb_refid index", embeddingMapper::addRefIdIndexIfNotExists);
         addColumnIfMissing("chunk_start",         embeddingMapper::addChunkStartColumnIfNotExists);
+        addColumnIfMissing("embedding_model",     embeddingMapper::addEmbeddingModelColumnIfNotExists);
+        addColumnIfMissing("embedding_dim",       embeddingMapper::addEmbeddingDimColumnIfNotExists);
+        addColumnIfMissing("embedding_profile",   embeddingMapper::addEmbeddingProfileColumnIfNotExists);
+        addColumnIfMissing("content_hash",        embeddingMapper::addContentHashColumnIfNotExists);
+        addColumnIfMissing("index_status",        embeddingMapper::addIndexStatusColumnIfNotExists);
+        addColumnIfMissing("last_embedded_at",    embeddingMapper::addLastEmbeddedAtColumnIfNotExists);
+        addColumnIfMissing("idx_emb_profile index", embeddingMapper::addProfileIndexIfNotExists);
+        runDdlIfPossible("drop legacy uk_emb_source", embeddingMapper::dropLegacySourceUniqueIndexIfExists);
+        runDdlIfPossible("drop legacy uk_emb_result", embeddingMapper::dropLegacyResultUniqueIndexIfExists);
+        addColumnIfMissing("uk_emb_source_profile index", embeddingMapper::addSourceProfileUniqueIndexIfNotExists);
+        addColumnIfMissing("uk_emb_result_profile index", embeddingMapper::addResultProfileUniqueIndexIfNotExists);
         log.info("[InterpretationResultService] initTable end");
     }
 
@@ -51,6 +66,21 @@ public class InterpretationResultService {
             String msg = e.getMessage();
             if (msg != null && (msg.contains("Duplicate column") || msg.contains("Duplicate key name"))) {
                 log.debug("[InterpretationResultService] schema element '{}' already exists", column);
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    private void runDdlIfPossible(String name, Runnable ddl) {
+        try {
+            ddl.run();
+        } catch (org.springframework.dao.DataAccessException e) {
+            String msg = e.getMessage();
+            if (msg != null && (msg.contains("check that column/key exists")
+                    || msg.contains("Can't DROP")
+                    || msg.contains("Duplicate key name"))) {
+                log.debug("[InterpretationResultService] schema ddl '{}' skipped: {}", name, msg);
             } else {
                 throw e;
             }
@@ -92,8 +122,10 @@ public class InterpretationResultService {
      * @return number of embeddings successfully created
      */
     public int rebuildEmbeddings(int batchLimit) {
-        var candidates = embeddingMapper.findResultsWithoutEmbedding(batchLimit);
-        log.info("[InterpretationResultService] rebuildEmbeddings start, candidates={}", candidates.size());
+        String profile = currentEmbeddingProfile(openAiProperties);
+        var candidates = embeddingMapper.findResultsWithoutEmbedding(batchLimit, profile);
+        log.info("[InterpretationResultService] rebuildEmbeddings start, profile={}, candidates={}",
+                profile, candidates.size());
         int count = 0;
         for (var candidate : candidates) {
             try {
@@ -114,7 +146,7 @@ public class InterpretationResultService {
                 emb.setSpeakerName(candidate.getSpeakerName());
                 emb.setChunkText(chunkText);
                 emb.setTranslatedText(candidate.getTranslatedText());
-                emb.setEmbedding(VectorSearchService.toBytes(vec));
+                applyEmbeddingMetadata(emb, vec, chunkText, openAiProperties);
                 embeddingMapper.insert(emb);
                 count++;
             } catch (Exception e) {
@@ -122,7 +154,7 @@ public class InterpretationResultService {
                         candidate.getResultId(), e.getMessage());
             }
         }
-        log.info("[InterpretationResultService] rebuildEmbeddings done, created={}", count);
+        log.info("[InterpretationResultService] rebuildEmbeddings done, profile={}, created={}", profile, count);
         return count;
     }
 
@@ -141,7 +173,8 @@ public class InterpretationResultService {
                     log.debug("[InterpretationResultService] skip embedding noisy transcript, resultId={}", resultId);
                     return;
                 }
-                if (embeddingMapper.countByResultId(resultId) > 0) return;
+                String profile = currentEmbeddingProfile(openAiProperties);
+                if (embeddingMapper.countByResultId(resultId, profile) > 0) return;
 
                 float[] vec = llmIntegration.embed(sourceText);
                 if (vec.length == 0) return;
@@ -158,13 +191,47 @@ public class InterpretationResultService {
                 emb.setSpeakerName(speakerName);
                 emb.setChunkText(sourceText);
                 emb.setTranslatedText(translatedText);
-                emb.setEmbedding(VectorSearchService.toBytes(vec));
+                applyEmbeddingMetadata(emb, vec, sourceText, openAiProperties);
                 embeddingMapper.insert(emb);
-                log.debug("[InterpretationResultService] asyncEmbed ok, resultId={}, dims={}", resultId, vec.length);
+                log.debug("[InterpretationResultService] asyncEmbed ok, resultId={}, profile={}, dims={}",
+                        resultId, profile, vec.length);
             } catch (Exception e) {
                 log.warn("[InterpretationResultService] asyncEmbed failed, resultId={}: {}", resultId, e.getMessage());
             }
         });
+    }
+
+    static String currentEmbeddingProfile(OpenAiProperties properties) {
+        if (properties == null || properties.getEmbeddingProfile() == null
+                || properties.getEmbeddingProfile().isBlank()) {
+            return "default";
+        }
+        return properties.getEmbeddingProfile().trim();
+    }
+
+    static String contentHash(String text) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest((text == null ? "" : text).getBytes(StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                out.append(String.format("%02x", b));
+            }
+            return out.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    static void applyEmbeddingMetadata(InterpretationEmbedding emb, float[] vec, String content,
+                                       OpenAiProperties properties) {
+        float[] safeVec = vec != null ? vec : new float[0];
+        emb.setEmbeddingModel(properties.getEmbeddingModel());
+        emb.setEmbeddingDim(safeVec.length);
+        emb.setEmbeddingProfile(currentEmbeddingProfile(properties));
+        emb.setContentHash(contentHash(content));
+        emb.setIndexStatus("READY");
+        emb.setEmbedding(VectorSearchService.toBytes(safeVec));
     }
 
     private InterpretationResultItemVo toVo(InterpretationResult result) {

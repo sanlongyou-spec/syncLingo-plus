@@ -56,6 +56,12 @@ class AuthorizationEnforcementInterceptorTest {
     }
 
     @Test
+    void authorizationProperties_defaultModeIsEnforce() {
+        AuthorizationProperties props = new AuthorizationProperties();
+        assertEquals(AuthorizationMode.ENFORCE, props.getMode());
+    }
+
+    @Test
     void reportOnly_neverBlocks_evenWhenDenied() throws Exception {
         bindRole("VIEWER"); // VIEWER 无 MEETING_MANAGE
         assertTrue(interceptor(AuthorizationMode.REPORT_ONLY).preHandle(request, response, handler("userMeeting")));

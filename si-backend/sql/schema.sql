@@ -13,8 +13,9 @@ CREATE TABLE IF NOT EXISTS si_user (
     password     VARCHAR(255) NOT NULL,
     nickname     VARCHAR(128)          DEFAULT NULL,
     email        VARCHAR(255)          DEFAULT NULL,
-    role         VARCHAR(32)           DEFAULT 'user',
-    status       VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
+    role          VARCHAR(32)           DEFAULT 'user',
+    status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
+    token_version INT          NOT NULL DEFAULT 0,
     create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_username (username)
@@ -128,6 +129,89 @@ CREATE TABLE IF NOT EXISTS user_language_preference (
     enabled_languages   VARCHAR(128) NOT NULL DEFAULT 'zh-CN,id-ID',
     create_time         DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Table: meeting_member (P3 会议成员授权)
+CREATE TABLE IF NOT EXISTS meeting_member (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    meeting_id   BIGINT NOT NULL,
+    user_id      BIGINT NOT NULL,
+    access_level VARCHAR(16) NOT NULL,
+    assigned_by  BIGINT,
+    create_time  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_meeting_member (meeting_id, user_id),
+    INDEX idx_mm_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Table: share_token (P4 分享能力令牌)
+CREATE TABLE IF NOT EXISTS share_token (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    token_hash    VARCHAR(128) NOT NULL,
+    kind          VARCHAR(16) NOT NULL,
+    session_id    VARCHAR(64),
+    owner_user_id BIGINT,
+    expires_at    DATETIME,
+    revoked_at    DATETIME,
+    create_time   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_share_token_hash (token_hash),
+    INDEX idx_share_owner (owner_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Table: auth_session (P5 Refresh 轮换会话)
+CREATE TABLE IF NOT EXISTS auth_session (
+    id                    BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id               BIGINT NOT NULL,
+    session_id            VARCHAR(64) NOT NULL,
+    family_id             VARCHAR(64) NOT NULL,
+    refresh_token_hash    VARCHAR(128) NOT NULL,
+    rotated_from_hash     VARCHAR(128),
+    status                VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    absolute_expires_at   DATETIME NOT NULL,
+    idle_expires_at       DATETIME NOT NULL,
+    last_seen_at          DATETIME NOT NULL,
+    rotated_at            DATETIME,
+    revoked_at            DATETIME,
+    create_time           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_auth_session_session (session_id),
+    UNIQUE KEY uk_auth_session_refresh (refresh_token_hash),
+    INDEX idx_auth_session_family (family_id),
+    INDEX idx_auth_session_user (user_id),
+    INDEX idx_auth_session_rotated_from (rotated_from_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Table: support_access_grant (P3 管理员临时内容授权)
+CREATE TABLE IF NOT EXISTS support_access_grant (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    grantee_user_id BIGINT NOT NULL,
+    resource_type   VARCHAR(32) NOT NULL,
+    resource_id     VARCHAR(64) NOT NULL,
+    permissions     VARCHAR(255) NOT NULL,
+    reason          VARCHAR(512) NOT NULL,
+    requested_by    BIGINT NOT NULL,
+    approved_by     BIGINT,
+    expires_at      DATETIME NOT NULL,
+    revoked_at      DATETIME,
+    create_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_sag_grantee (grantee_user_id, resource_type, resource_id),
+    INDEX idx_sag_create (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Table: audit_log (P2 安全审计,仅追加)
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    actor_type    VARCHAR(16),
+    actor_id      VARCHAR(64),
+    role          VARCHAR(16),
+    action        VARCHAR(48) NOT NULL,
+    resource_type VARCHAR(32),
+    resource_id   VARCHAR(64),
+    result        VARCHAR(16) NOT NULL,
+    ip            VARCHAR(64),
+    detail        VARCHAR(1024),
+    create_time   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_audit_action (action),
+    INDEX idx_audit_actor (actor_id),
+    INDEX idx_audit_create_time (create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Default admin user (password: admin123, BCrypt hashed)

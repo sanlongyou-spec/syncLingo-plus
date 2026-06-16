@@ -5,6 +5,7 @@ import com.si.backend.dto.CreateUserRequest;
 import com.si.backend.entity.SiUser;
 import com.si.backend.mapper.UserMapper;
 import com.si.backend.vo.UserSummaryVo;
+import com.si.backend.ws.UserWebSocketRegistry;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,7 +25,9 @@ import static org.mockito.Mockito.when;
 class UserAdminServiceTest {
 
     private final UserMapper userMapper = mock(UserMapper.class);
-    private final UserAdminService service = new UserAdminService(userMapper);
+    private final AuditService auditService = mock(AuditService.class);
+    private final UserWebSocketRegistry userWebSocketRegistry = mock(UserWebSocketRegistry.class);
+    private final UserAdminService service = new UserAdminService(userMapper, auditService, userWebSocketRegistry);
 
     private SiUser user(Long id, String role, String status) {
         SiUser u = new SiUser();
@@ -88,6 +91,8 @@ class UserAdminServiceTest {
         when(userMapper.findById(1L)).thenReturn(user(1L, "ADMIN", "ACTIVE"), user(1L, "OPERATOR", "ACTIVE"));
         service.updateRole(1L, "OPERATOR");
         verify(userMapper).updateRole(1L, "OPERATOR");
+        verify(userMapper).incrementTokenVersion(1L);
+        verify(userWebSocketRegistry).closeUser(1L);
     }
 
     @Test
@@ -109,6 +114,14 @@ class UserAdminServiceTest {
         when(userMapper.findById(1L)).thenReturn(user(1L, "VIEWER", "ACTIVE"));
         assertEquals(400, assertThrows(BizException.class, () -> service.resetPassword(1L, "123")).getCode());
         verify(userMapper, never()).updatePassword(anyLong(), anyString());
+    }
+
+    @Test
+    void updateStatus_disablingUser_bumpsTokenAndClosesRealtimeConnections() {
+        when(userMapper.findById(2L)).thenReturn(user(2L, "OPERATOR", "ACTIVE"), user(2L, "OPERATOR", "DISABLED"));
+        service.updateStatus(2L, "DISABLED");
+        verify(userMapper).incrementTokenVersion(2L);
+        verify(userWebSocketRegistry).closeUser(2L);
     }
 
     @Test

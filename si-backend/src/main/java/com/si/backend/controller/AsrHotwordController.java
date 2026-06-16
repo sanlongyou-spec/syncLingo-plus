@@ -29,12 +29,11 @@ public class AsrHotwordController {
     private final AsrHotwordFacade facade;
 
     @GetMapping
-    public Result<List<AsrHotwordVo>> list(@RequestParam Long userId,
-                                         @RequestParam(required = false) String keyword,
+    public Result<List<AsrHotwordVo>> list(@RequestParam(required = false) String keyword,
                                          @RequestParam(required = false) Boolean enabled,
                                          @RequestParam(required = false) String language,
                                          @RequestParam(required = false) String category) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] list start, userId={}, keywordLen={}", userId, keyword != null ? keyword.length() : 0);
         List<AsrHotwordVo> result = facade.list(userId, keyword, enabled, language, category);
         log.info("[AsrHotwordController] list end, userId={}, count={}", userId, result.size());
@@ -42,8 +41,8 @@ public class AsrHotwordController {
     }
 
     @PostMapping
-    public Result<AsrHotwordVo> create(@RequestParam Long userId, @RequestBody SaveAsrHotwordRequest request) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+    public Result<AsrHotwordVo> create(@RequestBody SaveAsrHotwordRequest request) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] create start, userId={}, phraseLen={}", userId, request.getPhrase() != null ? request.getPhrase().length() : 0);
         AsrHotwordVo result = facade.create(userId, request);
         log.info("[AsrHotwordController] create end, userId={}, id={}", userId, result.getId());
@@ -51,8 +50,8 @@ public class AsrHotwordController {
     }
 
     @PostMapping("/batch")
-    public Result<List<AsrHotwordVo>> createBatch(@RequestParam Long userId, @RequestBody List<SaveAsrHotwordRequest> requests) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+    public Result<List<AsrHotwordVo>> createBatch(@RequestBody List<SaveAsrHotwordRequest> requests) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] createBatch start, userId={}, count={}", userId, requests.size());
         List<AsrHotwordVo> result = facade.createBatch(userId, requests);
         log.info("[AsrHotwordController] createBatch end, userId={}, count={}", userId, result.size());
@@ -60,8 +59,8 @@ public class AsrHotwordController {
     }
 
     @PostMapping("/from-terminology/{terminologyId}")
-    public Result<List<AsrHotwordVo>> createFromTerminology(@PathVariable Long terminologyId, @RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+    public Result<List<AsrHotwordVo>> createFromTerminology(@PathVariable Long terminologyId) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] createFromTerminology start, userId={}, terminologyId={}", userId, terminologyId);
         List<AsrHotwordVo> result = facade.createFromTerminology(userId, terminologyId);
         log.info("[AsrHotwordController] createFromTerminology end, userId={}, terminologyId={}, count={}",
@@ -71,9 +70,8 @@ public class AsrHotwordController {
 
     @PostMapping("/from-meeting")
     public Result<List<AsrHotwordVo>> createFromMeeting(
-            @RequestParam Long userId,
             @RequestBody com.si.backend.dto.MeetingHotwordsRequest request) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+        Long userId = AuthContext.requireActor().userId();
         int nameCount = request != null && request.getNames() != null ? request.getNames().size() : 0;
         log.info("[AsrHotwordController] createFromMeeting start, userId={}, names={}", userId, nameCount);
         List<AsrHotwordVo> result = facade.createFromMeeting(
@@ -85,8 +83,8 @@ public class AsrHotwordController {
     }
 
     @PutMapping("/{id}")
-    public Result<Void> update(@PathVariable Long id, @RequestParam Long userId, @RequestBody SaveAsrHotwordRequest request) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> update(@PathVariable Long id, @RequestBody SaveAsrHotwordRequest request) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] update start, id={}, userId={}", id, userId);
         facade.update(id, userId, request);
         log.info("[AsrHotwordController] update end, id={}, userId={}", id, userId);
@@ -94,8 +92,8 @@ public class AsrHotwordController {
     }
 
     @PatchMapping("/{id}/enabled")
-    public Result<Void> updateEnabled(@PathVariable Long id, @RequestParam Long userId, @RequestParam Boolean enabled) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> updateEnabled(@PathVariable Long id, @RequestParam Boolean enabled) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] updateEnabled start, id={}, userId={}, enabled={}", id, userId, enabled);
         facade.updateEnabled(id, userId, enabled);
         log.info("[AsrHotwordController] updateEnabled end, id={}, userId={}", id, userId);
@@ -103,8 +101,8 @@ public class AsrHotwordController {
     }
 
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@PathVariable Long id, @RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> delete(@PathVariable Long id) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] delete start, id={}, userId={}", id, userId);
         facade.delete(id, userId);
         log.info("[AsrHotwordController] delete end, id={}, userId={}", id, userId);
@@ -113,10 +111,9 @@ public class AsrHotwordController {
 
     @GetMapping("/extract-preview/{sessionId}")
     public Result<List<HotwordSuggestion>> extractPreview(
-            @PathVariable String sessionId,
-            @RequestParam Long userId) {
+            @PathVariable String sessionId) {
         com.si.backend.security.AuthenticatedActor actor = AuthContext.requireActor();
-        userId = AuthContext.requireSelf(actor, userId);
+        Long userId = actor.userId();
         log.info("[AsrHotwordController] extractPreview start, sessionId={}, userId={}", sessionId, userId);
         List<HotwordSuggestion> suggestions = facade.previewExtractedHotwords(actor, sessionId, userId);
         log.info("[AsrHotwordController] extractPreview end, sessionId={}, count={}", sessionId, suggestions.size());
@@ -125,9 +122,8 @@ public class AsrHotwordController {
 
     @PostMapping("/extract-confirm")
     public Result<List<AsrHotwordVo>> extractConfirm(
-            @RequestParam Long userId,
             @RequestBody List<HotwordSuggestion> selected) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人热词,越权→403
+        Long userId = AuthContext.requireActor().userId();
         log.info("[AsrHotwordController] extractConfirm start, userId={}, count={}", userId, selected != null ? selected.size() : 0);
         List<AsrHotwordVo> result = facade.confirmExtractedHotwords(userId, selected);
         log.info("[AsrHotwordController] extractConfirm end, userId={}, saved={}", userId, result.size());

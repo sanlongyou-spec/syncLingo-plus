@@ -37,8 +37,8 @@ public class TerminologyController {
     private final TerminologyFacade facade;
 
     @PostMapping
-    public Result<TerminologyVo> createTerminology(@RequestParam Long userId, @RequestBody SaveTerminologyRequest request) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403
+    public Result<TerminologyVo> createTerminology(@RequestBody SaveTerminologyRequest request) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] createTerminology start, userId={}, category={}", userId, request.getCategory());
         TerminologyVo created = facade.create(userId, request);
         log.info("[TerminologyController] createTerminology end, id={}", created.getId());
@@ -48,10 +48,9 @@ public class TerminologyController {
     @GetMapping
     public Result<List<TerminologyVo>> listTerminologies(
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) Boolean enabled,
-            @RequestParam Long userId
+            @RequestParam(required = false) Boolean enabled
     ) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] listTerminologies start, keywordLen={}, enabled={}",
                 keyword != null ? keyword.length() : 0, enabled);
         List<TerminologyVo> terminologies = facade.list(userId, keyword, enabled);
@@ -60,8 +59,8 @@ public class TerminologyController {
     }
 
     @PostMapping("/batch")
-    public Result<List<TerminologyVo>> createTerminologies(@RequestParam Long userId, @RequestBody List<SaveTerminologyRequest> requests) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403
+    public Result<List<TerminologyVo>> createTerminologies(@RequestBody List<SaveTerminologyRequest> requests) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] createTerminologies start, count={}",
                 requests != null ? requests.size() : 0);
         List<TerminologyVo> created = facade.createBatch(userId, requests);
@@ -71,9 +70,8 @@ public class TerminologyController {
 
     @PostMapping("/import")
     public Result<com.si.backend.vo.TerminologyImportResultVo> importExcel(
-            @RequestParam Long userId,
             @RequestParam("file") org.springframework.web.multipart.MultipartFile file) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] importExcel start, userId={}, fileName={}",
                 userId, file != null ? file.getOriginalFilename() : null);
         com.si.backend.vo.TerminologyImportResultVo result = facade.importExcel(userId, file);
@@ -82,8 +80,8 @@ public class TerminologyController {
     }
 
     @PatchMapping("/{id}/enabled")
-    public Result<Void> updateEnabled(@PathVariable Long id, @RequestParam Long userId, @RequestParam Boolean enabled) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> updateEnabled(@PathVariable Long id, @RequestParam Boolean enabled) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] updateEnabled start, id={}, enabled={}", id, enabled);
         facade.updateEnabled(id, userId, enabled);
         log.info("[TerminologyController] updateEnabled end, id={}", id);
@@ -91,8 +89,8 @@ public class TerminologyController {
     }
 
     @PutMapping("/{id}")
-    public Result<Void> updateTerminology(@PathVariable Long id, @RequestParam Long userId, @RequestBody SaveTerminologyRequest request) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> updateTerminology(@PathVariable Long id, @RequestBody SaveTerminologyRequest request) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] updateTerminology start, id={}", id);
         facade.update(id, userId, request);
         log.info("[TerminologyController] updateTerminology end, id={}", id);
@@ -100,8 +98,8 @@ public class TerminologyController {
     }
 
     @DeleteMapping("/{id}")
-    public Result<Void> deleteTerminology(@PathVariable Long id, @RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人术语,越权→403(资源 id 归属反查属 P0.5b)
+    public Result<Void> deleteTerminology(@PathVariable Long id) {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TerminologyController] deleteTerminology start, id={}", id);
         facade.delete(id, userId);
         log.info("[TerminologyController] deleteTerminology end, id={}", id);

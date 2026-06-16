@@ -1,5 +1,7 @@
 package com.si.backend.controller;
 
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.common.Result;
 import com.si.backend.dto.MapSessionSpeakerRequest;
 import com.si.backend.dto.SaveInterpretationResultRequest;
@@ -49,8 +51,8 @@ public class InterpretationController {
 
     private final InterpretationFacade facade;
     private final AnonymousRequestRateLimiter anonymousRequestRateLimiter;
+    private final com.si.backend.service.ShareTokenService shareTokenService;
 
-    private static final int PUBLIC_ACTIVE_LIMIT_PER_MINUTE = 60;
     private static final int PUBLIC_LATENCY_LIMIT_PER_MINUTE = 120;
     private static final int PUBLIC_LATENCY_MAX_BODY_CHARS = 2_048;
     private static final Set<String> PUBLIC_LATENCY_FIELDS = Set.of(
@@ -67,9 +69,10 @@ public class InterpretationController {
 
     @PostMapping("/start")
     public Result<String> startInterpretation(@Valid @RequestBody StartInterpretationRequest request) {
+        AuthenticatedActor actor = AuthContext.requireActor();
         log.info("[InterpretationController] startInterpretation start, userId={}, sourceLang={}, targetLang={}",
-                request.getUserId(), request.getSourceLang(), request.getTargetLang());
-        String sessionId = facade.startInterpretation(AuthContext.requireActor(), request);
+                actor.userId(), request.getSourceLang(), request.getTargetLang());
+        String sessionId = facade.startInterpretation(actor, request);
         log.info("[InterpretationController] startInterpretation end, sessionId={}", sessionId);
         return Result.ok(sessionId);
     }
@@ -92,31 +95,26 @@ public class InterpretationController {
         return Result.ok(facade.getSessionHistory(AuthContext.requireActor(), sessionId));
     }
 
-    @GetMapping("/users/{userId}/sessions")
+    @GetMapping("/sessions")
     public Result<List<InterpretationSessionVo>> getUserSessions(
-            @PathVariable Long userId,
             @RequestParam(required = false) String keyword
     ) {
-        userId = AuthContext.requireSelf(userId);
-        return Result.ok(facade.searchUserSessions(userId, keyword));
+        return Result.ok(facade.searchUserSessions(AuthContext.requireActor().userId(), keyword));
     }
 
     @PutMapping("/{sessionId}/title")
     public Result<Void> updateTitle(
             @PathVariable String sessionId,
-            @RequestParam Long userId,
             @Valid @RequestBody UpdateSessionTitleRequest request
     ) {
         AuthenticatedActor actor = AuthContext.requireActor();
-        AuthContext.requireSelf(actor, userId);
         facade.updateTitle(actor, sessionId, request.getTitle());
         return Result.ok();
     }
 
     @DeleteMapping("/{sessionId}")
-    public Result<Void> deleteSession(@PathVariable String sessionId, @RequestParam Long userId) {
+    public Result<Void> deleteSession(@PathVariable String sessionId) {
         AuthenticatedActor actor = AuthContext.requireActor();
-        AuthContext.requireSelf(actor, userId);
         facade.deleteSession(actor, sessionId);
         return Result.ok();
     }
@@ -150,16 +148,12 @@ public class InterpretationController {
             identity = com.si.backend.security.authorization.IdentityType.ANONYMOUS,
             permission = com.si.backend.security.authorization.PermissionCode.SHARE_READ,
             scope = com.si.backend.security.authorization.ResourceScope.PUBLIC,
-            expectedStatuses = {200, 429})
+            expectedStatuses = {410})
     @GetMapping("/public/user/{userId}/active")
     public Result<String> getActiveSessionForUser(@PathVariable Long userId, HttpServletRequest request) {
-        anonymousRequestRateLimiter.requireAllowed(
-                "public-active",
-                request.getRemoteAddr() + ":" + userId,
-                PUBLIC_ACTIVE_LIMIT_PER_MINUTE,
-                60
-        );
-        return Result.ok(facade.getActiveSessionIdForUser(userId));
+        log.warn("[InterpretationController] legacy public user share lookup rejected, userId={}, ip={}",
+                userId, request.getRemoteAddr());
+        throw BizException.of(ErrorCode.GONE, "Legacy user share links are no longer available. Use a share token link.");
     }
 
     @com.si.backend.security.authorization.AuthorizationSpec(
@@ -170,8 +164,8 @@ public class InterpretationController {
     @PostMapping("/public/latency")
     public Result<Void> reportLatency(@RequestBody Map<String, Object> body, HttpServletRequest request) {
         if (request.getContentLengthLong() > PUBLIC_LATENCY_MAX_BODY_CHARS) {
-            throw com.si.backend.common.BizException.of(
-                    com.si.backend.common.ErrorCode.BAD_REQUEST,
+            throw BizException.of(
+                    ErrorCode.BAD_REQUEST,
                     "Invalid latency report"
             );
         }
@@ -192,8 +186,8 @@ public class InterpretationController {
         if (body == null
                 || !PUBLIC_LATENCY_FIELDS.containsAll(body.keySet())
                 || body.toString().length() > PUBLIC_LATENCY_MAX_BODY_CHARS) {
-            throw com.si.backend.common.BizException.of(
-                    com.si.backend.common.ErrorCode.BAD_REQUEST,
+            throw BizException.of(
+                    ErrorCode.BAD_REQUEST,
                     "Invalid latency report"
             );
         }
@@ -217,5 +211,16 @@ public class InterpretationController {
     @GetMapping("/public/{sessionId}/results")
     public Result<List<InterpretationResultItemVo>> getPublicResults(@PathVariable String sessionId) {
         return Result.ok(facade.listPublicResults(sessionId));
+    }
+
+    /** P4 分享令牌解析:匿名听众用不可枚举的分享令牌换取当前可收听的 sessionId(替代 /public/user/{id}/active)。 */
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.ANONYMOUS,
+            permission = com.si.backend.security.authorization.PermissionCode.SHARE_READ,
+            scope = com.si.backend.security.authorization.ResourceScope.PUBLIC,
+            expectedStatuses = {200, 401})
+    @GetMapping("/public/share-resolve")
+    public Result<String> resolveShareToken(@RequestParam("token") String token) {
+        return Result.ok(shareTokenService.resolveSessionId(token));
     }
 }

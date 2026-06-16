@@ -4,6 +4,7 @@ import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.config.TeamsBotProperties;
 import com.si.backend.dto.TeamsBotQueryRequest;
+import com.si.backend.dto.PreMeetingChatRequest.ChatTurn;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.Meeting;
 import com.si.backend.entity.SiUser;
@@ -64,6 +65,9 @@ public class TeamsBotQueryService {
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final int MAX_STRUCTURED_MEETINGS = 5;
     private static final int MAX_STRUCTURED_SOURCES = 10;
+    private static final int MAX_HISTORY_TURNS = 6;
+    private static final int MAX_HISTORY_CHARS = 1200;
+    private static final int MAX_GROUNDED_SOURCES = 6;
 
     private final InterpretationSessionService sessionService;
     private final UserMapper userMapper;
@@ -99,7 +103,7 @@ public class TeamsBotQueryService {
             case COMMAND_LIST -> BotAnswer.text(listSessions(user.getId()), RESPONSE_MEETING_LIST);
             case COMMAND_SUMMARY -> BotAnswer.text(summarize(user.getId(), command.argument()), RESPONSE_TEXT);
             case COMMAND_SEARCH -> BotAnswer.text(search(user.getId(), command.argument(), false), RESPONSE_MEETING_LIST);
-            case COMMAND_ASK -> answerNaturalQuestion(user.getId(), message);
+            case COMMAND_ASK -> answerNaturalQuestion(user.getId(), message, boundedHistory(request.getHistory()));
             default -> BotAnswer.text(helpText(), RESPONSE_TEXT);
         };
         log.info("[TeamsBotQueryService] query end, userId={}, command={}", user.getId(), command.name());
@@ -127,21 +131,24 @@ public class TeamsBotQueryService {
         }
 
         try {
+            List<ChatTurn> history = boundedHistory(request.getHistory());
+            String retrievalQuestion = ragEnhancementService.rewriteQuery(history, message);
+            sendStatus(emitter, "retrieving");
             // B2: 从自然语言中提取过滤维度（发言人、会议标题关键词、时间范围）
-            PreMeetingService.QuestionFilter filter = extractQuestionFilter(message);
+            PreMeetingService.QuestionFilter filter = extractQuestionFilter(retrievalQuestion);
             log.info("[TeamsBotQueryService] queryStream filter, speakerName={}, since={}",
                     filter.speakerName(), filter.since());
 
             // B3: 带过滤参数的向量检索上下文构建
             PreMeetingService.UnifiedContextResult ragResult =
-                    preMeetingService.buildUnifiedContextResult(user.getId(), message, filter);
+                    preMeetingService.buildUnifiedContextResult(user.getId(), retrievalQuestion, filter);
             String ragContext = ragResult.context();
 
             // 行动项上下文（按关键词触发）
-            String actionContext = buildActionItemsContext(user.getId(), message);
+            String actionContext = buildActionItemsContext(user.getId(), retrievalQuestion);
 
             // 成本数据上下文（按关键词触发）
-            String costContext = buildCostContext(user.getId(), message);
+            String costContext = buildCostContext(user.getId(), retrievalQuestion);
 
             String context = ragContext
                     + (actionContext.isBlank() ? "" : "\n" + actionContext)
@@ -152,7 +159,9 @@ public class TeamsBotQueryService {
                 sendSseAndComplete(emitter, noDataReply);
                 return;
             }
-            llmIntegration.streamChatUnified(context, message, List.of(), chunk -> {
+            sendStatus(emitter, "generating");
+            String groundedContext = buildGroundedAnswerContext(context, ragResult.sources());
+            llmIntegration.streamChatUnified(groundedContext, message, history, chunk -> {
                 try {
                     emitter.send(SseEmitter.event().data(chunk));
                 } catch (IOException e) {
@@ -274,6 +283,83 @@ public class TeamsBotQueryService {
         }
     }
 
+    private void sendStatus(SseEmitter emitter, String status) {
+        try {
+            emitter.send(SseEmitter.event().name("status").data("[STATUS]" + status));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    static List<ChatTurn> boundedHistory(List<ChatTurn> history) {
+        if (history == null || history.isEmpty()) {
+            return List.of();
+        }
+        int from = Math.max(0, history.size() - MAX_HISTORY_TURNS);
+        List<ChatTurn> safe = new ArrayList<>();
+        for (int i = from; i < history.size(); i++) {
+            ChatTurn turn = history.get(i);
+            if (turn == null || turn.getContent() == null || turn.getContent().isBlank()) {
+                continue;
+            }
+            String role = "assistant".equals(turn.getRole()) ? "assistant" : "user";
+            String content = turn.getContent().replaceAll("\\s+", " ").trim();
+            if (content.length() > MAX_HISTORY_CHARS) {
+                content = content.substring(0, MAX_HISTORY_CHARS);
+            }
+            ChatTurn safeTurn = new ChatTurn();
+            safeTurn.setRole(role);
+            safeTurn.setContent(content);
+            safe.add(safeTurn);
+        }
+        return safe;
+    }
+
+    static String buildGroundedAnswerContext(String context, List<TeamsBotQuerySourceVo> sources) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("[Answer requirements]\n")
+                .append("- Answer only from the provided meeting/material context.\n")
+                .append("- If the context does not contain enough evidence, say that the material does not record it.\n")
+                .append("- Include concrete source anchors in the answer when available: meeting, date, speaker, file/source.\n")
+                .append("- Keep the final answer consistent with the source list appended after streaming.\n\n");
+        if (sources != null && !sources.isEmpty()) {
+            builder.append("[Structured sources]\n");
+            int index = 1;
+            for (TeamsBotQuerySourceVo source : sources.stream().limit(MAX_GROUNDED_SOURCES).toList()) {
+                builder.append(index++).append(". ")
+                        .append(sourceAnchor(source))
+                        .append("\n");
+            }
+            builder.append("\n");
+        }
+        if (context != null && !context.isBlank()) {
+            builder.append(context);
+        }
+        return builder.toString();
+    }
+
+    private static String sourceAnchor(TeamsBotQuerySourceVo source) {
+        if (source == null) {
+            return "unknown source";
+        }
+        List<String> parts = new ArrayList<>();
+        addAnchorPart(parts, source.getMeetingTitle());
+        addAnchorPart(parts, source.getSourceDate());
+        addAnchorPart(parts, source.getSourceName());
+        addAnchorPart(parts, source.getTitle());
+        if (source.getSnippet() != null && !source.getSnippet().isBlank()) {
+            String snippet = source.getSnippet().replaceAll("\\s+", " ").trim();
+            parts.add(snippet.length() > 120 ? snippet.substring(0, 120) : snippet);
+        }
+        return parts.isEmpty() ? "unknown source" : String.join(" | ", parts);
+    }
+
+    private static void addAnchorPart(List<String> parts, String value) {
+        if (value != null && !value.isBlank() && parts.stream().noneMatch(value::equalsIgnoreCase)) {
+            parts.add(value.trim());
+        }
+    }
+
     private SiUser resolveUser(TeamsBotQueryRequest request) {
         log.info("[TeamsBotQueryService] resolveUser start, aadId={}, mail={}, upn={}",
                 request.getAadId(), request.getMail(), request.getUserPrincipalName());
@@ -306,7 +392,10 @@ public class TeamsBotQueryService {
             log.error("[TeamsBotQueryService] apiSecret is not configured — all bot query requests rejected.");
             throw BizException.of(Constants.HTTP_UNAUTHORIZED, "Bot 查询接口未配置 api-secret，拒绝访问");
         }
-        if (!configuredSecret.equals(apiSecret)) {
+        // 常量时间比对,避免逐字符比较带来的时序侧信道。
+        if (!java.security.MessageDigest.isEqual(
+                configuredSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                normalize(apiSecret).getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             log.warn("[TeamsBotQueryService] unauthorized Teams Bot query request.");
             throw BizException.of(Constants.HTTP_UNAUTHORIZED, "Bot 查询接口未授权");
         }
@@ -452,7 +541,7 @@ public class TeamsBotQueryService {
         return search(userId, normalizedArgument, true);
     }
 
-    private BotAnswer answerNaturalQuestion(Long userId, String question) {
+    private BotAnswer answerNaturalQuestion(Long userId, String question, List<ChatTurn> history) {
         log.info("[TeamsBotQueryService] answerNaturalQuestion start, userId={}, questionLen={}", userId, question.length());
         Optional<BotAnswer> structuredAnswer = answerStructuredQuestion(userId, question);
         if (structuredAnswer.isPresent()) {
@@ -461,14 +550,16 @@ public class TeamsBotQueryService {
             return structuredAnswer.get();
         }
 
-        PreMeetingService.QuestionFilter filter = extractQuestionFilter(question);
-        PreMeetingService.UnifiedContextResult ragResult = retrieveWithAgentic(userId, question, filter);
+        List<ChatTurn> safeHistory = boundedHistory(history);
+        String retrievalQuestion = ragEnhancementService.rewriteQuery(safeHistory, question);
+        PreMeetingService.QuestionFilter filter = extractQuestionFilter(retrievalQuestion);
+        PreMeetingService.UnifiedContextResult ragResult = retrieveWithAgentic(userId, retrievalQuestion, filter);
         KnowledgeContext fallbackContext = KnowledgeContext.empty();
         if (ragResult.context().isBlank()) {
             fallbackContext = buildMeetingKnowledgeContext(userId, question);
         }
-        String actionContext = buildActionItemsContext(userId, question);
-        String costContext = buildCostContext(userId, question);
+        String actionContext = buildActionItemsContext(userId, retrievalQuestion);
+        String costContext = buildCostContext(userId, retrievalQuestion);
         String knowledgeContext = ragResult.context().isBlank() ? fallbackContext.context() : ragResult.context();
         List<TeamsBotQuerySourceVo> sources = ragResult.sources().isEmpty() ? fallbackContext.sources() : ragResult.sources();
         String context = knowledgeContext
@@ -481,7 +572,8 @@ public class TeamsBotQueryService {
         }
 
         try {
-            String answer = llmIntegration.chatCrossMeeting(context, question, List.of());
+            String answer = llmIntegration.chatCrossMeeting(
+                    buildGroundedAnswerContext(context, sources), question, safeHistory);
             log.info("[TeamsBotQueryService] answerNaturalQuestion done, userId={}, sources={}",
                     userId, sources.size());
             return new BotAnswer(answer, RESPONSE_RAG, sources);

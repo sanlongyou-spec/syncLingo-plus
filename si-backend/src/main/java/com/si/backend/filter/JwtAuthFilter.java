@@ -43,6 +43,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             "/actuator/health",
             "/ws/**",
             "/api/admin/**",    // protected by its own api-secret
+            "/api/internal/ops/**", // protected by InternalOpsAuthFilter
+            "/api/teams-bot/**", // 服务端点:由 TeamsBotSignatureFilter(HMAC)+ 静态 api-secret 保护,非用户 JWT
             // Swagger / OpenAPI：dev 放行便于联调；生产由 springdoc.*.enabled=false 关闭(返回 404)
             "/swagger-ui/**",
             "/swagger-ui.html",
@@ -68,14 +70,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         String token = header.substring(7);
-        Long userId = JwtUtil.verifyAndParseUserId(token, secret());
-        if (userId == null) {
+        JwtUtil.TokenClaims claims = JwtUtil.verifyAndParseClaims(token, secret());
+        if (claims == null) {
             log.warn("[JwtAuthFilter] invalid or expired token, path={}", path);
             sendUnauthorized(response, "Invalid or expired token");
             return;
         }
+        Long userId = claims.userId();
 
-        // P1:按 userId 加载角色/状态。停用即时拒绝;DB 异常不锁人(降级为角色未知,交 REPORT_ONLY 观察)。
+        // P1:按 userId 加载角色/状态。停用即时拒绝;P5:tokenVersion 不符即拒(改密/撤销后旧令牌失效)。
+        // DB 异常时继续认证链路;默认 ENFORCE 下角色未知会在权限拦截器 fail-closed。
         try {
             SiUser user = userMapper.findById(userId);
             if (user == null) {
@@ -86,6 +90,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             if (STATUS_DISABLED.equalsIgnoreCase(user.getStatus())) {
                 log.warn("[JwtAuthFilter] disabled account rejected, userId={}, path={}", userId, path);
                 sendForbidden(response, "Account disabled");
+                return;
+            }
+            int currentVersion = user.getTokenVersion() == null ? 0 : user.getTokenVersion();
+            if (claims.tokenVersion() != currentVersion) {
+                log.warn("[JwtAuthFilter] superseded token rejected, userId={}, tokenVer={}, current={}, path={}",
+                        userId, claims.tokenVersion(), currentVersion, path);
+                sendUnauthorized(response, "Token superseded, please sign in again");
                 return;
             }
             request.setAttribute("authenticatedRole", user.getRole());

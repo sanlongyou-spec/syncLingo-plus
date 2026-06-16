@@ -33,7 +33,7 @@ class JwtAuthFilterRoleTest {
 
     private MockHttpServletRequest authedRequest() {
         MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/meetings");
-        req.addHeader("Authorization", "Bearer " + JwtUtil.createToken(5L, "u", 600000, SECRET));
+        req.addHeader("Authorization", "Bearer " + JwtUtil.createToken(5L, "u", 0, 600000, SECRET));
         return req;
     }
 
@@ -83,6 +83,22 @@ class JwtAuthFilterRoleTest {
 
         assertEquals(401, res.getStatus());
         assertNull(chain.getRequest());
+    }
+
+    @Test
+    void supersededTokenVersion_rejected401() throws Exception {
+        // 令牌版本 0,但库中当前版本 1(改密/撤销后)→ 拒绝。
+        SiUser bumped = user("OPERATOR", "ACTIVE");
+        bumped.setTokenVersion(1);
+        when(userMapper.findById(5L)).thenReturn(bumped);
+        MockHttpServletRequest req = authedRequest();
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(req, res, chain);
+
+        assertEquals(401, res.getStatus());
+        assertNull(chain.getRequest(), "失效版本令牌不应放行");
     }
 
     @Test

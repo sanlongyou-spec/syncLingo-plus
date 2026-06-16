@@ -9,6 +9,7 @@ getAsrHotwords,
   saveInterpretationResult,
   startInterpretation,
   stopInterpretation,
+  mintChannelShareToken,
 } from '../api'
 import { AUDIO_DEFAULTS } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
@@ -76,8 +77,6 @@ const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
 
 export default function InterpretationView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
-
   const [currentRole, setCurrentRole] = useState<string>(localStorage.getItem(STORAGE_KEYS.ROLE) || '')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
@@ -87,6 +86,7 @@ export default function InterpretationView() {
   const [currentTranslated, setCurrentTranslated] = useState('')
   const [voiceId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [shareHint, setShareHint] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
   const [currentSpeakerId, setCurrentSpeakerId] = useState('')
   const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
@@ -115,18 +115,18 @@ export default function InterpretationView() {
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
   useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
   useEffect(() => {
-    getMeetings(userId)
+    getMeetings()
       .then(res => setMeetings(res.data || []))
       .catch((err: unknown) => console.warn('[InterpretationView] getMeetings failed:', err))
 
-    getAsrHotwords(userId, '', true)
+    getAsrHotwords('', true)
       .then(res => {
         const items = res.data || []
         setSelectedHotwordIds(items.map(item => item.id).filter((id): id is number => typeof id === 'number'))
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getAsrHotwords failed:', err))
 
-    getUserLanguagePreference(userId)
+    getUserLanguagePreference()
       .then(res => {
         // 中文/印尼语必选：无论用户偏好如何，恒含 zh/id。
         setEnabledLanguages(Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...(res.data?.enabledLanguages ?? [])])))
@@ -138,12 +138,12 @@ export default function InterpretationView() {
       audioRef.current?.stop()
       audioRef.current = null
     }
-  }, [userId])
+  }, [])
 
   // Refresh meetings whenever an overlay is closed and user returns here
   useEffect(() => {
     const refreshMeetings = () => {
-      getMeetings(userId)
+      getMeetings()
         .then(res => {
           const list = res.data || []
           setMeetings(list)
@@ -156,7 +156,7 @@ export default function InterpretationView() {
     }
     window.addEventListener('hashchange', refreshMeetings)
     return () => window.removeEventListener('hashchange', refreshMeetings)
-  }, [userId])
+  }, [])
 
   const resolveSpeakerName = useCallback((speakerId?: string, speakerName?: string | null) => {
     const displayName = speakerName?.trim()
@@ -316,7 +316,6 @@ export default function InterpretationView() {
       const sessionTitle = selectedMeeting?.title || await resolveActiveMeetingTitle()
 
       const res = await startInterpretation({
-        userId,
         sourceLang: LANGUAGE.AUTO,
         targetLang: LANGUAGE.AUTO,
         title: sessionTitle,
@@ -393,10 +392,27 @@ export default function InterpretationView() {
     )
   }
 
-  const permanentShareUrl = `${window.location.origin}${window.location.pathname}#/share/user/${userId}`
+  // P4:复用已签发的频道令牌,避免每次复制都新建令牌。
+  const channelShareTokenRef = useRef<string>('')
 
   const copyShareLink = async () => {
-    await navigator.clipboard.writeText(permanentShareUrl)
+    try {
+      if (!channelShareTokenRef.current) {
+        const res = await mintChannelShareToken()
+        if (res.code !== 200 || !res.data?.token) {
+          setShareHint('生成失败')
+          return
+        }
+        channelShareTokenRef.current = res.data.token
+      }
+      const url = `${window.location.origin}${window.location.pathname}#/share/token/${channelShareTokenRef.current}`
+      await navigator.clipboard.writeText(url)
+      setShareHint('已复制')
+    } catch {
+      setShareHint('复制失败')
+    } finally {
+      window.setTimeout(() => setShareHint(''), 2000)
+    }
   }
 
 
@@ -432,17 +448,27 @@ export default function InterpretationView() {
           </button>
           <button className="si-side-action" onClick={copyShareLink}>
             <span className="si-side-action-icon">S</span>
-            <span>分享链接</span>
+            <span>{shareHint || '分享链接'}</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TERMINOLOGY }}>
             <span className="si-side-action-icon">T</span>
             <span>设置</span>
           </button>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.ACCOUNT_SECURITY }}>
+            <span className="si-side-action-icon">A</span>
+            <span>账号安全</span>
+          </button>
           {isAdmin && (
+            <>
             <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.USER_MANAGEMENT }}>
               <span className="si-side-action-icon">U</span>
               <span>用户管理</span>
             </button>
+            <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.SECURITY_OPERATIONS }}>
+              <span className="si-side-action-icon">O</span>
+              <span>瀹夊叏杩愮淮</span>
+            </button>
+            </>
           )}
         </div>
       </aside>
@@ -581,7 +607,7 @@ export default function InterpretationView() {
                                 : enabledLanguages.filter(l => l !== opt.value)
                               const ensured = Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...next]))
                               setEnabledLanguages(ensured)
-                              void saveUserLanguagePreference(userId, { defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: ensured })
+                              void saveUserLanguagePreference({ defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: ensured })
                                 .catch(err => console.warn('[InterpretationView] saveUserLanguagePreference failed:', err))
                             }}
                           />

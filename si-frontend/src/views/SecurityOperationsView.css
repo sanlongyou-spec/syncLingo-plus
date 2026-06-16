@@ -1,0 +1,140 @@
+.secops-main {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.secops-banner {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.secops-banner--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+
+.secops-banner--success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+}
+
+.secops-panel {
+  border: 1px solid #d8d8dc;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.secops-panel h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #1f2937;
+}
+
+.secops-form {
+  display: grid;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.secops-form--inline {
+  grid-template-columns: repeat(3, minmax(120px, 180px)) auto auto;
+}
+
+.secops-form--grant {
+  grid-template-columns: minmax(120px, 160px) minmax(120px, 160px) minmax(240px, 1fr) auto;
+}
+
+.secops-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #475467;
+}
+
+.secops-form input,
+.secops-form select {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d5dde8;
+  border-radius: 7px;
+  background: #fff;
+  color: #1f2937;
+}
+
+.secops-form button,
+.secops-mini {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #2563eb;
+  border-radius: 7px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.secops-mini--ghost {
+  background: #fff;
+  color: #344054;
+  border-color: #d5dde8;
+}
+
+.secops-form button:disabled,
+.secops-mini:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.secops-table-wrap {
+  overflow: auto;
+}
+
+.secops-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.secops-table th {
+  text-align: left;
+  padding: 9px 10px;
+  color: #667085;
+  font-weight: 800;
+  border-bottom: 1px solid #eaecf0;
+  background: #f9fafb;
+}
+
+.secops-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #f2f4f7;
+  color: #1f2937;
+  vertical-align: middle;
+}
+
+.secops-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .secops-form--inline,
+  .secops-form--grant {
+    grid-template-columns: 1fr;
+  }
+}

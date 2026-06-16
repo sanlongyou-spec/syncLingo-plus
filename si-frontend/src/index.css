@@ -24,6 +24,16 @@ body {
   background: #f6f8fb;
 }
 
+.auth-loading {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  color: #475467;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 /* ========== Global Components ========== */
 
 .header {

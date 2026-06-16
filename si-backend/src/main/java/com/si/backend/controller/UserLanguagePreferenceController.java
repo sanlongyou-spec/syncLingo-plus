@@ -26,8 +26,8 @@ public class UserLanguagePreferenceController {
     private final UserLanguagePreferenceFacade facade;
 
     @GetMapping
-    public Result<UserLanguagePreferenceVo> get(@RequestParam Long userId) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人偏好,越权→403
+    public Result<UserLanguagePreferenceVo> get() {
+        Long userId = AuthContext.requireActor().userId();
         log.info("[UserLanguagePreferenceController] get start, userId={}", userId);
         UserLanguagePreferenceVo result = facade.get(userId);
         log.info("[UserLanguagePreferenceController] get end, userId={}", userId);
@@ -36,10 +36,9 @@ public class UserLanguagePreferenceController {
 
     @PutMapping
     public Result<UserLanguagePreferenceVo> save(
-            @RequestParam Long userId,
             @RequestBody SaveUserLanguagePreferenceRequest request
     ) {
-        userId = AuthContext.requireSelf(userId);   // P0.5a:本人偏好,越权→403
+        Long userId = AuthContext.requireActor().userId();
         log.info("[UserLanguagePreferenceController] save start, userId={}", userId);
         UserLanguagePreferenceVo result = facade.save(userId, request);
         log.info("[UserLanguagePreferenceController] save end, userId={}", userId);

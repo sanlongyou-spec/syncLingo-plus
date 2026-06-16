@@ -4,13 +4,20 @@ import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.Result;
 import com.si.backend.config.AppAdminProperties;
+import com.si.backend.dto.QaEvaluationRequest;
+import com.si.backend.dto.QaEvaluationRunRequest;
+import com.si.backend.facade.QaEvaluationFacade;
 import com.si.backend.service.ContentEmbeddingService;
 import com.si.backend.service.InterpretationResultService;
+import com.si.backend.vo.QaEvaluationRunResponseVo;
+import com.si.backend.vo.QaEvaluationResponseVo;
+import jakarta.validation.Valid;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -38,6 +45,7 @@ public class AdminController {
     private final InterpretationResultService interpretationResultService;
     private final ContentEmbeddingService contentEmbeddingService;
     private final com.si.backend.service.HierarchicalSummaryService hierarchicalSummaryService;
+    private final QaEvaluationFacade qaEvaluationFacade;
     private final AppAdminProperties adminProperties;
 
     /**
@@ -88,6 +96,34 @@ public class AdminController {
         int aggregated = hierarchicalSummaryService.rebuildForUser(userId);
         log.info("[AdminController] rebuildOverview done, userId={}, aggregated={}", userId, aggregated);
         return Result.ok(Map.of("userId", userId, "aggregatedMeetings", aggregated));
+    }
+
+    /** Score a prepared AI Q&A evaluation batch without mutating production data. */
+    @PostMapping("/qa-evaluation/score")
+    public Result<QaEvaluationResponseVo> scoreQaEvaluation(
+            @RequestHeader(value = ADMIN_SECRET_HEADER, required = false) String secret,
+            @Valid @RequestBody QaEvaluationRequest request) {
+        ensureAuthorized(secret);
+        log.info("[AdminController] scoreQaEvaluation start, cases={}", request.getCases().size());
+        QaEvaluationResponseVo response = qaEvaluationFacade.evaluate(request);
+        log.info("[AdminController] scoreQaEvaluation done, total={}, passed={}, failed={}",
+                response.getTotal(), response.getPassed(), response.getFailed());
+        return Result.ok(response);
+    }
+
+    /** Run prepared AI Q&A cases through the production Q&A path, then score the generated answers. */
+    @PostMapping("/qa-evaluation/run")
+    public Result<QaEvaluationRunResponseVo> runQaEvaluation(
+            @RequestHeader(value = ADMIN_SECRET_HEADER, required = false) String secret,
+            @Valid @RequestBody QaEvaluationRunRequest request) {
+        ensureAuthorized(secret);
+        log.info("[AdminController] runQaEvaluation start, cases={}", request.getCases().size());
+        QaEvaluationRunResponseVo response = qaEvaluationFacade.run(request);
+        log.info("[AdminController] runQaEvaluation done, total={}, passed={}, failed={}",
+                response.getEvaluation().getTotal(),
+                response.getEvaluation().getPassed(),
+                response.getEvaluation().getFailed());
+        return Result.ok(response);
     }
 
     @GetMapping("/logs/download")

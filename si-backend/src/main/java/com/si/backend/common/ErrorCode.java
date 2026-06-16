@@ -16,6 +16,7 @@ public enum ErrorCode {
     UNAUTHORIZED(401, "未认证"),
     FORBIDDEN(403, "无权限"),
     NOT_FOUND(404, "资源不存在"),
+    GONE(410, "资源已下线"),
     TOO_MANY_REQUESTS(429, "请求过于频繁"),
     INTERNAL_ERROR(500, "服务器内部错误"),
     SYSTEM_ERROR(500, "系统错误"),
@@ -47,6 +48,7 @@ public enum ErrorCode {
     AUTH_FAILED(5001, "认证失败"),
     TOKEN_INVALID(5002, "Token 无效"),
     TOKEN_EXPIRED(5003, "Token 已过期"),
+    CAPTCHA_REQUIRED(428, "需要验证码"),
 
     // Voice
     VOICE_SAMPLE_TOO_SHORT(6001, "音色样本时长不足"),

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getCostMonthlySummary, getCostRates, getPreMeetingUsage, getUserInterpretationSessions } from '../api'
-import { ROUTES, STORAGE_KEYS } from '../constants'
+import { ROUTES } from '../constants'
 import type { CostRates, InterpretationStatus, MonthlyCostSummary, PreMeetingDailyUsage } from '../types'
 import './CostAnalysisView.css'
 
@@ -164,7 +164,6 @@ type CostTab = 'sessions' | 'monthly'
 
 // ── 主组件 ────────────────────────────────────────────────
 export default function CostAnalysisView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
   const [sessions, setSessions]               = useState<InterpretationStatus[]>([])
   const [preMeetingUsage, setPreMeetingUsage] = useState<PreMeetingDailyUsage[]>([])
   const [loading, setLoading]                 = useState(true)
@@ -176,17 +175,17 @@ export default function CostAnalysisView() {
   useEffect(() => {
     setLoading(true)
     Promise.all([
-      getUserInterpretationSessions(userId).then(res => res.data || []).catch(() => []),
-      getPreMeetingUsage(userId).then(res => res.data || []).catch(() => []),
+      getUserInterpretationSessions().then(res => res.data || []).catch(() => []),
+      getPreMeetingUsage().then(res => res.data || []).catch(() => []),
       getCostRates().then(res => res.data).catch(() => null),
-      getCostMonthlySummary(userId).then(res => res.data || []).catch(() => []),
+      getCostMonthlySummary().then(res => res.data || []).catch(() => []),
     ]).then(([s, p, r, m]) => {
       setSessions(s)
       setPreMeetingUsage(p)
       if (r) setRates(r)
       setMonthly(m)
     }).finally(() => setLoading(false))
-  }, [userId])
+  }, [])
 
   const filtered = useMemo(() => {
     const cutoff = cutoffDate(range)

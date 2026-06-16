@@ -14,7 +14,7 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * P1 角色功能权限执行(默认 REPORT_ONLY)。
+ * P5 角色功能权限执行(默认 ENFORCE)。
  *
  * <p>仅对声明了 {@link AuthorizationSpec} 且 identity=USER 的接口生效;
  * 匿名/服务/系统身份由认证 Filter 与各自密钥裁决,不在此处。

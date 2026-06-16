@@ -39,7 +39,6 @@ export interface WsMessage {
 }
 
 export interface StartInterpretationParams {
-  userId: number
   sourceLang: string
   targetLang: string
   title?: string
@@ -308,6 +307,40 @@ export interface Meeting {
   hasExpectedParticipants?: boolean
   createTime?: string
   files?: MeetingFile[]
+}
+
+export interface MeetingMember {
+  userId: number
+  username?: string | null
+  accessLevel: 'VIEW' | 'OPERATE' | string
+}
+
+export interface SupportAccessGrant {
+  id: number
+  granteeUserId: number
+  resourceType: string
+  resourceId: string
+  permissions: string
+  reason: string
+  requestedBy: number
+  approvedBy?: number | null
+  expiresAt?: string | null
+  revokedAt?: string | null
+  createTime?: string | null
+}
+
+export interface AuditLog {
+  id: number
+  actorType: string
+  actorId?: string | null
+  role?: string | null
+  action: string
+  resourceType?: string | null
+  resourceId?: string | null
+  result: string
+  ip?: string | null
+  detail?: string | null
+  createTime?: string | null
 }
 
 // A matched Teams recipient: 会议安排原始名 / 系统账号名 / 邮箱.

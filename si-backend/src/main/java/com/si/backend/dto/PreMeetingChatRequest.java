@@ -11,7 +11,6 @@ public class PreMeetingChatRequest {
     private String sessionId;
     private List<ChatTurn> history;
     private boolean crossMeeting;
-    private long userId;
     private int days;  // 0 = 不限时间
 
     @Data

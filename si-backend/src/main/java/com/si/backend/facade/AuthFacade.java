@@ -1,8 +1,10 @@
 package com.si.backend.facade;
 
 import com.si.backend.dto.LoginRequest;
-import com.si.backend.dto.LoginResponse;
+import com.si.backend.dto.CaptchaChallengeResponse;
 import com.si.backend.service.AuthService;
+import com.si.backend.service.AuthSessionService;
+import com.si.backend.service.CaptchaChallengeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -13,12 +15,33 @@ import org.springframework.stereotype.Component;
 public class AuthFacade {
 
     private final AuthService authService;
+    private final AuthSessionService authSessionService;
+    private final CaptchaChallengeService captchaChallengeService;
 
-    public LoginResponse login(LoginRequest request) {
+    public AuthSessionService.IssuedAuth login(LoginRequest request, String clientIp) {
         log.info("[AuthFacade] login start, username={}", request.getUsername());
-        LoginResponse response = authService.login(request.getUsername(), request.getPassword());
-        log.info("[AuthFacade] login end, username={}, userId={}", request.getUsername(), response.getUserId());
-        return response;
+        AuthSessionService.IssuedAuth issued = authService.login(
+                request.getUsername(),
+                request.getPassword(),
+                clientIp,
+                request.getCaptchaId(),
+                request.getCaptchaAnswer()
+        );
+        log.info("[AuthFacade] login end, username={}, userId={}", request.getUsername(), issued.response().getUserId());
+        return issued;
+    }
+
+    public AuthSessionService.IssuedAuth refresh(String refreshToken) {
+        return authSessionService.refresh(refreshToken);
+    }
+
+    public void logout(String refreshToken) {
+        authSessionService.logout(refreshToken);
+    }
+
+    public CaptchaChallengeResponse issueCaptcha(String username, String clientIp) {
+        log.info("[AuthFacade] issueCaptcha, username={}", username);
+        return captchaChallengeService.issue(clientIp, username);
     }
 
 }

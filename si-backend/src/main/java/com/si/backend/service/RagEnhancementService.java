@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -93,9 +94,10 @@ public class RagEnhancementService {
         }
         int want = Math.max(1, openAiProperties.getRagQueryExpansionCount());
         try {
+            long start = System.currentTimeMillis();
             String user = "问题：" + question + "\n生成 " + want + " 个检索查询。";
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
-                    EXPANSION_SYSTEM_PROMPT, user, 300L);
+                    EXPANSION_SYSTEM_PROMPT, user, 300L, helperTimeout());
             for (String q : parseStringArray(raw)) {
                 String trimmed = q.trim();
                 if (!trimmed.isBlank() && result.stream().noneMatch(trimmed::equalsIgnoreCase)) {
@@ -103,7 +105,8 @@ public class RagEnhancementService {
                 }
                 if (result.size() >= want + 1) break;
             }
-            log.info("[RagEnhancementService] expandQueries done, original=1, total={}", result.size());
+            log.info("[RagEnhancementService] expandQueries done, original=1, total={}, costMs={}",
+                    result.size(), System.currentTimeMillis() - start);
         } catch (Exception e) {
             log.warn("[RagEnhancementService] expandQueries failed, using original only: {}", e.getMessage());
         }
@@ -121,6 +124,7 @@ public class RagEnhancementService {
             return question;
         }
         try {
+            long start = System.currentTimeMillis();
             StringBuilder sb = new StringBuilder("最近对话：\n");
             int from = Math.max(0, history.size() - rewriteHistoryTurns);
             for (int i = from; i < history.size(); i++) {
@@ -130,10 +134,11 @@ public class RagEnhancementService {
             }
             sb.append("最新问题：").append(question).append("\n改写为自包含查询：");
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
-                    REWRITE_SYSTEM_PROMPT, sb.toString(), 200L);
+                    REWRITE_SYSTEM_PROMPT, sb.toString(), 200L, helperTimeout());
             String rewritten = stripFences(raw).trim();
             if (rewritten.isBlank()) return question;
-            log.info("[RagEnhancementService] rewriteQuery done, len {}->{}", question.length(), rewritten.length());
+            log.info("[RagEnhancementService] rewriteQuery done, len {}->{}, costMs={}",
+                    question.length(), rewritten.length(), System.currentTimeMillis() - start);
             return rewritten;
         } catch (Exception e) {
             log.warn("[RagEnhancementService] rewriteQuery failed, using original: {}", e.getMessage());
@@ -155,8 +160,9 @@ public class RagEnhancementService {
             return result;
         }
         try {
+            long start = System.currentTimeMillis();
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
-                    DECOMPOSE_SYSTEM_PROMPT, "问题：" + question, 300L);
+                    DECOMPOSE_SYSTEM_PROMPT, "问题：" + question, 300L, helperTimeout());
             for (String sub : parseStringArray(raw)) {
                 String trimmed = sub.trim();
                 if (!trimmed.isBlank() && result.stream().noneMatch(trimmed::equalsIgnoreCase)) {
@@ -165,7 +171,8 @@ public class RagEnhancementService {
                 if (result.size() >= decomposeMax + 1) break;
             }
             if (result.size() > 1) {
-                log.info("[RagEnhancementService] decompose done, sub-questions={}", result.size() - 1);
+                log.info("[RagEnhancementService] decompose done, subQuestions={}, costMs={}",
+                        result.size() - 1, System.currentTimeMillis() - start);
             }
         } catch (Exception e) {
             log.warn("[RagEnhancementService] decompose failed, using original only: {}", e.getMessage());
@@ -183,12 +190,16 @@ public class RagEnhancementService {
             return new AgenticDecision(true, null);
         }
         try {
+            long start = System.currentTimeMillis();
             String ctx = contextSoFar == null ? "" : contextSoFar;
             if (ctx.length() > 4000) ctx = ctx.substring(0, 4000);
             String user = "原问题：" + question + "\n已检索到的资料：\n" + ctx;
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
-                    AGENTIC_SYSTEM_PROMPT, user, 200L);
-            return parseAgenticDecision(raw);
+                    AGENTIC_SYSTEM_PROMPT, user, 200L, helperTimeout());
+            AgenticDecision decision = parseAgenticDecision(raw);
+            log.info("[RagEnhancementService] agenticFollowup done, enough={}, hasNext={}, costMs={}",
+                    decision.enough(), decision.nextQuery() != null, System.currentTimeMillis() - start);
+            return decision;
         } catch (Exception e) {
             log.warn("[RagEnhancementService] agenticFollowup failed, treating as enough: {}", e.getMessage());
             return new AgenticDecision(true, null);
@@ -228,13 +239,14 @@ public class RagEnhancementService {
         List<VectorSearchService.SearchResult> candidates =
                 hits.size() > RERANK_MAX_CANDIDATES ? hits.subList(0, RERANK_MAX_CANDIDATES) : hits;
         try {
+            long start = System.currentTimeMillis();
             StringBuilder sb = new StringBuilder("问题：").append(question).append("\n候选片段：\n");
             for (int i = 0; i < candidates.size(); i++) {
                 sb.append('[').append(i).append("] ").append(snippetOf(candidates.get(i))).append('\n');
             }
             sb.append("请挑出最相关的最多 ").append(topK).append(" 条，按相关性排序，只输出编号 JSON 数组。");
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
-                    RERANK_SYSTEM_PROMPT, sb.toString(), 200L);
+                    RERANK_SYSTEM_PROMPT, sb.toString(), 200L, helperTimeout());
 
             List<Integer> order = parseIntArray(raw, candidates.size());
             if (order.isEmpty()) {
@@ -245,12 +257,20 @@ public class RagEnhancementService {
                 reranked.add(candidates.get(idx));
                 if (reranked.size() >= topK) break;
             }
-            log.info("[RagEnhancementService] rerank done, in={}, out={}", hits.size(), reranked.size());
+            log.info("[RagEnhancementService] rerank done, in={}, candidates={}, out={}, costMs={}",
+                    hits.size(), candidates.size(), reranked.size(), System.currentTimeMillis() - start);
             return reranked;
         } catch (Exception e) {
             log.warn("[RagEnhancementService] rerank failed, keeping original order: {}", e.getMessage());
             return hits;
         }
+    }
+
+    private Duration helperTimeout() {
+        int seconds = openAiProperties.getRagHelperTimeoutSeconds() > 0
+                ? openAiProperties.getRagHelperTimeoutSeconds()
+                : 20;
+        return Duration.ofSeconds(seconds);
     }
 
     private String snippetOf(VectorSearchService.SearchResult hit) {

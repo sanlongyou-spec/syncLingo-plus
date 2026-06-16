@@ -1,5 +1,6 @@
 package com.si.backend.ws;
 
+import com.si.backend.service.ShareWsTicketService;
 import org.junit.jupiter.api.Test;
 import org.mockito.stubbing.Answer;
 import org.springframework.web.socket.BinaryMessage;
@@ -52,7 +53,7 @@ class ShareAudioLoadTest {
         bytesByConnection.put(id, counter);
         when(session.getId()).thenReturn(id);
         when(session.getUri()).thenReturn(
-                URI.create("ws://localhost/ws/share-audio?sessionId=" + SESSION + "&lang=" + lang));
+                URI.create("ws://localhost/ws/share-audio?ticket=" + id));
         when(session.isOpen()).thenReturn(true);
         Answer<Void> capture = invocation -> {
             BinaryMessage msg = invocation.getArgument(0);
@@ -77,7 +78,13 @@ class ShareAudioLoadTest {
 
     @Test
     void eightyListenersBandwidthAndLanguageIsolation() throws Exception {
-        ShareAudioWebSocketHandler handler = new ShareAudioWebSocketHandler();
+        ShareWsTicketService ticketService = mock(ShareWsTicketService.class);
+        when(ticketService.consume(any())).thenAnswer(invocation -> {
+            String ticket = invocation.getArgument(0);
+            String lang = ticket.substring(0, 2);
+            return new ShareWsTicketService.Entry(SESSION, ShareAudioWebSocketHandler.normalizeLang(lang), Long.MAX_VALUE);
+        });
+        ShareAudioWebSocketHandler handler = new ShareAudioWebSocketHandler(ticketService);
 
         List<WebSocketSession> all = new ArrayList<>();
         List<String> zhIds = new ArrayList<>();

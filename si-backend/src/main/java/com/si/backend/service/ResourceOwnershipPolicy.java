@@ -6,13 +6,17 @@ import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.Meeting;
 import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.entity.PersistentPreMeetingFile;
+import com.si.backend.entity.MeetingMember;
 import com.si.backend.entity.SessionAudioRecord;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.mapper.MeetingActionItemMapper;
 import com.si.backend.mapper.MeetingMapper;
+import com.si.backend.mapper.MeetingMemberMapper;
 import com.si.backend.mapper.PersistentPreMeetingFileMapper;
 import com.si.backend.mapper.SessionAudioRecordMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
+import com.si.backend.mapper.SupportAccessGrantMapper;
+import com.si.backend.security.AccessLevel;
 import com.si.backend.security.AuthenticatedActor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +36,8 @@ public class ResourceOwnershipPolicy {
     private final SpeakerSummaryRecordMapper speakerSummaryMapper;
     private final MeetingActionItemMapper actionItemMapper;
     private final SessionAudioRecordMapper audioRecordMapper;
+    private final MeetingMemberMapper meetingMemberMapper;
+    private final SupportAccessGrantMapper supportAccessGrantMapper;
 
     public InterpretationSession requireOwnedSession(AuthenticatedActor actor, String sessionId) {
         requireActor(actor);
@@ -45,6 +51,36 @@ public class ResourceOwnershipPolicy {
         Meeting meeting = meetingId == null ? null : meetingMapper.findById(meetingId);
         requireOwner(actor, meeting != null ? meeting.getUserId() : null, "meeting", meetingId);
         return meeting;
+    }
+
+    /**
+     * P3 数据范围 ASSIGNED:owner 拥有全部权限;否则需 meeting_member 中具备足够级别(OPERATE 蕴含 VIEW)。
+     * 非 owner 且无足够授权 → 404(防枚举)。ADMIN 不在此走捷径(内容访问由 support grant 另行处理)。
+     */
+    public Meeting requireMeetingAccess(AuthenticatedActor actor, Long meetingId, AccessLevel required) {
+        requireActor(actor);
+        Meeting meeting = meetingId == null ? null : meetingMapper.findById(meetingId);
+        if (meeting == null) {
+            throwNotFound("meeting", meetingId);
+        }
+        if (actor.userId().equals(meeting.getUserId())) {
+            return meeting; // owner:完全访问
+        }
+        MeetingMember member = meetingMemberMapper.findMember(meetingId, actor.userId());
+        if (member != null && AccessLevel.satisfies(member.getAccessLevel(), required)) {
+            return meeting; // 被分配且级别足够
+        }
+        // P3:ADMIN 持有生效的临时内容授权 → 允许内容读(VIEW)。OPERATE(写)不经此通道。
+        if (required == AccessLevel.VIEW && actor.isAdmin()
+                && supportAccessGrantMapper.countActive(
+                        actor.userId(), SupportAccessGrantService.RESOURCE_MEETING, String.valueOf(meetingId)) > 0) {
+            log.info("[ResourceOwnershipPolicy] admin content grant access, meetingId={}, actorId={}", meetingId, actor.userId());
+            return meeting;
+        }
+        log.warn("[ResourceOwnershipPolicy] meeting access denied, meetingId={}, actorId={}, required={}",
+                meetingId, actor.userId(), required);
+        throwNotFound("meeting", meetingId);
+        return meeting; // unreachable
     }
 
     public PersistentPreMeetingFile requireOwnedFile(AuthenticatedActor actor, Long fileId) {

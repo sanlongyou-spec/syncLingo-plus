@@ -19,15 +19,20 @@ public class UserSchemaInitializer {
 
     @PostConstruct
     public void init() {
+        addColumn("status", userMapper::addStatusColumnIfNotExists);
+        addColumn("token_version", userMapper::addTokenVersionColumnIfNotExists);
+    }
+
+    private void addColumn(String column, Runnable ddl) {
         try {
-            userMapper.addStatusColumnIfNotExists();
-            log.info("[UserSchemaInitializer] si_user.status column added");
+            ddl.run();
+            log.info("[UserSchemaInitializer] si_user.{} column added", column);
         } catch (Exception e) {
             String msg = e.getMessage();
             if (msg != null && msg.contains("Duplicate column")) {
-                log.info("[UserSchemaInitializer] si_user.status already exists");
+                log.info("[UserSchemaInitializer] si_user.{} already exists", column);
             } else {
-                log.warn("[UserSchemaInitializer] add status column failed: {}", msg);
+                log.warn("[UserSchemaInitializer] add {} column failed: {}", column, msg);
             }
         }
     }

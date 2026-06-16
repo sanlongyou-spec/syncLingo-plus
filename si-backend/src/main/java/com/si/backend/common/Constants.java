@@ -82,8 +82,8 @@ public final class Constants {
     public static final int WS_MAX_TEXT_MESSAGE_SIZE = 1024 * 64;
     /** WebSocket 最大二进制消息大小（10MB，与 application.yml 保持一致） */
     public static final int WS_MAX_BINARY_MESSAGE_SIZE = 10 * 1024 * 1024;
-    /** URL Query 参数中的 Token key */
-    public static final String WS_QUERY_PARAM_TOKEN = "token";
+    /** P5:WS 握手一次性票据参数(替代把长效 JWT 放进 query)。 */
+    public static final String WS_QUERY_PARAM_TICKET = "ticket";
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 消息类型（前后端共用）

@@ -26,7 +26,7 @@ public class TranslateController {
 
     @PostMapping
     public Result<String> translate(@RequestBody TranslateTextRequest request) {
-        Long userId = AuthContext.requireSelf(request.getUserId());
+        Long userId = AuthContext.requireActor().userId();
         log.info("[TranslateController] translate start, textLen={}, sourceLang={}, targetLang={}",
                 request.getText() != null ? request.getText().length() : 0,
                 request.getSourceLang(), request.getTargetLang());

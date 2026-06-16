@@ -34,5 +34,7 @@ public enum PermissionCode {
     /** 任意已认证用户读/改本人账号资料(P1)。 */
     ACCOUNT_SELF,
     /** 用户管理(列表/建号/改角色/启停/重置密码),仅 ADMIN(P1)。 */
-    USER_MANAGE
+    USER_MANAGE,
+    /** 查看安全审计日志,仅 ADMIN(P2)。 */
+    AUDIT_READ
 }

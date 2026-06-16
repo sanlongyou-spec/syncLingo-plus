@@ -28,6 +28,8 @@ public class GlobalExceptionHandler {
             case 401 -> 401;
             case 403 -> 403;
             case 404 -> 404;
+            case 410 -> 410;
+            case 428 -> 428;
             case 429 -> 429;
             case 400 -> 400;
             default  -> 200;

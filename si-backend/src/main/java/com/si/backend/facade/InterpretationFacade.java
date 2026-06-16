@@ -47,7 +47,7 @@ public class InterpretationFacade {
 
     @Transactional
     public String startInterpretation(AuthenticatedActor actor, StartInterpretationRequest request) {
-        Long userId = AuthContext.requireSelf(actor, request.getUserId());
+        Long userId = actor.userId();
         if (request.getMeetingId() != null) {
             resourceOwnershipPolicy.requireOwnedMeeting(actor, request.getMeetingId());
         }

@@ -265,8 +265,6 @@ const formatChineseDate = (src?: string | null): string => {
 
 
 export default function HistoryView() {
-  const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
-
   // ── Meeting list ────────────────────────────────────────
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [meetingsLoading, setMeetingsLoading] = useState(false)
@@ -409,7 +407,7 @@ export default function HistoryView() {
   // ── Load meetings ────────────────────────────────────────
   useEffect(() => {
     setMeetingsLoading(true)
-    getMeetings(userId)
+    getMeetings()
       .then(res => {
         const list = res.data || []
         setMeetings(list)
@@ -417,7 +415,7 @@ export default function HistoryView() {
       })
       .catch(() => {})
       .finally(() => setMeetingsLoading(false))
-  }, [userId])
+  }, [])
 
   // ── When meeting changes, reset tabs and load sessions ──
   useEffect(() => {
@@ -556,7 +554,7 @@ export default function HistoryView() {
     if (!selectedSessionId) return
     setExtractingActionItems(true)
     try {
-      const res = await extractActionItems(selectedSessionId, selectedMeetingId, userId)
+      const res = await extractActionItems(selectedSessionId, selectedMeetingId)
       setActionItems(res.data || [])
     } catch { /* ignore */ }
     finally { setExtractingActionItems(false) }
@@ -566,16 +564,16 @@ export default function HistoryView() {
   useEffect(() => {
     if (activeTab !== 'audio') return
     setAudioLoading(true)
-    getAudioRecords(userId, audioKeyword)
+    getAudioRecords(audioKeyword)
       .then(res => setAudioRecords(res.data?.items ?? []))
       .catch(() => setAudioRecords([]))
       .finally(() => setAudioLoading(false))
-  }, [activeTab, audioKeyword, userId])
+  }, [activeTab, audioKeyword])
 
   const handleAudioDelete = async (id: number) => {
     if (!window.confirm('删除该录音文件？')) return
     try {
-      await deleteAudioRecord(id, userId)
+      await deleteAudioRecord(id)
       setAudioRecords(prev => prev.filter(r => r.id !== id))
     } catch { /* ignore */ }
   }
@@ -584,7 +582,7 @@ export default function HistoryView() {
     const name = audioRenameDraft.trim()
     if (!name) { setAudioRenameId(null); return }
     try {
-      await renameAudioRecord(id, userId, name)
+      await renameAudioRecord(id, name)
       setAudioRecords(prev => prev.map(r => r.id === id ? { ...r, name } : r))
     } catch { /* ignore */ }
     finally { setAudioRenameId(null) }
@@ -843,7 +841,7 @@ export default function HistoryView() {
 
   const deleteSessionAndRefresh = async (sessionId: string) => {
     if (!window.confirm('删除该同传会话记录？')) return
-    await deleteInterpretationSession(sessionId, userId)
+    await deleteInterpretationSession(sessionId)
     setSessions(prev => prev.filter(s => s.sessionId !== sessionId))
     if (selectedSessionId === sessionId) {
       const remaining = sessions.filter(s => s.sessionId !== sessionId)
@@ -1436,12 +1434,12 @@ export default function HistoryView() {
                             className="history-audio-player"
                             controls
                             preload="none"
-                            src={getAudioDownloadUrl(rec.id, userId)}
+                            src={getAudioDownloadUrl(rec.id)}
                           />
                           <div className="history-audio-actions">
                             <a
                               className="history-audio-btn"
-                              href={getAudioDownloadUrl(rec.id, userId)}
+                              href={getAudioDownloadUrl(rec.id)}
                               download={`${rec.name}.wav`}
                             >下载</a>
                             <button

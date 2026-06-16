@@ -33,12 +33,14 @@ class AsrWebSocketHandlerSecurityTest {
     private final ShareWebSocketHandler shareWebSocketHandler = mock(ShareWebSocketHandler.class);
     private final ShareAudioWebSocketHandler shareAudioWebSocketHandler = mock(ShareAudioWebSocketHandler.class);
     private final ResourceOwnershipPolicy ownershipPolicy = mock(ResourceOwnershipPolicy.class);
+    private final UserWebSocketRegistry userWebSocketRegistry = mock(UserWebSocketRegistry.class);
     private final AsrWebSocketHandler handler = new AsrWebSocketHandler(
             new ObjectMapper(),
             realtimeFacade,
             shareWebSocketHandler,
             shareAudioWebSocketHandler,
-            ownershipPolicy
+            ownershipPolicy,
+            userWebSocketRegistry
     );
     private WebSocketSession session;
 
@@ -46,6 +48,10 @@ class AsrWebSocketHandlerSecurityTest {
     void closeConnection() throws Exception {
         if (session != null) {
             handler.afterConnectionClosed(session, CloseStatus.NORMAL);
+            Object userId = session.getAttributes().get(JwtHandshakeInterceptor.ATTRIBUTE_AUTHENTICATED_USER_ID);
+            if (userId instanceof Long id) {
+                verify(userWebSocketRegistry).unregister(id, session);
+            }
         }
     }
 
@@ -53,6 +59,7 @@ class AsrWebSocketHandlerSecurityTest {
     void audioBeforeStart_isRejectedAndConnectionClosed() throws Exception {
         session = session("ws-1", 5L);
         handler.afterConnectionEstablished(session);
+        verify(userWebSocketRegistry).register(5L, session);
 
         handler.handleTextMessage(session, message("audio", "s1", "\"audioBase64\":\"AA==\""));
 

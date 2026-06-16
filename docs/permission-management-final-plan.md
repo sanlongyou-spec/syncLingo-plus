@@ -10,7 +10,7 @@
 
 | 项 | 现状 | 位置 |
 |---|---|---|
-| 令牌 | 自研 `si.{payload}.{sig}`,payload=`userId:username:expiresAt`,无角色 | `util/JwtUtil.java` |
+| 令牌 | 新登录签发 HS256 标准 JWT(`sub/iat/exp/jti/tv`);旧 `si.{payload}.{sig}` 仅解析兼容至自然过期;无角色 claim 信任 | `util/JwtUtil.java` |
 | 认证 | 手写 `OncePerRequestFilter`,验签后仅写 `authenticatedUserId`;`/api/admin/**`、`/bot-api/**`、`/ws/**` 在白名单 | `filter/JwtAuthFilter.java` |
 | 请求上下文 | `AuthContext.currentUserId()` 读请求属性 | `util/AuthContext.java` |
 | 角色字段 | `si_user.role` 存在,`UserMapper.insert` 写了 role,但注册逻辑不赋值→NULL,从不用于鉴权 | `entity/SiUser.java`、`mapper/UserMapper.java`、`service/AuthService.java` |
@@ -19,9 +19,9 @@
 | 归属校验 | `InterpretationController.requireSelf` 与 `MeetingService.requireOwner` 在 authId 为 null 时**放行** | 对应文件 |
 | Bot 代理 | 透明 catch-all,**零鉴权**,转发几乎全部请求头 | `controller/BotApiProxyController.java` |
 | 自动摘要 | Java 后端**直连** C# Bot `:3978/api/meetings/notification`,**不经 /bot-api** | `integration/MeetingBotIntegration.java` |
-| 公开活动会话 | `/api/interpretation/public/user/{userId}/active` 可按用户号枚举,前端分享页依赖它取 sessionId | `controller/InterpretationController.java`、前端 `getActiveSessionForUser` |
+| 公开活动会话 | 旧 `/api/interpretation/public/user/{userId}/active` 已返回 410;分享页改走不可枚举 `share_token` 解析 | `controller/InterpretationController.java`、`ShareTokenService`、前端 `resolveShareToken` |
 | 公开延迟上报 | `/api/interpretation/public/latency` 匿名 POST | 同上 |
-| ASR WebSocket | 握手仅验 token 有效性,token 走 **query 参数**;握手后完全信任消息中的 sessionId | `ws/JwtHandshakeInterceptor.java`、`ws/AsrWebSocketHandler.java` |
+| ASR WebSocket | 受保护 ASR WS 仅接受一次性 `ticket`;握手后按绑定 actor 校验 owned session 与连接状态机 | `ws/JwtHandshakeInterceptor.java`、`ws/AsrWebSocketHandler.java` |
 | 启动期 DDL | 约 34 个文件在 `@PostConstruct` 建表/改表 | 多个 Mapper/Service |
 | 前端 | `si_token` 存 localStorage;7 处 `userId || '1'` 默认用户;几乎每个 API 显式带 userId | `api/client.ts`、`api/index.ts`、多个 View |
 | 测试 | 后端 83 个均为 mock 单测(无 `@SpringBootTest`/MockMvc);前端无测试运行器 | — |
@@ -42,7 +42,7 @@
 - IDOR / 资源归属 / 服务身份校验**永远 ENFORCE**,无报告模式。
 - `/api/**` 默认需认证;仅显式标记 PUBLIC/SERVICE 例外;运行时默认拒绝在接口分类完成并验证后**逐域启用**。
 - 授权顺序:`未认证→401` · `缺功能权限→403(不查资源)` · `有权限但资源越权/不存在→404(防枚举)` · `通过→执行`。
-- 角色门禁:**高危(用户管理、删除、下载、Bot 控制、同传控制)随功能上线即强制**;仅低危只读可短期 REPORT_ONLY。
+- 角色门禁:**默认 ENFORCE**;REPORT_ONLY 仅作为显式灰度/回滚开关。
 
 ---
 
@@ -50,7 +50,7 @@
 
 | 身份 | 凭证 | 强制点 |
 |---|---|---|
-| 人员用户(ADMIN/OPERATOR/VIEWER) | MVP:现有 token;P2+:标准 JWT + Refresh(HttpOnly Cookie) | 认证 Filter + `@RequirePermission` + 策略服务 |
+| 人员用户(ADMIN/OPERATOR/VIEWER) | 标准 JWT + Refresh(HttpOnly Cookie) 已落 | 认证 Filter + `@RequirePermission` + 策略服务 |
 | 浏览器→Java→C# Bot | 下行 HMAC 服务签名(密钥 A) | 显式 Bot Facade |
 | C# Bot→Java `/api/teams-bot/**` | 上行 HMAC 服务签名(密钥 B) | 服务身份校验 |
 | 运维 `/api/internal/ops/**` | 运维凭证 + 网段限制 | INTERNAL_OPS |
@@ -132,7 +132,6 @@
 | 能力 | 触发条件 |
 |---|---|
 | 标准 JWT + Refresh 旋转 | 用户增多 / 需短 token / 多设备会话管理 |
-| MFA(ADMIN) | ≥2 管理员 ∨ 管理页超出 IP 白名单暴露 ∨ 合规 |
 | meeting_member + VIEWER 登录 | 启用系统内多人协作 |
 | support_access_grant | 管理员确需受控查看正文 |
 | Channel Token | 旧分享准备下线 |
@@ -267,7 +266,7 @@ requireOwnedAudio(actor, audioRecordId) -> AudioRecord
 
 **JWT secret 启动校验(P0,IDOR 前置)**:生产启动时若 `JWT_SECRET` 为默认值 `change_this_secret_to_random_32_plus_chars`、空或弱(< 32 字节)→**拒绝启动**。否则攻击者可伪造任意用户 token,所有 IDOR/归属修复失效。`ADMIN_API_SECRET`/`TEAMS_BOT_API_SECRET` 同样做生产必填校验。
 
-**MVP 鉴权不依赖标准 JWT**:沿用现有 token 证明 userId,**每请求按 userId 从库读 role/status**——天然实现"停用/降级即时生效",无需 tokenVersion(单实例 MVP 每请求一次 DB,规模上来再加缓存)。
+**MVP 鉴权现状**:已由现有 token 迁到标准 JWT 证明 userId,但仍**每请求按 userId 从库读 role/status/tokenVersion**——实现"停用/降级/改密即时生效"(单实例 MVP 每请求一次 DB,规模上来再加缓存)。
 
 **撤权(P2+)**:Caffeine 缓存 role/status/tokenVersion(**事务提交后逐出**,防并发回填旧值)+ `userId→活动 WS 连接`注册表(撤权主动关连接)+ 长连接每 30s 重验;**不逐音频包查权限**;多实例前迁 Redis(状态缓存 + Pub/Sub 关连接),迁移前禁止扩容。
 
@@ -350,10 +349,10 @@ P0 产出并持续维护一份**接口授权清单**,每个入口明确:`身份�
 | **P0(P0.5a 的前置,不可跳过)** | ①四类入口清单(HTTP via `RequestMappingHandlerMapping` / WS / C# Bot / 定时·异步,`@WebMvcTest`+MockBean 校验,非正则)②**现有行为基线**(关键接口当前返回码/归属行为快照,用于判回归)③最小安全回归测试套件 ④**JWT secret 启动校验**(默认值 `change_this_secret_to_random_32_plus_chars`/空/弱密钥→拒绝启动)⑤**建立 `application-test.yml` + test profile**(禁运行时 DDL/外部服务/生产库,生产库名或地址→fail-fast;单元/集成分组命令)⑥单一 Bot 源守卫;**不开运行时默认拒绝** | 清单完整;默认/弱 JWT secret 无法启动生产;test profile 可用;基线已留存 |
 | **P0.5(本周必发,分批,依赖 P0 完成)** | 见下方批次拆分 a–e | A 改任何 userId/资源 ID 不能碰 B;WS 不能操作他人会话;Bot 拒匿名且不外泄 JWT;注册关闭;正式会议/自动摘要无回归 |
 | **P0.8** | Flyway baseline + 先回填 NULL role 后加 NOT NULL + 仅权限表(不碰运行时 DDL 表) | 权限表就绪 |
-| **P1a(角色+用户管理 MVP)** | 账号状态机 + ADMIN/OPERATOR 矩阵 + 每请求服务端角色/状态 + `@RequirePermission` + 用户管理 + 高危门禁即强制 + **管理页限 IP 白名单(MFA 前兜底,见 §13/§14)** | 角色/停用即时生效;管理页非白名单不可达 |
+| **P1a(角色+用户管理 MVP)** | 账号状态机 + ADMIN/OPERATOR 矩阵 + 每请求服务端角色/状态 + `@RequirePermission` + 用户管理 + 高危门禁即强制 + 管理页网络边界/IP 白名单 | 角色/停用即时生效;管理页非白名单不可达 |
 | **P1b(默认拒绝+审计+迁移收尾)** | SERVICE/INTERNAL_OPS 临时认证适配 → 逐域开默认拒绝 + 审计(真正 Outbox)+ 运行时 DDL 单次迁完关停 | 默认拒绝不切链路;审计可靠投递 |
 | **P2** | 标准 JWT + auth_session + Refresh 旋转 + WS Ticket + 强制重登 + CORS/CSRF + login_attempt 限流 | 令牌生命周期/长会议/撤权过 |
-| **P3** | meeting_member(防 ADMIN 绕过)+ 启用 VIEWER 登录 + 完整 AccessPolicy + support_access_grant + 最后管理员保护 + MFA 注册/恢复 + **ADMIN MFA 强制** + `MEETING_DELETE_ANY`(首管理员 bootstrap 已在 P1a 前完成) | OWN/ASSIGNED/OTHER 矩阵过;ADMIN 内容需授权可证 |
+| **P3** | meeting_member(防 ADMIN 绕过)+ 启用 VIEWER 登录 + 完整 AccessPolicy + support_access_grant + 最后管理员保护 + `MEETING_DELETE_ANY`(首管理员 bootstrap 已在 P1a 前完成) | OWN/ASSIGNED/OTHER 矩阵过;ADMIN 内容需授权可证 |
 | **P4** | 显式 Bot API + 会议归属 + 双向服务 HMAC + Channel/单会议 Capability(与旧接口限流并存)+ 运维拆 `/api/internal/ops` | 新分享可用;服务边界收口 |
 | **P5(Sunset)** | 旧分享 **410** + 删兼容 userId/旧认证 + 低危门禁 ENFORCE + 完整安全边界验收 | 无旧入口、无未分类 |
 
@@ -403,7 +402,7 @@ P0 产出并持续维护一份**接口授权清单**,每个入口明确:`身份�
 - **真实流程灰度核对清单**(每阶段部署后,沿用本项目既有手段):
   - 同传 `start/stop/status`、分享页持续收听、**自动摘要直连 C#(不经 /bot-api)**、Teams Bot 主动消息、长会议(>30min)、蓝牙播放。
   - 用 admin 日志接口拉新日志 + `analyze_latency.py` 比对,确认无新增 ERROR、无 `reuse connection`/`synth error`、无 `speakerName=null`、`recipientCount>0`。
-- **默认拒绝逐域灰度**:P1 开启前先 REPORT_ONLY 观察(仅低危),确认无误拦正式会议再 ENFORCE。
+- **默认拒绝逐域灰度**:P5 起 `app.authz.mode` 默认 ENFORCE;如部署验证发现误拦,仅可显式设置 `APP_AUTHZ_MODE=REPORT_ONLY` 临时回滚并保留告警日志。
 
 ### 11.3 分阶段测试用例(映射真实类)
 | 阶段 | 新增测试(形态) | 回归 |
@@ -415,9 +414,9 @@ P0 产出并持续维护一份**接口授权清单**,每个入口明确:`身份�
 | **P0.5d** | `BotApiProxyControllerTest`(切片+捕获 RestTemplate):空白名单→拒绝、非白名单路径/方法→拒绝、转发前 **Authorization/Cookie/密钥头已剥离**、转发目标不可篡改 | Teams Bot 灰度 |
 | **P0.5e** | `JwtAuthFilterTest`(切片):`/bot-api` 去白名单需 JWT、公开路径仍放行;`AuthService` 注册关闭返回码;公开会话限流 + **伪造 `X-Forwarded-For` 不绕过限流** | 注册/日志/分享灰度 |
 | **P0.8** | Flyway 迁移(Testcontainers):空库建表、存量升级不丢数据、NULL role 回填后再 NOT NULL、唯一约束 | 现有测试全绿 |
-| **P1** | 权限矩阵参数化(切片):role×permission×{OWN/ASSIGNED/OTHER};停用/降级**下一请求即生效**(服务端状态加载);SERVICE/INTERNAL_OPS 临时适配后**现有链路不被默认拒绝切断**;审计 Outbox 与业务同事务 | 全流程灰度 + 默认拒绝 REPORT_ONLY 观察 |
+| **P1** | 权限矩阵参数化(切片):role×permission×{OWN/ASSIGNED/OTHER};停用/降级**下一请求即生效**(服务端状态加载);SERVICE/INTERNAL_OPS 临时适配后**现有链路不被默认拒绝切断**;审计 Outbox 与业务同事务 | 全流程灰度 + P5 后默认 ENFORCE |
 | **P2** | 标准 JWT 生命周期、Refresh 旋转 + 重用→撤族、`absolute/idle` 过期、WS Ticket 一次性 + 重连重取、CORS/CSRF、`login_attempt` 多维限流;**长会议不因 Access Token 过期断连** | 长会议端到端回归 |
-| **P3** | meeting_member OWN/ASSIGNED/OTHER 矩阵、**ADMIN 不能经 meeting_member 绕过 support_grant**、support_access_grant 申批/到期/撤销、最后管理员并发降级(Testcontainers 锁)、MFA 注册/恢复、`MEETING_DELETE_ANY` 重认证 | 全矩阵回归 |
+| **P3** | meeting_member OWN/ASSIGNED/OTHER 矩阵、**ADMIN 不能经 meeting_member 绕过 support_grant**、support_access_grant 申请/到期/撤销、最后管理员并发降级(Testcontainers 锁)、`MEETING_DELETE_ANY` 重认证 | 全矩阵回归 |
 | **P4** | 显式 Bot API + 双向 HMAC(签名/重放/篡改)、Share/单会议令牌过期/撤销/篡改、令牌换 ws-ticket(非 query) | Bot/分享端到端 |
 | **P5** | 旧分享 `410`、无未分类接口扫描、删兼容 userId 后回归 | 完整边界验收 |
 
@@ -461,10 +460,9 @@ cd /opt/syncLingo/speaker-service && .venv/bin/python -m pytest -q
 
 ## 13. 已登记的残余风险(明确接受)
 
-1. P0.5–P4 期间 `/public/user/{userId}/active` 限流后仍可被探测(待 Channel Token 替代)。
-2. 当前单管理员生产**暂不启用 MFA**,管理页限 IP 白名单兜底;触发条件满足即转强制。
-3. P0.5–P2 仍用现有 token(24h、无族撤销);靠每请求服务端状态加载兜底停用。
-4. 单管理员部署无在线紧急正文访问;依赖离线 Break-glass。
+1. MFA 已明确排除在 P6 及当前权限交付之外;管理访问依赖强密码、登录限流、账号状态/角色即时生效、审计、网络边界/IP 白名单兜底。
+2. Refresh 已落 auth_session 轮换与重用撤族,但仍为单库/单域 MVP;跨域 Teams Tab 需重新评估 SameSite 与 CSRF 策略。
+3. 单管理员部署无在线紧急正文访问;依赖离线 Break-glass。
 
 ---
 
@@ -478,8 +476,111 @@ cd /opt/syncLingo/speaker-service && .venv/bin/python -m pytest -q
 | 功能权限不足 | 403 |
 | 资源越权/不存在 | 404(防枚举) |
 | IDOR | 永远 ENFORCE |
-| RBAC 上线 | 低危可短期 REPORT_ONLY,高危即强制 |
+| RBAC 上线 | 默认 ENFORCE;REPORT_ONLY 仅作显式灰度/回滚 |
 | ADMIN 数据范围 | 元数据可管;正文/录音需 support_access_grant |
 | VIEWER | 经 meeting_member 显式授权 |
-| MFA | 当前接受无 MFA 残余风险(管理页限 IP);触发即强制 |
+| MFA | 排除在 P6 及当前权限交付之外;未来若合规要求变化需另开方案 |
 | 权限依据 | 服务端当前角色/状态,不信 JWT/前端 |
+
+---
+
+## P4-B 服务身份(Java ↔ C# Bot HMAC)落地说明
+
+**已实现(代码 + 测试均通过:Java 全量,C# 7)**
+
+签名规范(两端逐字节一致,跨运行时向量测试锁定值 `258QrV2Z2eWLck5cYzmmvFoEeAytfcd8htB2uwqpUi4=`):
+```
+canonical = keyId \n timestamp \n nonce \n METHOD \n path \n rawQuery \n hexSha256(body)
+signature = Base64(HmacSHA256(secret, canonical))
+头:X-Svc-Key-Id / X-Svc-Timestamp / X-Svc-Nonce / X-Svc-Signature
+```
+校验:时钟偏移 ≤ ±300s;nonce 进程内去重(TTL 600s)防重放;常量时间比对。
+
+- **下行(Java→C#,keyId=`java-backend`,密钥 A)**:`BotProxyIntegration`(/bot-api 代理:summary/summary-file/summary/chat/join/participants)与 `MeetingBotIntegration`(直连 /api/meetings/notification)出站签名;C# `TeamsBotInboundSignatureMiddleware` 对 `/api/meetings` 验签。
+- **上行(C#→Java,keyId=`csharp-bot`,密钥 B)**:C# `SyncLingoBotQueryService` 对 `/api/teams-bot/query[/stream]` 出站签名;Java `TeamsBotSignatureFilter` 验签。
+- **附带修复**:`/api/teams-bot/**` 之前不在 `JwtAuthFilter` 放行清单 → 会被 "Missing token" 401 拦死(C# 仅发静态密钥、无 Bearer)。已加入放行,改由签名过滤器 + 静态 api-secret 保护。`TeamsBotQueryService` 静态密钥比对改为常量时间。
+
+**强制策略**
+1. 两端均**不配密钥** → 不验签(本地/未迁移环境继续靠静态 api-secret 兜底)。
+2. 配置密钥后默认强制要求签名:Java 上行 `SERVICE_SIGNATURE_UPSTREAM_REQUIRED=true`;C# 下行 `RequireServiceSignatureDownstream=true`。
+3. 如需迁移放行,必须显式设置 Java `SERVICE_SIGNATURE_UPSTREAM_REQUIRED=false` 或 C# `RequireServiceSignatureDownstream=false`;缺签名只在该显式迁移模式下放行并告警。
+
+**部署配置**
+- Java(env / backend.env):`SERVICE_SIGNATURE_DOWNSTREAM_KEY`、`SERVICE_SIGNATURE_UPSTREAM_KEY`(各 ≥32 随机字符,方向独立不复用)、`SERVICE_SIGNATURE_UPSTREAM_REQUIRED=true`。
+- C# Bot(服务端 `appsettings.json` 的 `Bot` 段):`ServiceSignatureDownstreamKey`=密钥 A(=Java DOWNSTREAM)、`ServiceSignatureUpstreamKey`=密钥 B(=Java UPSTREAM)、`RequireServiceSignatureDownstream=true`。
+- 两端 keyId 固定;将来多密钥轮换可按 keyId 选密钥(已预留接口形态)。
+
+---
+
+## P5 进度
+
+**已实现:WS 一次性握手票据(消除长效 JWT 进 query)**
+- 问题:鉴权 ASR WS 之前用 `/ws/asr?token={完整 JWT}`,JWT 会进 nginx/代理访问日志与浏览器历史。
+- 后端:`WsTicketService`(进程内、60s、一次性、绑 userId)+ `WsTicketController` POST `/api/ws-tickets`(JWT 保护,签发本人票据)+ `JwtHandshakeInterceptor` 只消费 `ticket`,旧 `token` query 已拒绝。
+- 前端:`mintWsTicket()` + `websocket.ts` 连接/重连前换取票据用 `?ticket=`,票据失败即终止连接,不再回退旧 token。
+- 测试:`WsTicketServiceTest`(3)、`JwtHandshakeInterceptorTest`(票据一次性 + legacy token 拒绝)、`PermissionEntryPointCoverageTest` 仍过;Java/前端构建过。
+- 残余:票据短暂出现在 query(单次、60s,泄露价值极低,远优于长效 JWT);多实例需迁 Redis。
+
+**已实现:令牌版本 token_version(改密/停用即时失效)**
+- 标准 JWT 负载加自定义 claim `tv`(tokenVersion);旧 `si.userId:username:expiresAt[:tokenVersion]` 令牌仅保留解析兼容窗口。
+- `si_user.token_version`(启动期 DDL 补列 + schema.sql);登录按当前版本签发;`JwtAuthFilter` 加载用户后比对,不符→401 "Token superseded"。
+- 改密 / 停用 → `incrementTokenVersion`,旧令牌即时作废(不止依赖状态判断)。DB 异常时降级跳过版本校验(沿用不锁人策略)。
+- 测试:`JwtUtilTest`(标准 claims/版本往返/旧令牌兼容/过期/篡改)、`JwtAuthFilterRoleTest` 版本失效→401。前端无需改动(令牌不透明;受影响用户下次请求 401 重登)。
+
+**已实现:标准 JWT(HS256, RFC 7519 claims)**
+- 登录签发标准三段 JWT,header=`{"alg":"HS256","typ":"JWT"}`,payload 包含 `sub`(userId)、`name`、`iat`、`exp`、`jti`、`tv`。
+- `JwtAuthFilter` 仍通过 `JwtUtil.verifyAndParseClaims` 校验签名/过期/claims,再按 userId 从库加载角色/状态/token_version;不信任前端或 JWT 内角色。
+- 旧 `si.PAYLOAD.SIG` 令牌继续只读兼容,便于在线用户自然过期;新登录不再签发旧格式。
+- 测试:`JwtUtilTest` 覆盖标准 JWT 结构、必需 claim 缺失、算法不符、过期、篡改、旧格式兼容;`AuthServiceTest` 覆盖登录返回标准 JWT。
+
+**已实现:登录限流 LoginThrottleService(防暴力破解)**
+- 多维 + 指数退避(进程内):**ip+账号**(阈值 5,主防护)、**ip**(阈值 20,跨账号撞库);超阈按 `5s·2^n` 退避、上限 15min、静默 15min 清零。
+- **不做账号单维硬锁**(避免用错误密码定向锁死他人账号的 DoS);成功登录清该源对该账号计数。
+- 接入 `AuthService.login(username, password, clientIp)`:登录前 `assertNotBlocked`(命中→429),失败 `onFailedAttempt`,成功 `onSuccessfulLogin`;IP 取服务端 `remoteAddr`(不信可伪造的 XFF)。
+- 测试:`LoginThrottleServiceTest`(7)、`AuthServiceTest`(5:阻断短路/验证码短路/失败记账/停用拒绝/成功清零);Java 全绿。
+- **部署要求**:反代后须配 `server.forward-headers-strategy`(或 nginx 传可信 `X-Real-IP`)使 remoteAddr 反映真实客户端,否则 ip 维退化为按代理 IP。前端 429 复用既有错误提示。
+
+**已实现:阈值后验证码(配合登录限流)**
+- 软阈值:ip+账号失败 ≥3 或 ip 失败 ≥10 时,登录需一次性验证码;硬阈值仍按原退避返回 429。
+- 后端:`CaptchaChallengeService` 进程内签发 5 分钟数学题验证码,绑定 remoteAddr+username,验证成功即消费;`GET /api/auth/captcha` 公开签发,`POST /api/auth/login` 缺失/错误验证码返回 428。
+- 前端:登录页遇到 428 自动拉取验证码并显示输入;提交时带 `captchaId/captchaAnswer`;用户名变化清空旧挑战。
+- 测试:`CaptchaChallengeServiceTest`、`LoginThrottleServiceTest` 软阈值、`AuthServiceTest` 428 短路;前端 `tsc` 已过。
+
+**已实现:auth_session + Refresh 轮换**
+- 后端新增 `auth_session` 表与启动期初始化;登录写入 refresh token hash,原始 refresh 仅通过 HttpOnly `si_refresh_token` cookie 返回。
+- `POST /api/auth/refresh`:校验 Origin(存在时必须同源)与 IP 频控,再校验 refresh hash、状态、absolute/idle 过期和账号状态;成功后旧行标记 `ROTATED`,插入同 family 新 refresh;旧 refresh 重用或已撤销/过期会撤销整族并返回 401。
+- `POST /api/auth/logout`:按 refresh cookie 撤销整族并清 cookie。Cookie 为 `HttpOnly; SameSite=Strict; Path=/api/auth`;`Secure` 按当前请求是否 HTTPS 设置,便于本地 HTTP 验证。
+- 前端 access token 改为内存存储;登录后不再写 `si_token` 到 localStorage;应用启动和 protected API 401 时通过 refresh cookie 换取新 access token,并只保留 `userId` 作启动门控。
+- 测试:`AuthSessionServiceTest` 覆盖签发/轮换/重用撤族/过期撤族;`AuthControllerSecurityTest` 覆盖 cookie 写入/轮换/清理/跨 Origin 拒绝;前端 `tsc` 与 build 通过。
+
+**已实现:账号自助安全(改密 + 全设备登出)**
+- `AccountService` + `AccountController`(`/api/account/**`,JWT 保护,仅作用于本人):
+  - `POST /api/account/password`:校验当前密码、新密码强度(≥6)、不得与原密码相同 → 更新 + 自增 token_version(旧令牌即时失效)+ 审计。
+  - `POST /api/account/logout-all`:自增 token_version,作废本人所有已签发令牌 + 审计。
+- 端点放 `/api/account/**` 而非 `/api/auth/**`(后者在 JWT 放行清单,无法取 actor)。
+- 前端新增 `#/account-security` 账号安全页:修改密码、退出所有设备;退出所有设备成功后清本机内存 token/localStorage 并回登录页。
+- 测试:`AccountServiceTest`(6:当前密码错/弱新密码/重复/成功作废令牌/未知用户/登出);Java 全量、前端类型检查/构建通过;本地浏览器已验证未登录访问账号安全页会回登录页且无控制台错误,已登录表单交互需在后端+数据库栈可用时联调。
+
+**已实现:P5 Sunset 旧分享与旧 WS 认证**
+- 旧公开活动会话 `/api/interpretation/public/user/{userId}/active` 已改为 `410 Gone`,不再解析目标 userId,避免按用户编号探测活动会话。
+- 前端删除 `#/share/user/:userId` 路由与 `getActiveSessionForUser` helper,新分享仅生成/消费 `#/share/token/:token`。
+- 旧 ASR WS 长效 JWT query 回退已删除,后端旧 `?token=` 握手拒绝;前端不再拼接 token。
+- 测试覆盖:旧 active lookup 410、旧 WS token 拒绝、分享令牌解析仍保留。
+
+**已实现:P5 低危门禁默认 ENFORCE**
+- `AuthorizationProperties` 默认 `ENFORCE`,并在 `application.yml` 暴露 `APP_AUTHZ_MODE` 作为显式灰度/回滚开关。
+- `AuthorizationEnforcementInterceptor` 在默认模式下对缺权限 USER 接口返回 403;`REPORT_ONLY` 仅记录 would-deny 并放行。
+- `JwtAuthFilter` 仍按每请求加载服务端角色/状态/token_version;角色加载异常时不信任 token 内角色,默认 ENFORCE 下由权限拦截器 fail-closed。
+- 测试覆盖:默认模式断言、REPORT_ONLY 不拦截、ENFORCE 越权/无角色拒绝、OPERATOR/ADMIN 放行、非 USER/未声明跳过。
+
+**已实现:P5 删除本人资源 userId 兼容参数**
+- 后端本人资源接口不再接收客户端 `userId`:会议列表/创建、同传会话列表/title/delete、翻译、术语、热词、语言偏好、音频、费用、PreMeeting、发言摘要均从 `AuthContext.requireActor().userId()` 派生。
+- 前端 `src/api` 删除对应 `userId` 参数与 query/body 拼接;页面调用点同步改造,目标用户管理/成员授权等真实业务 userId 保留。
+- 测试覆盖:`UserIdBoundaryControllerTest` 和 `InterpretationFacadeSecurityTest` 断言下游使用认证 actor;前端 `tsc` 防止旧调用签名回流。
+
+**P5 后续验收**
+- 部署前确认生产 `si_user.role` 回填完整;部署后观察 `Authz DENY/would-deny` 日志与正式会议关键流程。若发现误拦,临时设置 `APP_AUTHZ_MODE=REPORT_ONLY` 回滚观察。
+
+**仍需生产窗口的数据库收口**
+- Flyway/关闭运行时 DDL 不能在无生产 baseline 的普通发布中直接默认切换;当前代码仍保留历史启动期 DDL 以免未迁移库启动失败。
+- 下一步需在生产维护窗口完成真实结构盘点、备份、Flyway baseline、空库/存量库预演,再关闭 `@PostConstruct` 建表/改表路径。
