@@ -125,6 +125,12 @@ export interface MeetingParticipant {
   email?: string | null
 }
 
+export interface PreMeetingFile {
+  fileId: string
+  fileName: string
+  meetingTitle?: string | null
+}
+
 export interface InterpretationResultItem {
   id: number
   sessionId: string
@@ -283,6 +289,7 @@ export interface Meeting {
   title: string
   scheduledTime?: string | null
   note?: string | null
+  meetingUrl?: string | null
   attendanceJson?: string | null
   hasExpectedParticipants?: boolean
   createTime?: string
@@ -330,6 +337,39 @@ export interface MeetingFile {
   fileType?: string | null
   summary?: string | null
   createTime?: string
+}
+
+export interface MeetingNotificationRecipient {
+  scheduleName: string
+  accountName: string
+  email: string
+  teamsAccount: string
+}
+
+export interface MeetingNotificationPreview {
+  meetingName: string
+  dateText?: string | null
+  timeLines: string[]
+  venue?: string | null
+  meetingCode?: string | null
+  passcode?: string | null
+  meetingUrl: string
+  notificationContent: string
+  participantNames: string[]
+  teamsRecipients: MeetingNotificationRecipient[]
+  nonTeamsSkipped: string[]
+  unmatched: string[]
+}
+
+export interface MeetingNotificationSendResult {
+  selectedRecipientCount: number
+  deliveryRecipientCount: number
+  botStatusCode: number
+  sentCount: number
+  failedCount: number
+  successfulRecipients: string[]
+  failedRecipients: string[]
+  error?: string | null
 }
 
 export interface SpeakerSummaryResult {

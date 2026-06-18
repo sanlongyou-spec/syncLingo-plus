@@ -18,10 +18,14 @@ import type {
   UserLanguagePreference,
   MeetingSummaryVo,
   PreMeetingDailyUsage,
+  PreMeetingFile,
   ChatMessage,
   PreMeetingChatResponse,
   TeamsSummarySendResponse,
   Meeting,
+  MeetingNotificationPreview,
+  MeetingNotificationRecipient,
+  MeetingNotificationSendResult,
   MeetingMember,
   MeetingFile,
   SpeakerSummaryResult,
@@ -296,6 +300,17 @@ export const regenerateMeetingSummary = (sessionId: string, customRequirements?:
 export const getPreMeetingUsage = (days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
   client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { days } }).then(r => r.data)
 
+export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[]>> => {
+  const form = new FormData()
+  form.append('file', file)
+  return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
+    headers: { 'Content-Type': undefined },
+  }).then(r => r.data)
+}
+
+export const saveExpectedParticipants = (fileId: string, meetingId: number): Promise<Result<number>> =>
+  client.post<Result<number>>('/api/pre-meeting/attendance/save-expected', { fileId, meetingId }).then(r => r.data)
+
 export interface SummaryExportFormat {
   bodyFont?: string
   bodySize?: number
@@ -400,6 +415,44 @@ export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Resu
 
 export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}`).then(r => r.data)
+
+export const previewMeetingNotification = (
+  meetingId: number,
+  meetingUrl?: string,
+  fileId?: string,
+): Promise<MeetingNotificationPreview> =>
+  client.post<Result<MeetingNotificationPreview>>(`/api/meetings/${meetingId}/notification-preview`, {
+    ...(meetingUrl ? { meetingUrl } : {}),
+    ...(fileId ? { fileId } : {}),
+  }).then(r => {
+    if (r.data?.code !== RESULT_OK_CODE) {
+      throw new Error(r.data?.message || '解析会议通知失败')
+    }
+    return r.data.data
+  })
+
+export const getMeetingNotificationRecipients = (meetingId: number): Promise<MeetingNotificationRecipient[]> =>
+  client.get<Result<MeetingNotificationRecipient[]>>(`/api/meetings/${meetingId}/notification-recipients`).then(r => {
+    if (r.data?.code !== RESULT_OK_CODE) {
+      throw new Error(r.data?.message || '获取通知账号失败')
+    }
+    return r.data.data || []
+  })
+
+export const sendMeetingNotification = (
+  meetingId: number,
+  content: string,
+  recipients: string[],
+): Promise<MeetingNotificationSendResult> =>
+  client.post<Result<MeetingNotificationSendResult>>(`/api/meetings/${meetingId}/notification-send`, {
+    content,
+    recipients,
+  }).then(r => {
+    if (r.data?.code !== RESULT_OK_CODE) {
+      throw new Error(r.data?.message || '发送会议通知失败')
+    }
+    return r.data.data
+  })
 
 export const generateSpeakerSummary = (params: {
   sessionId: string

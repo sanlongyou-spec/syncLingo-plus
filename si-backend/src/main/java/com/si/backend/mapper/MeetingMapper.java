@@ -15,6 +15,7 @@ public interface MeetingMapper {
                 title          VARCHAR(256) NOT NULL,
                 scheduled_time DATETIME     DEFAULT NULL,
                 note           TEXT         DEFAULT NULL,
+                meeting_url    TEXT         DEFAULT NULL,
                 deleted        TINYINT(1)   NOT NULL DEFAULT 0,
                 create_time    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_meeting_user_id (user_id)
@@ -41,7 +42,7 @@ public interface MeetingMapper {
     int softDelete(Long id);
 
     /** Wipe the meeting's stored 应到名单 / 实到核对 when the meeting is deleted. */
-    @Update("UPDATE meeting SET expected_participants_json = NULL, attendance_json = NULL WHERE id = #{id}")
+    @Update("UPDATE meeting SET expected_participants_json = NULL, attendance_json = NULL, meeting_url = NULL WHERE id = #{id}")
     int clearAssociatedData(Long id);
 
     @Update("UPDATE meeting SET title = #{title}, scheduled_time = #{scheduledTime}, note = #{note} WHERE id = #{id}")
@@ -58,4 +59,10 @@ public interface MeetingMapper {
 
     @Update("UPDATE meeting SET expected_participants_json = #{json} WHERE id = #{id}")
     int updateExpectedParticipants(@Param("id") Long id, @Param("json") String json);
+
+    @Update("ALTER TABLE meeting ADD COLUMN meeting_url TEXT DEFAULT NULL")
+    void addMeetingUrlColumnIfNotExists();
+
+    @Update("UPDATE meeting SET meeting_url = #{url} WHERE id = #{id}")
+    int updateMeetingUrl(@Param("id") Long id, @Param("url") String url);
 }

@@ -30,6 +30,8 @@ public class MeetingService {
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final Set<String> REPORT_FILE_EXTENSIONS = Set.of("pdf", "doc", "docx");
     private static final String REPORT_FILE_TYPE_MESSAGE = "会议文件仅支持 PDF 或 Word（.doc/.docx）";
+    private static final Set<String> NOTICE_FILE_NAME_HINTS = Set.of(
+            "会议通知", "会议安排", "通知", "安排", "agenda", "notice");
 
     private final MeetingMapper meetingMapper;
     private final PersistentPreMeetingFileMapper fileMapper;
@@ -48,6 +50,7 @@ public class MeetingService {
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
         addFileColumnIfMissing("attendance_json", meetingMapper::addAttendanceJsonColumnIfNotExists);
         addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
+        addFileColumnIfMissing("meeting_url", meetingMapper::addMeetingUrlColumnIfNotExists);
         log.info("[MeetingService] initTables end");
     }
 
@@ -190,6 +193,32 @@ public class MeetingService {
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
     }
 
+    public void setMeetingUrl(AuthenticatedActor actor, Long meetingId, String meetingUrl) {
+        log.info("[MeetingService] setMeetingUrl start, meetingId={}, hasUrl={}",
+                meetingId, meetingUrl != null && !meetingUrl.isBlank());
+        requireOwner(actor, meetingId);
+        String normalized = meetingUrl == null || meetingUrl.isBlank() ? null : meetingUrl.trim();
+        meetingMapper.updateMeetingUrl(meetingId, normalized);
+        log.info("[MeetingService] setMeetingUrl end, meetingId={}", meetingId);
+    }
+
+    public String getMeetingNoticeText(AuthenticatedActor actor, Long meetingId) {
+        log.info("[MeetingService] getMeetingNoticeText start, meetingId={}", meetingId);
+        requireView(actor, meetingId);
+        List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
+        if (files.isEmpty()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请先上传会议通知");
+        }
+        PersistentPreMeetingFile selected = selectMeetingNotice(files);
+        String content = selected.getFileContent();
+        if (content == null || content.isBlank()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "会议通知内容为空，无法解析");
+        }
+        log.info("[MeetingService] getMeetingNoticeText end, meetingId={}, fileId={}, fileName={}, textLen={}",
+                meetingId, selected.getId(), selected.getFileName(), content.length());
+        return content;
+    }
+
     @Transactional
     public void deleteMeeting(AuthenticatedActor actor, Long meetingId) {
         resourceOwnershipPolicy.requireOwnedMeeting(actor, meetingId);   // P3:删除整场会议仅 owner(OPERATE 成员不可删)
@@ -247,6 +276,7 @@ public class MeetingService {
                 .title(m.getTitle())
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
+                .meetingUrl(m.getMeetingUrl())
                 .attendanceJson(m.getAttendanceJson())
                 .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
                         && !m.getExpectedParticipantsJson().isBlank())
@@ -269,5 +299,20 @@ public class MeetingService {
     private static String extension(String name) {
         int dot = name.lastIndexOf('.');
         return dot >= 0 ? name.substring(dot + 1) : "";
+    }
+
+    private PersistentPreMeetingFile selectMeetingNotice(List<PersistentPreMeetingFile> files) {
+        return files.stream()
+                .filter(file -> isNoticeLike(file.getFileName()))
+                .findFirst()
+                .orElse(files.get(0));
+    }
+
+    private boolean isNoticeLike(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return false;
+        }
+        String lower = fileName.toLowerCase();
+        return NOTICE_FILE_NAME_HINTS.stream().anyMatch(lower::contains);
     }
 }

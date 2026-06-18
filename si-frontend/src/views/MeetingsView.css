@@ -198,6 +198,208 @@
   color: #64748b;
 }
 
+.meetings-notice-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 14px;
+}
+
+.meetings-notice-upload {
+  min-height: 92px;
+}
+
+.meetings-link-tools {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.meetings-link-field,
+.meetings-notification-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.meetings-link-field span,
+.meetings-notification-content span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #4b5563;
+}
+
+.meetings-link-field input,
+.meetings-notification-content textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+  font-size: 14px;
+}
+
+.meetings-link-field input {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.meetings-notification-content textarea {
+  resize: vertical;
+  min-height: 168px;
+  padding: 10px;
+  line-height: 1.55;
+}
+
+.meetings-link-field input:focus,
+.meetings-notification-content textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.meetings-secondary-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.meetings-secondary-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #94a3b8;
+}
+
+.meetings-secondary-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.meetings-notification-preview {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.meetings-preview-stats,
+.meetings-notice-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.meetings-preview-stats span,
+.meetings-notice-warnings span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.meetings-preview-stats span {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.meetings-notice-warnings {
+  margin-top: 12px;
+}
+
+.meetings-notice-warnings span {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.meetings-recipient-toolbar {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meetings-recipient-toolbar strong {
+  font-size: 14px;
+  color: #111827;
+}
+
+.meetings-recipient-list {
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.meetings-recipient-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 28px minmax(110px, 0.8fr) minmax(110px, 0.8fr) minmax(160px, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eef2f7;
+  font-size: 13px;
+  color: #334155;
+}
+
+.meetings-recipient-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.meetings-recipient-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meetings-notification-content {
+  margin-top: 14px;
+}
+
+.meetings-send-row {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.meetings-delivery-result {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  color: #334155;
+  font-size: 13px;
+}
+
+.meetings-delivery-result div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meetings-delivery-result strong {
+  color: #111827;
+}
+
+.meetings-delivery-result p {
+  margin: 8px 0 0;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .meetings-empty {
   padding: 28px 12px;
   text-align: center;
@@ -300,6 +502,9 @@
   .meetings-section-header,
   .meetings-form-row,
   .meetings-create-row,
+  .meetings-link-tools,
+  .meetings-recipient-toolbar,
+  .meetings-delivery-result div,
   .meetings-file-row {
     align-items: stretch;
     flex-direction: column;
@@ -311,6 +516,8 @@
   }
 
   .meetings-create-row input,
+  .meetings-link-field,
+  .meetings-link-tools,
   .meetings-file-meta {
     width: 100%;
   }
@@ -320,8 +527,27 @@
   }
 
   .meetings-primary-btn,
+  .meetings-secondary-btn,
   .meetings-delete-btn {
     width: 100%;
+  }
+
+  .meetings-notice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .meetings-link-tools {
+    display: flex;
+  }
+
+  .meetings-recipient-row {
+    grid-template-columns: 24px minmax(0, 1fr);
+    gap: 6px 10px;
+  }
+
+  .meetings-recipient-row span:nth-child(3),
+  .meetings-recipient-row span:nth-child(4) {
+    grid-column: 2;
   }
 
   .meetings-upload {
