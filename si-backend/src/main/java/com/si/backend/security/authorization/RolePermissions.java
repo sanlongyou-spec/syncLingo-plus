@@ -17,14 +17,21 @@ import java.util.Set;
  * <p>公共/服务/系统类权限码(AUTH_LOGIN、HEALTH_READ、BOT_*、SHARE_READ、INTERNAL_ASYNC 等)
  * 由 IdentityType 而非用户角色裁决,不在此映射的语义内(即便 ADMIN 全集包含它们也不影响)。
  *
- * <p>枚举值随 PermissionCode 演进时:ADMIN 自动获得全部;OPERATOR/VIEWER 为显式白名单,新增码默认不授予。
+ * <p>枚举值随 PermissionCode 演进时:各角色均为显式白名单,新增码默认不授予。
  */
 public final class RolePermissions {
 
     private RolePermissions() {
     }
 
-    /** OPERATOR:会议准备、同传、摘要、通知及本人配置(不含全局运维)。 */
+    /** ADMIN:管理账号,仅用户管理、安全运维、审计和本人身份读取。 */
+    private static final Set<PermissionCode> ADMIN_CODES = EnumSet.of(
+            PermissionCode.USER_MANAGE,
+            PermissionCode.AUDIT_READ,
+            PermissionCode.OPS_EXECUTE,
+            PermissionCode.ACCOUNT_SELF);
+
+    /** OPERATOR:使用者账号,可进行会议准备、同传、摘要、通知及本人配置(不含全局运维)。 */
     private static final Set<PermissionCode> OPERATOR_CODES = EnumSet.of(
             PermissionCode.MEETING_MANAGE,
             PermissionCode.MEETING_CONTENT_MANAGE,
@@ -36,7 +43,6 @@ public final class RolePermissions {
             PermissionCode.PRE_MEETING_MANAGE,
             PermissionCode.BOT_OPERATE,
             PermissionCode.TEAMS_SEND,
-            PermissionCode.PARTICIPANT_READ,
             PermissionCode.DIRECTORY_ACCESS,
             PermissionCode.USER_PREFERENCE_MANAGE,
             PermissionCode.LANGUAGE_PREFERENCE_MANAGE,
@@ -45,7 +51,7 @@ public final class RolePermissions {
             PermissionCode.COST_RATES_READ,
             PermissionCode.ACCOUNT_SELF);
 
-    /** VIEWER:只读/本人账号级(业务写入一律不授;查看被分配会议属 P3 meeting_member)。 */
+    /** VIEWER:查看者账号,只读/本人偏好级(业务写入一律不授;查看被分配会议属 P3 meeting_member)。 */
     private static final Set<PermissionCode> VIEWER_CODES = EnumSet.of(
             PermissionCode.USER_PREFERENCE_MANAGE,
             PermissionCode.LANGUAGE_PREFERENCE_MANAGE,
@@ -57,7 +63,7 @@ public final class RolePermissions {
     private static final Map<Role, Set<PermissionCode>> BY_ROLE = new EnumMap<>(Role.class);
 
     static {
-        BY_ROLE.put(Role.ADMIN, EnumSet.allOf(PermissionCode.class));
+        BY_ROLE.put(Role.ADMIN, EnumSet.copyOf(ADMIN_CODES));
         BY_ROLE.put(Role.OPERATOR, EnumSet.copyOf(OPERATOR_CODES));
         BY_ROLE.put(Role.VIEWER, EnumSet.copyOf(VIEWER_CODES));
     }

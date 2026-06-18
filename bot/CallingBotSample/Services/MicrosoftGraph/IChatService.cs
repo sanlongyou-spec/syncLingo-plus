@@ -13,21 +13,6 @@ namespace CallingBotSample.Services.MicrosoftGraph
         /// <param name="htmlContent">Message content; simple HTML is normalized to Teams Markdown.</param>
         Task<TeamsUserMessageTarget> SendMessageToUserAsync(string userIdentifier, string htmlContent);
 
-        /// <summary>
-        /// Post a Teams text/Markdown message directly to a Teams meeting chat thread.
-        /// All meeting participants will see it in the meeting chat.
-        /// </summary>
-        /// <param name="threadId">Meeting chat thread ID (19:meeting_xxx@thread.v2)</param>
-        /// <param name="htmlContent">Message content; simple HTML is normalized to Teams Markdown.</param>
-        Task SendToMeetingChatAsync(string threadId, string htmlContent);
-
-        /// <summary>
-        /// Install the bot app into the meeting chat so it can send proactive messages.
-        /// Requires TeamsAppInstallation.ReadWriteSelfForChat.All application permission.
-        /// Call this once when the bot joins a meeting; Teams fires conversationUpdate which
-        /// MessageBot.OnMembersAddedAsync captures and stores as a ConversationReference.
-        /// </summary>
-        Task EnsureBotInMeetingChatAsync(string threadId);
     }
 
     /// <summary>

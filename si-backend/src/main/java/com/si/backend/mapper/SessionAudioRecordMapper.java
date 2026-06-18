@@ -47,6 +47,28 @@ public interface SessionAudioRecordMapper {
     @Select("""
             SELECT * FROM session_audio_record
             WHERE user_id = #{userId}
+              AND meeting_id = #{meetingId}
+              AND session_id = #{sessionId}
+            LIMIT 1
+            """)
+    SessionAudioRecord findByUserMeetingAndSession(@Param("userId") Long userId,
+                                                   @Param("meetingId") Long meetingId,
+                                                   @Param("sessionId") String sessionId);
+
+    @Select("""
+            SELECT * FROM session_audio_record
+            WHERE user_id = #{userId}
+              AND meeting_id = #{meetingId}
+              AND session_id NOT LIKE CONCAT(#{combinedPrefix}, '%')
+            ORDER BY create_time ASC, id ASC
+            """)
+    List<SessionAudioRecord> findSourceRecordsByMeetingId(@Param("userId") Long userId,
+                                                          @Param("meetingId") Long meetingId,
+                                                          @Param("combinedPrefix") String combinedPrefix);
+
+    @Select("""
+            SELECT * FROM session_audio_record
+            WHERE user_id = #{userId}
               AND (#{keyword} IS NULL OR #{keyword} = '' OR name LIKE CONCAT('%', #{keyword}, '%'))
             ORDER BY create_time DESC
             LIMIT #{size} OFFSET #{offset}
@@ -62,4 +84,32 @@ public interface SessionAudioRecordMapper {
               AND (#{keyword} IS NULL OR #{keyword} = '' OR name LIKE CONCAT('%', #{keyword}, '%'))
             """)
     long count(@Param("userId") Long userId, @Param("keyword") String keyword);
+
+    @Select("""
+            SELECT * FROM session_audio_record
+            WHERE user_id = #{userId}
+              AND meeting_id = #{meetingId}
+              AND session_id = #{combinedSessionId}
+              AND (#{keyword} IS NULL OR #{keyword} = '' OR name LIKE CONCAT('%', #{keyword}, '%'))
+            ORDER BY create_time DESC
+            LIMIT #{size} OFFSET #{offset}
+            """)
+    List<SessionAudioRecord> searchMeetingCombined(@Param("userId") Long userId,
+                                                   @Param("meetingId") Long meetingId,
+                                                   @Param("combinedSessionId") String combinedSessionId,
+                                                   @Param("keyword") String keyword,
+                                                   @Param("size") int size,
+                                                   @Param("offset") int offset);
+
+    @Select("""
+            SELECT COUNT(*) FROM session_audio_record
+            WHERE user_id = #{userId}
+              AND meeting_id = #{meetingId}
+              AND session_id = #{combinedSessionId}
+              AND (#{keyword} IS NULL OR #{keyword} = '' OR name LIKE CONCAT('%', #{keyword}, '%'))
+            """)
+    long countMeetingCombined(@Param("userId") Long userId,
+                              @Param("meetingId") Long meetingId,
+                              @Param("combinedSessionId") String combinedSessionId,
+                              @Param("keyword") String keyword);
 }

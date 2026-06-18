@@ -1,126 +1,293 @@
-# SyncLingo 生产部署与运维手册（当前真实架构）
+# syncLingo Plus 生产部署与运维手册
 
-> 本文为**当前实际运行**的权威说明，取代 `docs/` 下旧的 VoiceMeeter 系列规划文档（那些方案已废弃，不要再参照）。
-> 服务器：阿里云 ECS 雅加达 `i-k1ad41c52p8mnilmr6ba`（4 vCPU / 8 GiB / 100G ESSD PL0），包年包月 + 公网按流量计费。
-> 密钥/密码不在本文，见服务器 `/opt/syncLingo/backend.env`、bot `appsettings.json` 及本地 gitignore 的 `DEPLOYMENT-RECORD.md`。
+本文是当前唯一有效的生产部署说明。生产环境运行在 Linux 服务器上，不使用 ngrok。
 
----
+## 1. 架构
 
-## 1. 架构总览（已无 VoiceMeeter）
+```text
+Browser HTTPS
+  -> Nginx /                 -> /var/www/si
+  -> Nginx /api/**, /ws/**   -> Java backend :8080
+  -> Nginx /bot-api/**       -> Java backend :8080 -> signed call -> C# Bot :3978
+  -> Nginx /api/messages     -> C# Bot :3978
 
+Java backend -> MySQL :3306
+Java backend -> speaker-service :7000
+Java backend -> C# Bot :3978
 ```
-浏览器(HTTPS 443) ──Nginx──┬─ /                → /var/www/si (前端静态, Vite 构建)
-                           ├─ /api, /ws, /ws/share-audio → 127.0.0.1:8080 (后端)
-                           └─ /bot-api/         → 127.0.0.1:3978/ (Bot, 注意尾斜杠!)
-后端(Docker, --network host) → 127.0.0.1:3306(MySQL) / 7000(声纹) / 3978(Bot)
-微软 Bot Framework ── ngrok(固定域名) → 127.0.0.1:3978
+
+Azure Bot Messaging endpoint:
+
+```text
+https://<your-domain>/api/messages
 ```
 
-- **音频分发**：TTS/原声经后端 **Opus 编码**(48kHz/24kbps) 走 `/ws/share-audio` 扇出到分享页（WebCodecs 解码播放）。**不再用 VoiceMeeter / 浏览器 setSinkId**。
-- **管线**：浏览器采麦 → `/ws/asr` → Azure ConversationTranscriber(ASR+说话人分离) → Google 翻译(+LLM 压缩) → Cartesia TTS → Opus 扇出。
-- **声纹**：CAM++ / sherpa-onnx（`speaker-service`，无 torch），把 Azure 的 Guest-N 映射到登记的真人 + 克隆音色。
+不要再安装或启动 `si-ngrok`。
 
-## 2. 组件与运行方式
+## 2. 服务器准备
 
-| 组件 | 运行方式 | 端口 | 备注 |
-|---|---|---|---|
-| 后端 si-backend | Docker，`--network host`，`--env-file backend.env` | 8080 | 镜像由**根 Dockerfile** 构建 |
-| MySQL si-mysql | Docker `mysql:8.0`，发布 127.0.0.1:3306 | 3306 | 数据卷 `/opt/si-mysql` |
-| 声纹 si-speaker | **systemd + venv**：`.venv/bin/uvicorn main:app --port 7000` | 7000 | 见坑 §5.3 |
-| Bot si-bot | **systemd + .NET6**：`dotnet bin/Release/net6.0/CallingBotSample.dll` | 3978 | 见坑 §5.2 |
-| ngrok si-ngrok | systemd，`--url <固定域名>` → 3978 | - | Bot 公网回调 |
-| Nginx | systemd，443/80 | 443 | 反代 + 静态 + WS upgrade |
+建议 Ubuntu 22.04/24.04，4C8G 起步。公网安全组只开放：
 
-健康检查：后端 **`/api/health`**（不是 `/health`）。
+- `80/tcp` and `443/tcp`
+- `22/tcp` limited to trusted IPs
 
-## 3. 更新/部署流程（标准）
+安装基础依赖：
 
 ```bash
-cd /opt/syncLingo && git pull origin final-version
-
-# 后端(改了 si-backend 才需要)
-docker build -t si-backend:latest . && docker rm -f si-backend && \
-docker run -d --name si-backend --restart=always --network host --env-file /opt/syncLingo/backend.env si-backend:latest
-until curl -sf http://127.0.0.1:8080/api/health >/dev/null; do echo waiting...; sleep 2; done
-
-# 前端(改了 si-frontend 才需要)
-cd si-frontend && npm install && npm run build && cp -r dist/* /var/www/si/ && cd ..
-
-# 声纹(改了 speaker-service/main.py 才需要)
-systemctl restart si-speaker
-
-# Bot(改了 bot/ 才需要)
-cd bot/CallingBotSample && dotnet build -c Release && systemctl restart si-bot && cd /opt/syncLingo
+apt update
+apt -y install git curl unzip nginx certbot python3-certbot-nginx \
+  python3 python3-venv python3-dev build-essential docker.io
+systemctl enable --now docker nginx
 ```
 
-## 4. 关键配置
+安装 Node.js 18+ 和 .NET 6 SDK，版本以 `si-frontend/package.json` 和 `bot/CallingBotSample/CallingBotSample.csproj` 为准。
 
-- `backend.env`：所有外部 API key、DB 密码、JWT、`BOT_API_URL`、ASR/翻译/TTS 参数。**env 会覆盖 application.yml 默认值**。
-  - `AZURE_ASR_MAX_SEGMENT_*`：**不要设**（留空走 yml 默认 0 = 关闭按字符硬切，防句首丢字）。要启用长度切段才设非 0。
-  - `BOT_API_URL`：`--network host` 下必须是 `http://127.0.0.1:3978`（**不能** host.docker.internal）。
-- bot `appsettings.json`：仅在服务器 `/opt/syncLingo/bot/CallingBotSample/`（含 MicrosoftAppId/密码、ngrok BotBaseUrl、`BackendBaseUrl=http://localhost:8080`）。**不入 git**。
-- 声纹阈值：env `SPEAKER_MIN_SCORE`(默认0.5) / `SPEAKER_MIN_MARGIN`(默认0.10)；不设走代码默认。
+## 3. 代码与密钥
 
-## 5. 踩过的坑（重装/排障必读）
+```bash
+git clone <your-repo-url> /opt/syncLingo
+cd /opt/syncLingo
+cp deploy/linux/env/backend.env.example /opt/syncLingo/backend.env
+cp deploy/linux/env/appsettings.Production.example.json \
+  /opt/syncLingo/bot/CallingBotSample/appsettings.Production.json
+chmod 600 /opt/syncLingo/backend.env /opt/syncLingo/bot/CallingBotSample/appsettings.Production.json
+```
 
-**5.1 后端镜像必须用 glibc(jammy)，不能 Alpine**
-Azure 语音 SDK 自带原生 .so 按 glibc 编译，Alpine(musl) 加载失败 → WS 一连就断(1006)。根 Dockerfile 用 `maven:3.9-eclipse-temurin-21` 构建 + `eclipse-temurin:21-jre-jammy` 运行 + `libssl3 libasound2`。
+替换所有 `REPLACE_WITH_*`、`sync.example.com` 和占位 GUID。
 
-**5.2 Bot 走 git 部署，但 appsettings 只在服务器**
-`bot/CallingBotSample` 源码已入仓库；`appsettings.json`(含密钥) 已 gitignore，**只存服务器**。更新：`git pull` → `dotnet build -c Release` → `systemctl restart si-bot`。
-- bot 崩 `ClientSecretCredential ... null` = appsettings 丢了 → 重建该文件。
-- nginx `/bot-api/` 必须 `proxy_pass http://127.0.0.1:3978/;`（**带尾斜杠**才剥前缀，否则 bot 收到 `/bot-api/...` 全 404）。
+生产必须设置：
 
-**5.3 声纹 venv 不入 git，丢了服务起不来**
-si-speaker 报 `203/EXEC ... .venv/bin/uvicorn No such file` = venv 没了。重建：
+- `DB_PASSWORD`
+- `JWT_SECRET`
+- `ADMIN_API_SECRET`
+- `TEAMS_BOT_API_SECRET`
+- `SERVICE_SIGNATURE_DOWNSTREAM_KEY`
+- `SERVICE_SIGNATURE_UPSTREAM_KEY`
+- Azure Speech / Google Translate / Cartesia / OpenAI or OpenRouter keys
+- `BOT_API_ALLOWED_USER_IDS`：允许从网页发送 Teams 通知的操作员用户 ID 列表
+
+## 4. MySQL
+
+```bash
+docker run -d --name si-mysql --restart=always \
+  -e MYSQL_ROOT_PASSWORD='<root-password>' \
+  -e MYSQL_DATABASE=si_backend \
+  -e MYSQL_USER=sync_lingo \
+  -e MYSQL_PASSWORD='<app-password>' \
+  -p 127.0.0.1:3306:3306 \
+  -v /opt/si-mysql:/var/lib/mysql \
+  mysql:8.0 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+```
+
+首次启动后由 Flyway/初始化 SQL 创建或迁移表结构；生产迁移前先备份。
+
+## 5. 后端
+
+```bash
+cd /opt/syncLingo
+docker build -t si-backend:latest .
+docker rm -f si-backend 2>/dev/null || true
+docker run -d --name si-backend --restart=always --network host \
+  --env-file /opt/syncLingo/backend.env \
+  -e JAVA_OPTS="-Xms512m -Xmx3g" \
+  si-backend:latest
+
+curl -sf http://127.0.0.1:8080/api/health
+```
+
+## 6. Speaker Service
+
 ```bash
 cd /opt/syncLingo/speaker-service
-apt -y install python3-venv python3-dev build-essential
-rm -rf .venv && python3 -m venv .venv
-.venv/bin/pip install -U pip wheel && .venv/bin/pip install -r requirements.txt
-systemctl reset-failed si-speaker && systemctl restart si-speaker
+python3 -m venv .venv
+.venv/bin/pip install -U pip wheel
+.venv/bin/pip install -r requirements.txt
 ```
-模型 `models/campplus_zh.onnx` 已入 git；声纹库 `embeddings.json` 只在服务器(勿丢)。
 
-**5.4 前端 dist 不入 git**
-`si-frontend/dist/` 已 gitignore（服务器自行 `npm run build`）。早期它被跟踪导致每次 `git pull` 冲突，已移除。若旧机仍冲突：`git checkout -- si-frontend/dist` 再 pull。
-
-**5.5 声纹准确率**
-阈值/margin 只是基础；**登记数据干净才是关键**：每个真人用安静近麦、**不外放译音**的 10–20s 单独登记；别给“Translation/虚拟账号”登记声纹。库脏(同人多名/不同人同名)时先在音色克隆页删干净再重登记。
-
-## 6. 运维巡检
+声纹和性别模型放在 `speaker-service/models/`，模型下载产物不入库。
 
 ```bash
-# 服务状态
-docker ps --format 'table {{.Names}}\t{{.Status}}'; systemctl is-active si-speaker si-bot si-ngrok nginx
-# 日志
-docker logs -f si-backend; journalctl -u si-speaker -f; journalctl -u si-bot -f
-# 资源/流量(已装 sysstat/vnstat/nethogs)
-sar -u; sar -n DEV          # CPU/网络历史
-vnstat; vnstat -h           # 流量(GB)
-nethogs eth0                # 实时按进程看带宽
-free -h                     # 内存/swap(已加 3G swap)
-# 延迟分析
-docker logs --since 60m si-backend 2>&1 | /opt/syncLingo/speaker-service/.venv/bin/python /opt/syncLingo/tests/analyze_latency.py
-# 备份 DB
-docker exec si-mysql mysqldump -uroot -p'<见backend.env>' si_backend > ~/backup_$(date +%F).sql
+cp /opt/syncLingo/deploy/linux/systemd/si-speaker.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now si-speaker
+curl -sf http://127.0.0.1:7000/health
 ```
 
-- **公网带宽**：峰值默认 10Mbps，实测一场已打满；80 人需在控制台上调到 15–20Mbps（按流量计费，调峰值不增固定费）。
-- **swap**：已加 3G（`/swapfile`，已写 fstab）。
-- **成本**：定期查“费用→用量明细”看公网流出流量；**及时释放不用的按量实例**（曾有一台 Windows 按量机空跑扣盘费）。
+## 7. Teams Bot
 
-## 7. 故障速查
+```bash
+cd /opt/syncLingo/bot/CallingBotSample
+dotnet publish -c Release -o /opt/syncLingo/runtime/bot
+cp appsettings.Production.json /opt/syncLingo/runtime/bot/appsettings.Production.json
+cp /opt/syncLingo/deploy/linux/systemd/si-bot.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now si-bot
+systemctl status si-bot --no-pager
+```
 
-| 现象 | 原因 | 处置 |
-|---|---|---|
-| WS `/ws/asr` 一连就 1006 断 | 后端镜像是 Alpine(musl) | 改 jammy 镜像(§5.1) |
-| 开始同传后无反应 | si_user 表空导致 FK 失败 | 插入 admin 用户(id=1) |
-| si-speaker `203/EXEC` | venv 丢失 | 重建 venv(§5.3) |
-| bot 启动崩 ClientSecret null | appsettings 丢失 | 重建 appsettings(§5.2) |
-| `/bot-api/*` 全 404 | nginx 少尾斜杠 | `proxy_pass ...:3978/;`(§5.2) |
-| 发言摘要发送失败 | 走了 PDF→SharePoint(未配) | 已改纯文本发送 |
-| 句首丢字 | 按字符硬切偏移错位 | MAX_SEGMENT=0(§4) |
-| 选某语言听到别语言 | 原声按漂移源语言路由 | 已改按配置源语言(固定时) |
-| TTS 怪音/音乐声 | 重采样逐块相位重置 | 已改连续相位 |
-| 译文出现 SI_TERM_N | 占位符被翻译改坏 | 已加容错还原+兜底清洗 |
+Teams app manifest is in `bot/CallingBotSample/AppManifest/manifest.json`. Replace:
+
+- Teams app `id`
+- Bot `botId`
+- `webApplicationInfo.id`
+- `validDomains`
+- developer URLs
+
+Then upload the app package in Teams Admin Center and set Azure Bot Messaging endpoint to `https://<domain>/api/messages`.
+
+## 8. Frontend and Nginx
+
+```bash
+cd /opt/syncLingo/si-frontend
+npm ci
+npm run build
+mkdir -p /var/www/si
+rsync -a --delete dist/ /var/www/si/
+```
+
+```bash
+cp /opt/syncLingo/deploy/linux/nginx/synclingo.conf /etc/nginx/sites-available/synclingo.conf
+sed -i 's/sync.example.com/<your-domain>/g' /etc/nginx/sites-available/synclingo.conf
+ln -sf /etc/nginx/sites-available/synclingo.conf /etc/nginx/sites-enabled/synclingo.conf
+nginx -t
+certbot --nginx -d <your-domain>
+systemctl reload nginx
+```
+
+## 9. Release Update
+
+Before deploying a risky release, prepare or verify a rollback point. The
+current production rollback baseline is recorded in
+`docs/server-rollback-2026-06-19.md`.
+
+Preferred release flow:
+
+1. Commit the local release code.
+2. Push `final-version` to the Git remote.
+3. Pull that exact commit on `/opt/syncLingo`.
+4. Rebuild backend, frontend, speaker-service dependencies, and Bot runtime.
+5. Reload nginx and verify health/logs.
+
+Local release preparation:
+
+```bash
+cd <local-syncLingo-plus>
+
+mvn -q test -f si-backend/pom.xml
+cd si-frontend && npm run build && cd ..
+cd bot/CallingBotSample && dotnet test ../CallingBotSample.Tests/CallingBotSample.Tests.csproj && cd ../..
+cd speaker-service && python -m compileall -q . && cd ..
+
+git status --short
+git add -A
+git commit -m "final: production release"
+git push origin final-version
+git rev-parse HEAD
+```
+
+Use the printed commit as `NEW_COMMIT` on the server.
+
+Server pre-deploy cleanup:
+
+```bash
+cd /opt/syncLingo
+BACKUP=/opt/backups/synclingo-rollback-2b3319e-20260615
+
+# Keep production secrets and model/runtime directories. Only reset tracked
+# files that would block a fast-forward pull.
+cp -a si-frontend/package-lock.json "$BACKUP/server-package-lock.before-new-deploy" 2>/dev/null || true
+git restore si-frontend/package-lock.json
+rm -f FETCH_HEAD
+```
+
+```bash
+cd /opt/syncLingo
+git fetch --all
+git checkout final-version
+git pull --ff-only origin final-version
+NEW_COMMIT=$(git rev-parse HEAD)
+NEW_TAG=$(git rev-parse --short=12 HEAD)
+
+docker build -t si-backend:$NEW_TAG -t si-backend:latest .
+docker rm -f si-backend
+docker run -d --name si-backend --restart=always --network host \
+  --env-file /opt/syncLingo/backend.env \
+  -e JAVA_OPTS="-Xms512m -Xmx3g" \
+  si-backend:latest
+
+cd /opt/syncLingo/speaker-service
+.venv/bin/pip install -r requirements.txt
+if [ -f requirements-optional.txt ]; then .venv/bin/pip install -r requirements-optional.txt; fi
+if [ -f tools/ensure_voice_gender_model.py ]; then .venv/bin/python tools/ensure_voice_gender_model.py; fi
+
+cd /opt/syncLingo/si-frontend
+npm ci && npm run build
+mkdir -p /var/www/si
+rsync -a --delete dist/ /var/www/si/
+
+cd /opt/syncLingo/bot/CallingBotSample
+dotnet publish -c Release -o /opt/syncLingo/runtime/bot
+cp appsettings.Production.json /opt/syncLingo/runtime/bot/appsettings.Production.json
+
+cp /opt/syncLingo/deploy/linux/nginx/synclingo.conf /etc/nginx/sites-available/synclingo.conf
+sed -i 's/sync.example.com/julongtongchuan.icu/g' /etc/nginx/sites-available/synclingo.conf
+ln -sf /etc/nginx/sites-available/synclingo.conf /etc/nginx/sites-enabled/synclingo.conf
+nginx -t
+
+systemctl restart si-speaker si-bot
+systemctl reload nginx
+curl -sf http://127.0.0.1:8080/api/health
+systemctl is-active si-speaker si-bot nginx
+docker ps --filter name=si-backend --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+echo "deployed commit=$NEW_COMMIT imageTag=$NEW_TAG"
+```
+
+Critical nginx requirement for the current release:
+
+```text
+location /bot-api/ { proxy_pass http://127.0.0.1:8080; }
+```
+
+Do not proxy browser `/bot-api/**` directly to `127.0.0.1:3978`; the Java
+backend must enforce authorization and sign the downstream Bot request.
+
+## 10. Operations
+
+Health and status:
+
+```bash
+docker ps --filter name=si-backend
+curl -sf http://127.0.0.1:8080/api/health
+systemctl is-active si-speaker si-bot nginx
+```
+
+Logs:
+
+```bash
+docker logs -f si-backend
+journalctl -u si-speaker -f
+journalctl -u si-bot -f
+tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+```
+
+Backups:
+
+```bash
+mkdir -p /opt/backups
+docker exec si-mysql mysqldump -usync_lingo -p'<app-password>' si_backend \
+  > /opt/backups/si_backend_$(date +%F_%H%M%S).sql
+```
+
+Also back up `speaker-service/embeddings.json` or any production speaker database files.
+
+## 11. Go-Live Checks
+
+- HTTPS opens the frontend.
+- Login, refresh-token, logout, and admin-only screens work.
+- Operator can create a meeting, upload only PDF/Word meeting files, start/stop interpretation, and view history.
+- Viewer cannot see admin/user-management functions.
+- `/bot-api/**` rejects unauthorized users.
+- Teams notification result lists successful and failed accounts.
+- Azure Bot responds through `https://<domain>/api/messages`.
+- Meeting full-session recording appears in history and downloads.
+- Backend, speaker, bot, and nginx logs contain no secrets.

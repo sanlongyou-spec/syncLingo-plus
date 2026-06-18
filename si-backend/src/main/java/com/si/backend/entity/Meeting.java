@@ -12,8 +12,6 @@ public class Meeting {
     private LocalDateTime scheduledTime;
     private String note;
     private Boolean deleted;
-    /** Teams meeting join URL (captured after uploading 会议安排; used by the bot to join). */
-    private String meetingUrl;
     private String attendanceJson;
     /** Parsed 应到 (expected participants) from the uploaded 会议安排, persisted so the attendance
      *  comparison survives across sessions without re-uploading the schedule. */

@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * P3 管理员临时内容授权。申请仅 ADMIN;批准须会议 owner 或另一管理员(申请人不能自批,服务层强制)。
+ * P3 管理员临时内容授权。作为安全运维功能入口,仅管理账号可调用。
  */
 @Slf4j
 @RestController
@@ -26,7 +26,7 @@ public class SupportGrantController {
 
     private final SupportAccessGrantService supportAccessGrantService;
 
-    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.MEETING_MANAGE,
+    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.OPS_EXECUTE,
             scope = ResourceScope.ALL, expectedStatuses = {200, 400, 401, 403, 404})
     @PostMapping
     public Result<Long> request(@RequestBody Map<String, Object> body) {
@@ -37,7 +37,7 @@ public class SupportGrantController {
         return Result.ok(grant.getId());
     }
 
-    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.MEETING_MANAGE,
+    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.OPS_EXECUTE,
             scope = ResourceScope.ALL, expectedStatuses = {200, 400, 401, 403, 404})
     @PutMapping("/{id}/approve")
     public Result<Void> approve(@PathVariable Long id) {
@@ -45,7 +45,7 @@ public class SupportGrantController {
         return Result.ok();
     }
 
-    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.MEETING_MANAGE,
+    @AuthorizationSpec(identity = IdentityType.USER, permission = PermissionCode.OPS_EXECUTE,
             scope = ResourceScope.ALL, expectedStatuses = {200, 401, 403, 404})
     @DeleteMapping("/{id}")
     public Result<Void> revoke(@PathVariable Long id) {

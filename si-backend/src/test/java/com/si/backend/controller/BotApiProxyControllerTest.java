@@ -42,7 +42,7 @@ class BotApiProxyControllerTest {
     @Test
     void emptyUserAllowlist_deniesAllUsers() {
         bindActor(5L);
-        HttpServletRequest request = request("POST", "/bot-api/api/meetings/join");
+        HttpServletRequest request = request("POST", "/bot-api/api/meetings/summary");
 
         BizException error = assertThrows(BizException.class, () -> controller.proxy(request, new byte[0]));
 
@@ -53,7 +53,7 @@ class BotApiProxyControllerTest {
     void unknownOperation_isDenied() {
         properties.setAllowedUserIds(List.of(5L));
         bindActor(5L);
-        HttpServletRequest request = request("DELETE", "/bot-api/api/meetings/participants");
+        HttpServletRequest request = request("POST", "/bot-api/api/meetings/join");
 
         BizException error = assertThrows(BizException.class, () -> controller.proxy(request, new byte[0]));
 
@@ -66,14 +66,14 @@ class BotApiProxyControllerTest {
         bindActor(5L);
         MockHttpServletRequest request = (MockHttpServletRequest) request(
                 "POST",
-                "/bot-api/api/meetings/join"
+                "/bot-api/api/meetings/summary"
         );
         request.addHeader(HttpHeaders.AUTHORIZATION, "Bearer secret-user-token");
         request.addHeader(HttpHeaders.COOKIE, "session=secret");
         request.addHeader("X-Admin-Secret", "admin-secret");
         request.addHeader(HttpHeaders.CONTENT_TYPE, "application/json");
         when(integration.forward(
-                eq("/api/meetings/join"),
+                eq("/api/meetings/summary"),
                 eq(HttpMethod.POST),
                 any(HttpHeaders.class),
                 any(byte[].class)
@@ -83,7 +83,7 @@ class BotApiProxyControllerTest {
 
         ArgumentCaptor<HttpHeaders> headers = ArgumentCaptor.forClass(HttpHeaders.class);
         verify(integration).forward(
-                eq("/api/meetings/join"),
+                eq("/api/meetings/summary"),
                 eq(HttpMethod.POST),
                 headers.capture(),
                 any(byte[].class)

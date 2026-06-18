@@ -1275,6 +1275,86 @@
   user-select: none;
 }
 
+.history-teams-send-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0.75rem 20px 0;
+}
+
+.history-speaker-record .history-teams-send-result {
+  margin: 0.65rem 0 0;
+}
+
+.history-teams-send-group {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #f8fafc;
+}
+
+.history-teams-send-group--success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.history-teams-send-group--failure {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.history-teams-send-title {
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #334155;
+}
+
+.history-teams-send-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.history-teams-send-tag {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  padding: 0.32rem 0.55rem;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.history-teams-send-tag strong,
+.history-teams-send-tag small {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-teams-send-tag strong {
+  color: #0f172a;
+  font-size: 0.8rem;
+}
+
+.history-teams-send-tag small {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.history-teams-send-empty {
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 0.8rem;
+}
+
 /* ─────────────────────────────────────────────────
    Action Items (A6/A7)
 ───────────────────────────────────────────────── */

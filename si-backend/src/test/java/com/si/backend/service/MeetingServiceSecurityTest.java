@@ -9,12 +9,20 @@ import com.si.backend.mapper.MeetingMapper;
 import com.si.backend.mapper.PersistentPreMeetingFileMapper;
 import com.si.backend.mapper.SpeakerSummaryRecordMapper;
 import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.vo.MeetingFileVo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.mock.web.MockMultipartFile;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -91,5 +99,46 @@ class MeetingServiceSecurityTest {
         );
 
         assertEquals(404, error.getCode());
+    }
+
+    @Test
+    void uploadFile_acceptsPdfReportFiles() throws Exception {
+        Meeting meeting = new Meeting();
+        meeting.setId(10L);
+        meeting.setUserId(1L);
+        when(meetingMapper.findById(10L)).thenReturn(meeting);
+        byte[] content = "report".getBytes(StandardCharsets.UTF_8);
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "report.pdf", "application/pdf", content);
+        when(preMeetingService.extractFileText(any(byte[].class), eq("pdf"), eq("report.pdf")))
+                .thenReturn("extracted report");
+
+        MeetingFileVo uploaded = service.uploadFile(new AuthenticatedActor(1L), 10L, file);
+
+        ArgumentCaptor<PersistentPreMeetingFile> captor = ArgumentCaptor.forClass(PersistentPreMeetingFile.class);
+        verify(fileMapper).insert(captor.capture());
+        assertEquals("report.pdf", uploaded.getFileName());
+        assertEquals("pdf", uploaded.getFileType());
+        assertEquals("report.pdf", captor.getValue().getFileName());
+        assertEquals("pdf", captor.getValue().getFileType());
+        assertEquals("extracted report", captor.getValue().getFileContent());
+    }
+
+    @Test
+    void uploadFile_rejectsUnsupportedReportFilesBeforeParsing() {
+        Meeting meeting = new Meeting();
+        meeting.setId(10L);
+        meeting.setUserId(1L);
+        when(meetingMapper.findById(10L)).thenReturn(meeting);
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "report.txt", "text/plain", "report".getBytes(StandardCharsets.UTF_8));
+
+        BizException error = assertThrows(
+                BizException.class,
+                () -> service.uploadFile(new AuthenticatedActor(1L), 10L, file)
+        );
+
+        assertEquals(400, error.getCode());
+        verifyNoInteractions(preMeetingService, embeddingService);
     }
 }

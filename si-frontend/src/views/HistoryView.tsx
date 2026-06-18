@@ -36,6 +36,7 @@ import type {
   PreMeetingAttendanceResult,
   SpeakerSummaryRecord,
   SystemUserInfo,
+  TeamsSummarySendResponse,
 } from '../types'
 import './InterpretationView.css'
 import './HistoryView.css'
@@ -290,6 +291,7 @@ export default function HistoryView() {
   )
   const [summaryReqSaved, setSummaryReqSaved] = useState(false)
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [summaryPushResult, setSummaryPushResult] = useState<TeamsSummarySendResponse | null>(null)
   const [systemUsers, setSystemUsers] = useState<SystemUserInfo[]>([])
   const [systemUsersLoading, setSystemUsersLoading] = useState(false)
   const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
@@ -312,6 +314,7 @@ export default function HistoryView() {
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerSaveStatus, setSpeakerSaveStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
+  const [speakerPushResults, setSpeakerPushResults] = useState<Record<string, TeamsSummarySendResponse | null>>({})
 
   // ── Action items tab ─────────────────────────────────────
   const [actionItems, setActionItems] = useState<MeetingActionItem[]>([])
@@ -431,7 +434,9 @@ export default function HistoryView() {
     setSpeakerRegenStatus({})
     setSpeakerSaveStatus({})
     setSpeakerPushStatus({})
+    setSpeakerPushResults({})
     setTeamsPushStatus('idle')
+    setSummaryPushResult(null)
     setSpeakerMappings({})
     setSpeakerRenameInputs({})
     setSpeakerRenameSaving({})
@@ -564,11 +569,11 @@ export default function HistoryView() {
   useEffect(() => {
     if (activeTab !== 'audio') return
     setAudioLoading(true)
-    getAudioRecords(audioKeyword)
+    getAudioRecords(audioKeyword, 1, 50, selectedMeetingId ?? undefined)
       .then(res => setAudioRecords(res.data?.items ?? []))
       .catch(() => setAudioRecords([]))
       .finally(() => setAudioLoading(false))
-  }, [activeTab, audioKeyword])
+  }, [activeTab, audioKeyword, selectedMeetingId])
 
   const handleAudioDelete = async (id: number) => {
     if (!window.confirm('删除该录音文件？')) return
@@ -652,17 +657,30 @@ export default function HistoryView() {
     finally { setSummaryLoading(false) }
   }
 
-  // 会议总结：生成 PDF（仿宋18/TNR16，同 AI 总结），上传到 SharePoint 后把链接发到所选 Teams 账号。
+  // 会议总结：把摘要内容发送给所选 Teams 账号。
   const pushSummaryPdf = async (title: string, text: string, recipients: string[]) => {
-    if (recipients.length === 0) { setTeamsPushStatus('error'); setTimeout(() => setTeamsPushStatus('idle'), 3000); return }
+    if (recipients.length === 0) {
+      setSummaryPushResult({
+        sent: false,
+        sentCount: 0,
+        failedCount: 0,
+        recipients: [],
+        failures: [{ recipient: '未选择账号', error: '请选择要通知的账号' }],
+      })
+      setTeamsPushStatus('error')
+      setTimeout(() => setTeamsPushStatus('idle'), 3000)
+      return
+    }
     setTeamsPushStatus('loading')
+    setSummaryPushResult(null)
     try {
       const content = `${title || '会议总结'}\n\n${text}`
       const res = await sendTeamsSummaryToUsers(content, recipients)
-      if (!res.sent) throw new Error(res.failures?.[0]?.error || '发送失败')
-      setTeamsPushStatus('done')
+      setSummaryPushResult(res)
+      setTeamsPushStatus(res.sent ? 'done' : 'error')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
-    } catch {
+    } catch (error) {
+      setSummaryPushResult(buildSendFailureResult(recipients, error))
       setTeamsPushStatus('error')
       setTimeout(() => setTeamsPushStatus('idle'), 3000)
     }
@@ -764,6 +782,66 @@ export default function HistoryView() {
     )
   }
 
+  const buildSendFailureResult = (recipients: string[], error: unknown): TeamsSummarySendResponse => {
+    const message = error instanceof Error ? error.message : '发送失败'
+    return {
+      sent: false,
+      sentCount: 0,
+      failedCount: recipients.length,
+      recipients: [],
+      failures: recipients.map(recipient => ({ recipient, error: message })),
+      error: message,
+    }
+  }
+
+  const recipientDisplayName = (recipient: string) => {
+    const user = systemUsers.find(item => item.email === recipient)
+    return user?.personName || user?.email || recipient
+  }
+
+  const renderTeamsSendResult = (result: TeamsSummarySendResponse | null) => {
+    if (!result) return null
+    const successes = result.recipients ?? []
+    const failures = result.failures ?? []
+    return (
+      <div className="history-teams-send-result">
+        {successes.length > 0 && (
+          <div className="history-teams-send-group history-teams-send-group--success">
+            <div className="history-teams-send-title">通知成功账号（{successes.length}）</div>
+            <div className="history-teams-send-tags">
+              {successes.map(target => {
+                const label = target.displayName || target.email || target.recipient
+                const detail = target.email && target.email !== label ? target.email : target.recipient
+                return (
+                  <span key={`${target.aadId}-${target.recipient}`} className="history-teams-send-tag">
+                    <strong>{label}</strong>
+                    {detail && <small>{detail}</small>}
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        {failures.length > 0 && (
+          <div className="history-teams-send-group history-teams-send-group--failure">
+            <div className="history-teams-send-title">通知失败账号（{failures.length}）</div>
+            <div className="history-teams-send-tags">
+              {failures.map(item => (
+                <span key={`${item.recipient}-${item.error}`} className="history-teams-send-tag">
+                  <strong>{recipientDisplayName(item.recipient)}</strong>
+                  <small>{item.error}</small>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {successes.length === 0 && failures.length === 0 && result.error && (
+          <div className="history-teams-send-empty">{result.error}</div>
+        )}
+      </div>
+    )
+  }
+
   const regenerateSpeakerRecord = async (record: SpeakerSummaryRecord, statusKey: string, idx: number) => {
     if (!record.id) return
     setSpeakerRegenStatus(prev => ({ ...prev, [statusKey]: 'loading' }))
@@ -810,7 +888,7 @@ export default function HistoryView() {
     }
   }
 
-  // 发言摘要：生成 PDF（会议名/发言人小标题/正文/日期/整理），上传到 SharePoint 后把链接发到所选 Teams 账号。
+  // 发言摘要：以 Teams 文本消息发送给所选账号，并展示每个账号的成功/失败结果。
   const pushSpeakerSummaryToTeams = async (
     record: SpeakerSummaryRecord,
     recipients: string[],
@@ -819,6 +897,7 @@ export default function HistoryView() {
   ) => {
     if (recipients.length === 0) return
     setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'loading' }))
+    setSpeakerPushResults(prev => ({ ...prev, [statusKey]: null }))
     try {
       const meetingName = selectedMeeting?.title || '会议'
       const speakerName = record.speakerName || '发言人'
@@ -826,12 +905,13 @@ export default function HistoryView() {
         selectedMeeting?.scheduledTime || selectedMeeting?.createTime || record.createTime)
       const content = `${meetingName} · ${speakerName}发言摘要（第${sequence}位发言 · ${dateText}）\n\n${record.summary || ''}`
       const res = await sendTeamsSummaryToUsers(content, recipients)
-      if (!res.sent) throw new Error(res.failures?.[0]?.error || '发送失败')
-      setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'done' }))
+      setSpeakerPushResults(prev => ({ ...prev, [statusKey]: res }))
+      setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: res.sent ? 'done' : 'error' }))
       setTimeout(() => {
         setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
       }, 3000)
-    } catch {
+    } catch (error) {
+      setSpeakerPushResults(prev => ({ ...prev, [statusKey]: buildSendFailureResult(recipients, error) }))
       setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'error' }))
       setTimeout(() => {
         setSpeakerPushStatus(prev => ({ ...prev, [statusKey]: 'idle' }))
@@ -883,11 +963,6 @@ export default function HistoryView() {
             title="下载原始文件"
           >下载原文件</button>
         </div>
-        {f.summary ? (
-          <pre className="history-meeting-file-summary">{f.summary}</pre>
-        ) : (
-          <div className="history-meeting-file-nosummary">暂无 AI 总结（请在会前管理页生成）</div>
-        )}
       </div>
     ))
   }
@@ -898,7 +973,7 @@ export default function HistoryView() {
       <div className="history-attendance-empty">
         <div className="history-attendance-empty-icon">📋</div>
         <div>暂无参会情况</div>
-        <div className="history-attendance-empty-hint">请在 Teams Bot 页选择关联会议并点击"刷新并生成实际参加情况"</div>
+        <div className="history-attendance-empty-hint">当前会议尚未保存参会情况</div>
       </div>
     )
     const statusText = (s: string) => s === 'present' ? '已到' : s === 'absent' ? '未到' : s === 'unexpected' ? '未在安排中' : s
@@ -953,7 +1028,7 @@ export default function HistoryView() {
           <div className="history-list">
             {meetingsLoading && <div className="history-empty">加载中...</div>}
             {!meetingsLoading && meetings.length === 0 && (
-              <div className="history-empty">暂无会议，请先在会前管理页上传会议安排</div>
+              <div className="history-empty">暂无会议，请先在会议页新建会议并上传会议文件</div>
             )}
             {meetings.map(m => (
               <div
@@ -1014,6 +1089,8 @@ export default function HistoryView() {
                       setSpeakerRecords([])
                       setSpeakerRegenStatus({})
                       setSpeakerPushStatus({})
+                      setSpeakerPushResults({})
+                      setSummaryPushResult(null)
                     }}
                   >
                     {sessions.map(s => (
@@ -1056,7 +1133,7 @@ export default function HistoryView() {
                 <button className={`history-tab-btn${activeTab === 'transcript' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('transcript')}>文本记录</button>
                 <button className={`history-tab-btn${activeTab === 'speakers' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('speakers')}>发言摘要</button>
                 <button className={`history-tab-btn${activeTab === 'summary' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('summary')}>会议总结</button>
-                <button className={`history-tab-btn${activeTab === 'audio' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('audio')}>原声录音</button>
+                <button className={`history-tab-btn${activeTab === 'audio' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('audio')}>整场录音</button>
               </div>
 
               {/* ── 文件总结 Tab ── */}
@@ -1271,6 +1348,7 @@ export default function HistoryView() {
                             spellCheck={false}
                           />
                           <div className="history-summary-edit-hint">修改汇报人姓名和摘要正文后，点「保存」一次性保存全部修改；也可直接发送当前内容到 Teams</div>
+                          {renderTeamsSendResult(speakerPushResults[statusKey] ?? null)}
                         </div>
                       )
                     })}
@@ -1318,7 +1396,7 @@ export default function HistoryView() {
                         <div className="history-summary-toolbar">
                           <button
                             className="history-summary-export-btn"
-                            title="生成 PDF，上传到 Teams/SharePoint 后把下载链接发到所选 Teams 账号"
+                            title="把当前会议总结以文本消息发送给所选 Teams 账号"
                             onClick={() => { void pushSummaryPdf(selectedMeeting.title || '会议总结', displayed, chosenRecipients) }}
                             disabled={teamsPushStatus === 'loading' || chosenRecipients.length === 0}
                           >
@@ -1326,6 +1404,7 @@ export default function HistoryView() {
                           </button>
                           <button className="history-summary-regen-btn" onClick={refetchSummary}>重新生成</button>
                         </div>
+                        {renderTeamsSendResult(summaryPushResult)}
                         <div className="history-summary-body">
                           <div className="history-summary-edit-hint">可手动修改下方内容，再点「发送到 Teams」以文本消息发送给所选 Teams 账号</div>
                           <textarea
@@ -1383,13 +1462,13 @@ export default function HistoryView() {
                 )
               })()}
 
-              {/* ── 原声录音 Tab ── */}
+              {/* ── 整场录音 Tab ── */}
               {activeTab === 'audio' && (
                 <div className="history-tab-content">
                   <div className="history-audio-toolbar">
                     <input
                       className="history-audio-search"
-                      placeholder="搜索录音名称..."
+                      placeholder="搜索当前会议录音名称..."
                       value={audioKeyword}
                       onChange={e => setAudioKeyword(e.target.value)}
                     />
@@ -1399,7 +1478,7 @@ export default function HistoryView() {
                   )}
                   {!audioLoading && audioRecords.length === 0 && (
                     <div className="si-tri-empty">
-                      {audioKeyword ? '无匹配录音' : '暂无录音（同传结束后自动生成）'}
+                      {audioKeyword ? '无匹配录音' : '暂无整场会议录音（同传结束后自动生成）'}
                     </div>
                   )}
                   {!audioLoading && audioRecords.length > 0 && (

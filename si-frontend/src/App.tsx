@@ -8,13 +8,11 @@ import LoginView from './views/LoginView'
 import UserShareView from './views/UserShareView'
 import HistoryView from './views/HistoryView'
 import TerminologyView from './views/TerminologyView'
-import TeamsBotView from './views/TeamsBotView'
+import MeetingsView from './views/MeetingsView'
 import CostAnalysisView from './views/CostAnalysisView'
-import UserManagementView from './views/UserManagementView'
-import AccountSecurityView from './views/AccountSecurityView'
-import SecurityOperationsView from './views/SecurityOperationsView'
+import AdminConsoleView from './views/AdminConsoleView'
 import { STORAGE_KEYS } from './constants'
-import { refreshAuth } from './api'
+import { getMe, refreshAuth } from './api'
 import { clearAccessToken, getAccessToken } from './api/authToken'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -72,6 +70,45 @@ function clearStoredAuth() {
 
 function AuthenticatedWorkspace() {
   const location = useLocation()
+  const [currentRole, setCurrentRole] = useState<string>(localStorage.getItem(STORAGE_KEYS.ROLE) || '')
+  const [roleChecked, setRoleChecked] = useState(Boolean(localStorage.getItem(STORAGE_KEYS.ROLE)))
+
+  useEffect(() => {
+    let cancelled = false
+    getMe()
+      .then(res => {
+        if (cancelled) return
+        const role = res.code === 200 ? (res.data?.role || '') : ''
+        setCurrentRole(role)
+        if (role) {
+          localStorage.setItem(STORAGE_KEYS.ROLE, role)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setRoleChecked(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const role = currentRole.toUpperCase()
+  const adminOnlyPaths = new Set(['/admin', '/user-management', '/security-operations'])
+
+  if (!roleChecked && !role) {
+    return <div className="auth-loading">正在读取账号权限...</div>
+  }
+
+  if (role === 'ADMIN') {
+    if (location.pathname !== '/admin') {
+      return <Navigate to="/admin" replace />
+    }
+    return <AdminConsoleView />
+  }
+
+  if (adminOnlyPaths.has(location.pathname)) {
+    return <Navigate to="/" replace />
+  }
 
   return (
     <>
@@ -86,29 +123,14 @@ function AuthenticatedWorkspace() {
           <TerminologyView />
         </div>
       )}
-      {location.pathname === '/teams-bot' && (
+      {location.pathname === '/meetings' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
-          <TeamsBotView />
+          <MeetingsView />
         </div>
       )}
       {location.pathname === '/cost-analysis' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
           <CostAnalysisView />
-        </div>
-      )}
-      {location.pathname === '/user-management' && (
-        <div className="route-overlay" role="dialog" aria-modal="true">
-          <UserManagementView />
-        </div>
-      )}
-      {location.pathname === '/account-security' && (
-        <div className="route-overlay" role="dialog" aria-modal="true">
-          <AccountSecurityView />
-        </div>
-      )}
-      {location.pathname === '/security-operations' && (
-        <div className="route-overlay" role="dialog" aria-modal="true">
-          <SecurityOperationsView />
         </div>
       )}
     </>

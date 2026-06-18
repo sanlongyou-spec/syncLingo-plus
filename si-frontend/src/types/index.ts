@@ -75,19 +75,6 @@ export interface MeetingSummaryVo {
   recordCount: number | null
 }
 
-export interface PreMeetingFile {
-  fileId: string
-  fileName: string
-  meetingTitle?: string | null
-}
-
-export interface PreMeetingSummaryResult {
-  fileId: string
-  fileName: string
-  summary: string
-  extractedText: string
-}
-
 export interface PreMeetingAttendanceRow {
   name?: string | null
   department?: string | null
@@ -129,19 +116,13 @@ export interface TeamsSummarySendResponse {
   failedCount: number
   recipients: TeamsSummarySendTarget[]
   failures: TeamsSummarySendFailure[]
+  error?: string
 }
 
 export interface MeetingParticipant {
   aadId: string
   displayName?: string | null
   email?: string | null
-}
-
-export interface MeetingParticipantsResponse {
-  callId?: string | null
-  threadId?: string | null
-  meetingTitle?: string | null
-  participants: MeetingParticipant[]
 }
 
 export interface InterpretationResultItem {
@@ -303,7 +284,6 @@ export interface Meeting {
   scheduledTime?: string | null
   note?: string | null
   attendanceJson?: string | null
-  meetingUrl?: string | null
   hasExpectedParticipants?: boolean
   createTime?: string
   files?: MeetingFile[]
@@ -341,36 +321,6 @@ export interface AuditLog {
   ip?: string | null
   detail?: string | null
   createTime?: string | null
-}
-
-// A matched Teams recipient: 会议安排原始名 / 系统账号名 / 邮箱.
-export interface MeetingNotificationRecipient {
-  scheduleName: string
-  accountName: string
-  email: string
-  teamsAccount: string
-}
-
-// Parsed meeting notice, matched Teams accounts, and editable notification draft.
-export interface MeetingNotificationPreview {
-  meetingName: string
-  dateText?: string | null
-  timeLines: string[]
-  venue?: string | null
-  meetingCode?: string | null
-  passcode?: string | null
-  meetingUrl: string
-  notificationContent: string
-  participantNames: string[]
-  teamsRecipients: MeetingNotificationRecipient[]
-  nonTeamsSkipped: string[]
-  unmatched: string[]
-}
-
-export interface MeetingNotificationSendResult {
-  selectedRecipientCount: number
-  deliveryRecipientCount: number
-  botStatusCode: number
 }
 
 export interface MeetingFile {

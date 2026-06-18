@@ -8,11 +8,6 @@ namespace CallingBotSample.Options
     public class BotOptions
     {
         public string? AppId { get; set; }
-        public string? AppSecret { get; set; }
-        public Uri? BotBaseUrl { get; set; }
-        public Uri? PlaceCallEndpointUrl { get; set; }
-        public string? GraphApiResourceUrl { get; set; }
-        public string? MicrosoftLoginUrl { get; set; }
         /// <summary>
         /// The Teams app catalog ID (assigned when the app is published to the org catalog).
         /// Required for auto-installing the bot into Teams user personal scope.

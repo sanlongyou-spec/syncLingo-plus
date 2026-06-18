@@ -2,13 +2,10 @@ package com.si.backend.controller;
 
 import com.si.backend.common.Result;
 import com.si.backend.dto.CreateMeetingRequest;
-import com.si.backend.dto.MeetingNotificationPreviewRequest;
-import com.si.backend.dto.MeetingNotificationSendRequest;
 import com.si.backend.dto.SpeakerSummaryRequest;
 import com.si.backend.dto.UpdateSpeakerSummaryRequest;
 import com.si.backend.entity.MeetingActionItem;
 import com.si.backend.facade.InterpretationFacade;
-import com.si.backend.facade.MeetingNotificationFacade;
 import com.si.backend.facade.SpeakerSummaryFacade;
 import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.service.MeetingActionItemService;
@@ -18,9 +15,6 @@ import com.si.backend.service.PreMeetingService;
 import com.si.backend.util.AuthContext;
 import com.si.backend.vo.InterpretationSessionVo;
 import com.si.backend.vo.MeetingFileVo;
-import com.si.backend.vo.MeetingNotificationPreviewVo;
-import com.si.backend.vo.MeetingNotificationRecipientVo;
-import com.si.backend.vo.MeetingNotificationSendVo;
 import com.si.backend.vo.MeetingVo;
 import com.si.backend.vo.PreMeetingSummaryVo;
 import com.si.backend.vo.SpeakerSummaryRecordVo;
@@ -56,16 +50,25 @@ public class MeetingController {
     private final InterpretationFacade interpretationFacade;
     private final MeetingActionItemService actionItemService;
     private final MeetingInsightService meetingInsightService;
-    private final MeetingNotificationFacade meetingNotificationFacade;
     private final PreMeetingService preMeetingService;
     private final com.si.backend.service.MeetingMemberService meetingMemberService;
 
-    // ── P3 会议成员授权(owner/ADMIN 管理;owner 只能授 VIEW,OPERATE 须 ADMIN)──
+    // ── P3 会议成员授权:作为安全运维功能入口,仅管理账号可调用。──
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.USER,
+            permission = com.si.backend.security.authorization.PermissionCode.OPS_EXECUTE,
+            scope = com.si.backend.security.authorization.ResourceScope.ALL,
+            expectedStatuses = {200, 400, 401, 403, 404})
     @GetMapping("/{meetingId}/members")
     public Result<List<com.si.backend.vo.MeetingMemberVo>> listMembers(@PathVariable Long meetingId) {
         return Result.ok(meetingMemberService.list(AuthContext.requireActor(), meetingId));
     }
 
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.USER,
+            permission = com.si.backend.security.authorization.PermissionCode.OPS_EXECUTE,
+            scope = com.si.backend.security.authorization.ResourceScope.ALL,
+            expectedStatuses = {200, 400, 401, 403, 404})
     @PostMapping("/{meetingId}/members")
     public Result<com.si.backend.vo.MeetingMemberVo> assignMember(
             @PathVariable Long meetingId, @RequestBody Map<String, Object> body) {
@@ -74,6 +77,11 @@ public class MeetingController {
         return Result.ok(meetingMemberService.assign(AuthContext.requireActor(), meetingId, targetUserId, level));
     }
 
+    @com.si.backend.security.authorization.AuthorizationSpec(
+            identity = com.si.backend.security.authorization.IdentityType.USER,
+            permission = com.si.backend.security.authorization.PermissionCode.OPS_EXECUTE,
+            scope = com.si.backend.security.authorization.ResourceScope.ALL,
+            expectedStatuses = {200, 401, 403, 404})
     @DeleteMapping("/{meetingId}/members/{userId}")
     public Result<Void> revokeMember(@PathVariable Long meetingId, @PathVariable Long userId) {
         meetingMemberService.revoke(AuthContext.requireActor(), meetingId, userId);
@@ -130,25 +138,6 @@ public class MeetingController {
             @RequestBody Map<String, String> body) {
         meetingService.saveAttendance(AuthContext.requireActor(), meetingId, body.getOrDefault("attendanceJson", ""));
         return Result.ok();
-    }
-
-    @PostMapping("/{meetingId}/notification-preview")
-    public Result<MeetingNotificationPreviewVo> previewNotification(
-            @PathVariable Long meetingId,
-            @RequestBody MeetingNotificationPreviewRequest request) {
-        return Result.ok(meetingNotificationFacade.preview(AuthContext.requireActor(), meetingId, request));
-    }
-
-    @GetMapping("/{meetingId}/notification-recipients")
-    public Result<List<MeetingNotificationRecipientVo>> notificationRecipients(@PathVariable Long meetingId) {
-        return Result.ok(meetingNotificationFacade.recipients(AuthContext.requireActor(), meetingId));
-    }
-
-    @PostMapping("/{meetingId}/notification-send")
-    public Result<MeetingNotificationSendVo> sendNotification(
-            @PathVariable Long meetingId,
-            @RequestBody MeetingNotificationSendRequest request) {
-        return Result.ok(meetingNotificationFacade.send(AuthContext.requireActor(), meetingId, request));
     }
 
     @PutMapping("/{meetingId}/files/{fileId}/summary")

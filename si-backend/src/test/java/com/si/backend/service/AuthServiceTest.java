@@ -87,10 +87,11 @@ class AuthServiceTest {
         SiUser user = userWithPassword("correct", "ACTIVE");
         when(userMapper.findByUsername("alice")).thenReturn(user);
         when(authSessionService.issueForUser(user)).thenReturn(
-                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "access-token"), "refresh-token"));
+                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "access-token", "OPERATOR"), "refresh-token"));
 
         AuthSessionService.IssuedAuth issued = service.login("alice", "correct", IP, null, null);
         assertEquals("access-token", issued.response().getToken());
+        assertEquals("OPERATOR", issued.response().getRole());
         assertEquals("refresh-token", issued.refreshToken());
         verify(throttle).onSuccessfulLogin(IP, "alice");
         verify(throttle, Mockito.never()).onFailedAttempt(eq(IP), anyString());

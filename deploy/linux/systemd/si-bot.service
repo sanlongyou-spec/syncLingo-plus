@@ -1,0 +1,16 @@
+[Unit]
+Description=syncLingo Teams Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/syncLingo/runtime/bot
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://127.0.0.1:3978
+ExecStart=/usr/bin/dotnet /opt/syncLingo/runtime/bot/CallingBotSample.dll
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

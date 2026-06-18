@@ -44,8 +44,9 @@ export default function LoginView() {
       if (res.code === HTTP_STATUS.OK && res.data) {
         setAccessToken(res.data.token)
         localStorage.setItem(STORAGE_KEYS.USER_ID, String(res.data.userId))
+        localStorage.setItem(STORAGE_KEYS.ROLE, res.data.role || '')
         localStorage.removeItem(STORAGE_KEYS.TOKEN)
-        window.location.hash = ROUTES.HOME
+        window.location.hash = res.data.role?.toUpperCase() === 'ADMIN' ? ROUTES.ADMIN_CONSOLE : ROUTES.HOME
       } else if (res.code === HTTP_STATUS.CAPTCHA_REQUIRED) {
         await loadCaptcha()
         setError(res.message || '请输入验证码后重试')

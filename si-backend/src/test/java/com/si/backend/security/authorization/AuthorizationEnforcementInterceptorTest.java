@@ -79,8 +79,14 @@ class AuthorizationEnforcementInterceptorTest {
     void enforce_allowsWhenRoleGrants() throws Exception {
         bindRole("OPERATOR"); // OPERATOR 有 MEETING_MANAGE
         assertTrue(interceptor(AuthorizationMode.ENFORCE).preHandle(request, response, handler("userMeeting")));
+    }
+
+    @Test
+    void enforce_deniesAdminOnBusinessPermission() throws Exception {
         bindRole("ADMIN");
-        assertTrue(interceptor(AuthorizationMode.ENFORCE).preHandle(request, response, handler("userMeeting")));
+        BizException e = assertThrows(BizException.class,
+                () -> interceptor(AuthorizationMode.ENFORCE).preHandle(request, response, handler("userMeeting")));
+        assertEquals(403, e.getCode());
     }
 
     @Test

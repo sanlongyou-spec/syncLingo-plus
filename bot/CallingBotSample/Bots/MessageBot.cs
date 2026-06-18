@@ -39,20 +39,20 @@ namespace CallingBotSample.Bots
         };
 
         private readonly ISyncLingoBotQueryService syncLingoBotQueryService;
-        private readonly ICallCache callCache;
+        private readonly IConversationReferenceCache conversationReferenceCache;
         private readonly ILogger<MessageBot> logger;
 
         public MessageBot(
             ISyncLingoBotQueryService syncLingoBotQueryService,
-            ICallCache callCache,
+            IConversationReferenceCache conversationReferenceCache,
             ILogger<MessageBot> logger)
         {
             this.syncLingoBotQueryService = syncLingoBotQueryService;
-            this.callCache = callCache;
+            this.conversationReferenceCache = conversationReferenceCache;
             this.logger = logger;
         }
 
-        protected override async Task OnMembersAddedAsync(
+        protected override Task OnMembersAddedAsync(
             IList<ChannelAccount> membersAdded,
             ITurnContext<IConversationUpdateActivity> turnContext,
             CancellationToken cancellationToken)
@@ -60,28 +60,20 @@ namespace CallingBotSample.Bots
             // When the bot is installed in a personal or group chat, Teams fires conversationUpdate.
             // Capture the ConversationReference so it can be used for proactive messaging later.
             var convRef = turnContext.Activity.GetConversationReference();
-            var conversationId = turnContext.Activity.Conversation?.Id;
-
-            if (turnContext.Activity.Conversation?.IsGroup == true && !string.IsNullOrEmpty(conversationId))
-            {
-                // Group chat or meeting chat — store by thread/conversation ID.
-                callCache.SetMeetingChatConversationReference(conversationId, convRef);
-                logger.LogInformation("[MessageBot] Stored meeting chat ConversationReference, conversationId={Id}", conversationId);
-                await TryCacheMeetingTitleAsync(turnContext, conversationId, cancellationToken);
-            }
-            else
+            if (turnContext.Activity.Conversation?.IsGroup != true)
             {
                 // 1:1 personal chat — store by the user's AAD ID (the non-bot member).
                 foreach (var member in membersAdded)
                 {
                     if (member.Id != turnContext.Activity.Recipient.Id && !string.IsNullOrEmpty(member.AadObjectId))
                     {
-                        callCache.SetConversationReference(member.AadObjectId, convRef);
+                        conversationReferenceCache.SetConversationReference(member.AadObjectId, convRef);
                         logger.LogInformation("[MessageBot] Stored personal ConversationReference for aadId={AadId}", member.AadObjectId);
                     }
                 }
             }
 
+            return Task.CompletedTask;
         }
 
         protected override async Task OnMessageActivityAsync(
@@ -95,15 +87,8 @@ namespace CallingBotSample.Bots
 
             if (!string.IsNullOrEmpty(userContext.AadId))
             {
-                callCache.SetConversationReference(userContext.AadId, turnContext.Activity.GetConversationReference());
+                conversationReferenceCache.SetConversationReference(userContext.AadId, turnContext.Activity.GetConversationReference());
                 logger.LogDebug("[MessageBot] Stored ConversationReference for aadId={AadId}", userContext.AadId);
-            }
-
-            var conversationId = turnContext.Activity.Conversation?.Id;
-            if (turnContext.Activity.Conversation?.IsGroup == true && !string.IsNullOrEmpty(conversationId))
-            {
-                callCache.SetMeetingChatConversationReference(conversationId, turnContext.Activity.GetConversationReference());
-                await TryCacheMeetingTitleAsync(turnContext, conversationId, cancellationToken);
             }
 
             if (string.IsNullOrWhiteSpace(message))
@@ -310,32 +295,6 @@ namespace CallingBotSample.Bots
             decoded = Regex.Replace(decoded, "<[^>]+>", " ");
             decoded = Regex.Replace(decoded, "\\s+", " ");
             return decoded.Trim();
-        }
-
-        private async Task TryCacheMeetingTitleAsync(
-            ITurnContext turnContext,
-            string conversationId,
-            CancellationToken cancellationToken)
-        {
-            try
-            {
-                var meetingInfo = await TeamsInfo.GetMeetingInfoAsync(turnContext, null, cancellationToken);
-                var title = meetingInfo?.Details?.Title;
-                if (string.IsNullOrWhiteSpace(title))
-                {
-                    logger.LogInformation("[MessageBot] Meeting title is empty, conversationId={ConversationId}", conversationId);
-                    return;
-                }
-
-                callCache.SetMeetingTitle(conversationId, title);
-                logger.LogInformation("[MessageBot] Cached meeting title, conversationId={ConversationId}, title={Title}",
-                    conversationId, title);
-            }
-            catch (System.Exception ex)
-            {
-                // This can be a regular group chat rather than a meeting chat. Keep the bot flow alive.
-                logger.LogInformation(ex, "[MessageBot] Unable to resolve meeting title, conversationId={ConversationId}", conversationId);
-            }
         }
 
         private async Task<TeamsBotUserContext> ResolveTeamsUserContextAsync(

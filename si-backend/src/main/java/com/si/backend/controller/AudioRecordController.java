@@ -1,9 +1,14 @@
 package com.si.backend.controller;
 
 import com.si.backend.common.Result;
+import com.si.backend.entity.Meeting;
 import com.si.backend.entity.SessionAudioRecord;
+import com.si.backend.security.AccessLevel;
+import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.service.AudioRecordService;
+import com.si.backend.service.ResourceOwnershipPolicy;
 import com.si.backend.util.AuthContext;
+import com.si.backend.vo.AudioRecordVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
@@ -16,7 +21,6 @@ import org.springframework.web.bind.annotation.*;
 import java.io.File;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -31,15 +35,25 @@ import java.util.Map;
 public class AudioRecordController {
 
     private final AudioRecordService audioRecordService;
+    private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @GetMapping
     public Result<Map<String, Object>> list(
             @RequestParam(required = false, defaultValue = "") String keyword,
             @RequestParam(required = false, defaultValue = "1") int page,
-            @RequestParam(required = false, defaultValue = "20") int size) {
-        Long userId = AuthContext.requireActor().userId();
-        List<SessionAudioRecord> items = audioRecordService.search(userId, keyword, page, size);
-        long total = audioRecordService.count(userId, keyword);
+            @RequestParam(required = false, defaultValue = "20") int size,
+            @RequestParam(required = false) Long meetingId) {
+        AuthenticatedActor actor = AuthContext.requireActor();
+        Long audioOwnerId = actor.userId();
+        if (meetingId != null) {
+            Meeting meeting = resourceOwnershipPolicy.requireMeetingAccess(actor, meetingId, AccessLevel.VIEW);
+            audioOwnerId = meeting.getUserId();
+        }
+        var items = audioRecordService.search(audioOwnerId, meetingId, keyword, page, size)
+                .stream()
+                .map(AudioRecordVo::from)
+                .toList();
+        long total = audioRecordService.count(audioOwnerId, meetingId, keyword);
         return Result.ok(Map.of("items", items, "total", total));
     }
 
@@ -47,26 +61,28 @@ public class AudioRecordController {
     public Result<Void> rename(
             @PathVariable Long id,
             @RequestParam String name) {
-        Long userId = AuthContext.requireActor().userId();
-        boolean ok = audioRecordService.rename(userId, id, name);
+        AuthenticatedActor actor = AuthContext.requireActor();
+        SessionAudioRecord record = requireAudioManageAccess(actor, id);
+        boolean ok = audioRecordService.rename(record.getUserId(), id, name);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
 
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
-        Long userId = AuthContext.requireActor().userId();
-        boolean ok = audioRecordService.delete(userId, id);
+        AuthenticatedActor actor = AuthContext.requireActor();
+        SessionAudioRecord record = requireAudioManageAccess(actor, id);
+        boolean ok = audioRecordService.delete(record.getUserId(), id);
         return ok ? Result.ok() : Result.fail("记录不存在或无权限");
     }
 
     @GetMapping("/{id}/download")
     public ResponseEntity<Resource> download(@PathVariable Long id) {
-        Long userId = AuthContext.requireActor().userId();
-        File file = audioRecordService.getFile(userId, id);
+        AuthenticatedActor actor = AuthContext.requireActor();
+        SessionAudioRecord record = requireAudioViewAccess(actor, id);
+        File file = audioRecordService.getFile(record.getUserId(), id);
         if (file == null) {
             return ResponseEntity.notFound().build();
         }
-        SessionAudioRecord record = audioRecordService.getRecord(id);
         String filename = (record != null && record.getName() != null ? record.getName() : "recording") + ".wav";
         String encodedFilename = URLEncoder.encode(filename, StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok()
@@ -75,5 +91,23 @@ public class AudioRecordController {
                         "attachment; filename*=UTF-8''" + encodedFilename)
                 .contentLength(file.length())
                 .body(new FileSystemResource(file));
+    }
+
+    private SessionAudioRecord requireAudioViewAccess(AuthenticatedActor actor, Long id) {
+        SessionAudioRecord record = audioRecordService.getRecord(id);
+        if (record != null && record.getMeetingId() != null) {
+            resourceOwnershipPolicy.requireMeetingAccess(actor, record.getMeetingId(), AccessLevel.VIEW);
+            return record;
+        }
+        return resourceOwnershipPolicy.requireOwnedAudio(actor, id);
+    }
+
+    private SessionAudioRecord requireAudioManageAccess(AuthenticatedActor actor, Long id) {
+        SessionAudioRecord record = audioRecordService.getRecord(id);
+        if (record != null && record.getMeetingId() != null) {
+            resourceOwnershipPolicy.requireMeetingAccess(actor, record.getMeetingId(), AccessLevel.OPERATE);
+            return record;
+        }
+        return resourceOwnershipPolicy.requireOwnedAudio(actor, id);
     }
 }

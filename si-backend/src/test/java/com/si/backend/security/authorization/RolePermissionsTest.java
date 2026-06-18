@@ -7,15 +7,19 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * P1 角色→功能权限映射:ADMIN 全集、OPERATOR 业务、VIEWER 只读、null fail-closed。
+ * P1 角色→功能权限映射:ADMIN 管理、OPERATOR 业务、VIEWER 只读、null fail-closed。
  */
 class RolePermissionsTest {
 
     @Test
-    void admin_grantsEverything() {
-        for (PermissionCode code : PermissionCode.values()) {
-            assertTrue(RolePermissions.grants(Role.ADMIN, code), "ADMIN 应拥有 " + code);
-        }
+    void admin_grantsOnlyManagementCapabilities() {
+        assertTrue(RolePermissions.grants(Role.ADMIN, PermissionCode.USER_MANAGE));
+        assertTrue(RolePermissions.grants(Role.ADMIN, PermissionCode.AUDIT_READ));
+        assertTrue(RolePermissions.grants(Role.ADMIN, PermissionCode.OPS_EXECUTE));
+        assertTrue(RolePermissions.grants(Role.ADMIN, PermissionCode.ACCOUNT_SELF));
+        assertFalse(RolePermissions.grants(Role.ADMIN, PermissionCode.INTERPRETATION_OPERATE), "ADMIN 不应进入同传业务");
+        assertFalse(RolePermissions.grants(Role.ADMIN, PermissionCode.MEETING_MANAGE), "ADMIN 不应拥有会议业务权限");
+        assertFalse(RolePermissions.grants(Role.ADMIN, PermissionCode.TERMINOLOGY_MANAGE), "ADMIN 不应维护业务术语");
     }
 
     @Test

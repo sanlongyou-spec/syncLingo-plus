@@ -36,11 +36,12 @@ class AuthControllerSecurityTest {
         httpRequest.setRemoteAddr("127.0.0.1");
         MockHttpServletResponse response = new MockHttpServletResponse();
         when(facade.login(request, "127.0.0.1")).thenReturn(
-                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "access"), "refresh"));
+                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "access", "OPERATOR"), "refresh"));
 
         Result<LoginResponse> result = controller.login(request, httpRequest, response);
 
         assertEquals(200, result.getCode());
+        assertEquals("OPERATOR", result.getData().getRole());
         String setCookie = response.getHeader("Set-Cookie");
         assertNotNull(setCookie);
         assertEquals(true, setCookie.contains(AuthController.REFRESH_COOKIE + "=refresh"));
@@ -54,12 +55,13 @@ class AuthControllerSecurityTest {
         AuthController controller = new AuthController(facade, mock(AnonymousRequestRateLimiter.class));
         MockHttpServletResponse response = new MockHttpServletResponse();
         when(facade.refresh("old-refresh")).thenReturn(
-                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "new-access"), "new-refresh"));
+                new AuthSessionService.IssuedAuth(new LoginResponse(9L, "new-access", "ADMIN"), "new-refresh"));
 
         Result<LoginResponse> result = controller.refresh("old-refresh", new MockHttpServletRequest(), response);
 
         assertEquals(200, result.getCode());
         assertEquals("new-access", result.getData().getToken());
+        assertEquals("ADMIN", result.getData().getRole());
         assertEquals(true, response.getHeader("Set-Cookie").contains(AuthController.REFRESH_COOKIE + "=new-refresh"));
     }
 

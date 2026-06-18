@@ -1,0 +1,63 @@
+.admin-console {
+  background: #eef0f3;
+}
+
+.admin-console-topbar {
+  justify-content: space-between;
+}
+
+.admin-console-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 0;
+  border-bottom: 1px solid #d8d8dc;
+}
+
+.admin-console-tabs button {
+  min-height: 38px;
+  padding: 0 18px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #667085;
+  font-size: 14px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.admin-console-tabs button:hover {
+  color: #1f2937;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.admin-console-tabs button.is-active {
+  color: #1d4ed8;
+  border-bottom-color: #2563eb;
+}
+
+.admin-console-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-console-content .usermgmt-main,
+.admin-console-content .secops-main {
+  padding: 16px 0 0;
+}
+
+@media (max-width: 720px) {
+  .admin-console-topbar {
+    align-items: flex-start;
+  }
+
+  .admin-console-tabs {
+    overflow-x: auto;
+  }
+
+  .admin-console-tabs button {
+    flex: 0 0 auto;
+  }
+}

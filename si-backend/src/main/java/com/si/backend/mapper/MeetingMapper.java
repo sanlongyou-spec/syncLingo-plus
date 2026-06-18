@@ -40,8 +40,8 @@ public interface MeetingMapper {
     @Update("UPDATE meeting SET deleted = 1 WHERE id = #{id}")
     int softDelete(Long id);
 
-    /** Wipe the meeting's stored 应到名单 / 实到核对 / 会议链接 when the meeting is deleted. */
-    @Update("UPDATE meeting SET expected_participants_json = NULL, attendance_json = NULL, meeting_url = NULL WHERE id = #{id}")
+    /** Wipe the meeting's stored 应到名单 / 实到核对 when the meeting is deleted. */
+    @Update("UPDATE meeting SET expected_participants_json = NULL, attendance_json = NULL WHERE id = #{id}")
     int clearAssociatedData(Long id);
 
     @Update("UPDATE meeting SET title = #{title}, scheduled_time = #{scheduledTime}, note = #{note} WHERE id = #{id}")
@@ -55,12 +55,6 @@ public interface MeetingMapper {
 
     @Update("ALTER TABLE meeting ADD COLUMN expected_participants_json MEDIUMTEXT DEFAULT NULL")
     void addExpectedParticipantsColumnIfNotExists();
-
-    @Update("ALTER TABLE meeting ADD COLUMN meeting_url VARCHAR(1024) DEFAULT NULL")
-    void addMeetingUrlColumnIfNotExists();
-
-    @Update("UPDATE meeting SET meeting_url = #{url} WHERE id = #{id}")
-    int updateMeetingUrl(@Param("id") Long id, @Param("url") String url);
 
     @Update("UPDATE meeting SET expected_participants_json = #{json} WHERE id = #{id}")
     int updateExpectedParticipants(@Param("id") Long id, @Param("json") String json);

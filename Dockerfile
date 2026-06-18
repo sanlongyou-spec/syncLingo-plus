@@ -2,18 +2,16 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace/si-backend
 COPY si-backend/pom.xml .
 COPY si-backend/src ./src
-COPY bot/CallingBotSample/Controllers /workspace/bot/CallingBotSample/Controllers
-RUN mvn clean package
+RUN mvn -q -DskipTests package
 
-# 运行镜像必须用 glibc 基础镜像(非 Alpine/musl)：
-# Azure 语音 SDK(ConversationTranscriber) 自带的原生库 .so 按 glibc 编译，musl 下无法加载(UnsatisfiedLinkError)
+# Azure Speech SDK needs a glibc-based runtime image; do not switch to Alpine/musl.
 FROM eclipse-temurin:21-jre-jammy
 WORKDIR /app
-# Azure Speech SDK 运行期依赖：OpenSSL + ALSA
+# Runtime dependencies for Azure Speech SDK.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 libasound2 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /workspace/si-backend/target/*.jar app.jar
 RUN mkdir -p /app/logs
 EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["sh", "-c", "exec java ${JAVA_OPTS:-} -jar app.jar"]

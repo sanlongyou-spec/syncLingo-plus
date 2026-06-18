@@ -22,7 +22,7 @@ class JwtAuthFilterTest {
     @Test
     void botProxyWithoutToken_isRejected() throws Exception {
         JwtAuthFilter filter = filter();
-        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/bot-api/api/meetings/join");
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/bot-api/api/meetings/summary");
         MockHttpServletResponse response = new MockHttpServletResponse();
 
         filter.doFilterInternal(request, response, new MockFilterChain());
@@ -70,7 +70,7 @@ class JwtAuthFilterTest {
     @Test
     void botProxyWithValidToken_bindsUserId() throws Exception {
         JwtAuthFilter filter = filter();
-        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/bot-api/api/meetings/join");
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/bot-api/api/meetings/summary");
         request.addHeader("Authorization", "Bearer " + JwtUtil.createToken(7L, "operator", 0, 60_000L, SECRET));
         MockHttpServletResponse response = new MockHttpServletResponse();
 

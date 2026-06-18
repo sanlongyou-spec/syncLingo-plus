@@ -13,6 +13,7 @@ interface ApiResult<T> {
 interface LoginResult {
   userId: number
   token: string
+  role: string
 }
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & {
@@ -78,6 +79,9 @@ const refreshAccessToken = async (): Promise<string | null> => {
         if (result.code === 200 && result.data?.token) {
           setAccessToken(result.data.token)
           localStorage.setItem(STORAGE_KEYS.USER_ID, String(result.data.userId))
+          if (result.data.role) {
+            localStorage.setItem(STORAGE_KEYS.ROLE, result.data.role)
+          }
           localStorage.removeItem(STORAGE_KEYS.TOKEN)
           return result.data.token
         }

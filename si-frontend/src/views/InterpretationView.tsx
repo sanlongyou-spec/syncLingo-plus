@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
 getAsrHotwords,
-  getMe,
-  getMeetingParticipants,
   getMeetings,
   getUserLanguagePreference,
+  logout,
   saveUserLanguagePreference,
   saveInterpretationResult,
   startInterpretation,
@@ -77,10 +76,10 @@ const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
 
 export default function InterpretationView() {
-  const [currentRole, setCurrentRole] = useState<string>(localStorage.getItem(STORAGE_KEYS.ROLE) || '')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [logoutBusy, setLogoutBusy] = useState(false)
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
   const [currentSource, setCurrentSource] = useState('')
   const [currentTranslated, setCurrentTranslated] = useState('')
@@ -291,18 +290,9 @@ export default function InterpretationView() {
     }
   }, [rememberSpeakerName, resolveSpeakerName])
 
-  const resolveActiveMeetingTitle = async () => {
-    try {
-      const meetingData = await getMeetingParticipants()
-      return meetingData.meetingTitle?.trim() || undefined
-    } catch {
-      return undefined
-    }
-  }
-
   const startSession = async () => {
     if (!selectedMeetingId) {
-      setError('请先在"会前管理"页面上传会议安排，并在此选择关联会议')
+      setError('请先在"会议"页面新建会议，并在此选择关联会议')
       return
     }
     if (enabledLanguages.length < 2) {
@@ -313,7 +303,7 @@ export default function InterpretationView() {
     setIsLoading(true)
     try {
       const selectedMeeting = meetings.find(m => m.id === selectedMeetingId)
-      const sessionTitle = selectedMeeting?.title || await resolveActiveMeetingTitle()
+      const sessionTitle = selectedMeeting?.title
 
       const res = await startInterpretation({
         sourceLang: LANGUAGE.AUTO,
@@ -416,27 +406,24 @@ export default function InterpretationView() {
   }
 
 
-  useEffect(() => {
-    getMe()
-      .then(res => {
-        if (res.code === 200 && res.data?.role) {
-          setCurrentRole(res.data.role)
-          localStorage.setItem(STORAGE_KEYS.ROLE, res.data.role)
-        }
-      })
-      .catch(() => { /* 角色获取失败不影响同传主流程 */ })
-  }, [])
-
-  const isAdmin = currentRole.toUpperCase() === 'ADMIN'
+  const handleLogout = async () => {
+    setLogoutBusy(true)
+    try {
+      await logout()
+    } finally {
+      setLogoutBusy(false)
+      window.location.hash = ROUTES.LOGIN
+    }
+  }
 
   return (
     <div className="si-root">
       <aside className="si-hover-sidebar" aria-label="工具侧边栏">
         <div className="si-hover-sidebar-grip" aria-hidden />
         <div className="si-hover-sidebar-panel">
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.TEAMS_BOT }}>
-            <span className="si-side-action-icon">T</span>
-            <span>Teams Bot</span>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.MEETINGS }}>
+            <span className="si-side-action-icon">M</span>
+            <span>会议</span>
           </button>
           <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.HISTORY }}>
             <span className="si-side-action-icon">H</span>
@@ -454,28 +441,17 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">T</span>
             <span>设置</span>
           </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.ACCOUNT_SECURITY }}>
-            <span className="si-side-action-icon">A</span>
-            <span>账号安全</span>
-          </button>
-          {isAdmin && (
-            <>
-            <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.USER_MANAGEMENT }}>
-              <span className="si-side-action-icon">U</span>
-              <span>用户管理</span>
-            </button>
-            <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.SECURITY_OPERATIONS }}>
-              <span className="si-side-action-icon">O</span>
-              <span>瀹夊叏杩愮淮</span>
-            </button>
-            </>
-          )}
         </div>
       </aside>
 
       <header className="si-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">聚龙同传</h1>
+        </div>
+        <div className="si-topbar-right">
+          <button className="si-logout-btn" type="button" onClick={handleLogout} disabled={logoutBusy}>
+            {logoutBusy ? '退出中...' : '退出登录'}
+          </button>
         </div>
       </header>
 

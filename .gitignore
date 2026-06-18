@@ -13,6 +13,8 @@ target/
 *.swp
 *.swo
 .DS_Store
+.github/java-upgrade/
+.github/modernize/
 
 # Build output
 logs/
@@ -24,7 +26,10 @@ docker-compose.override.yml
 
 # Environment files (contains sensitive info)
 .env
+*.env
+!*.env.example
 *.env.local
+backend.env
 application-local.yml
 application-local.yaml
 
@@ -45,6 +50,7 @@ surefire-reports/
 *.bak
 *.orig
 .tmp-logs/
+**/.venv/
 
 # Claude Code local session data; keep project skills shareable through Git
 .claude/*
@@ -61,8 +67,12 @@ outputs/
 # Speaker service generated files
 speaker-service/__pycache__/
 speaker-service/embeddings.json
+speaker-service/embeddings.model
 speaker-service/pretrained_models/
 speaker-service/embeddings.json.bak.*
+speaker-service/models/wav2vec2-large-robust-6-ft-age-gender/
+speaker-service/models/*.zip
+speaker-service/models/*.safetensors
 
 # TLS certs / private keys (本地HTTPS, 勿入库)
 *.pem
@@ -75,6 +85,7 @@ speaker-service/embeddings.json.bak.*
 DEPLOYMENT-RECORD*.md
 *.secret.md
 bot.tar.gz
+syncLingo-teams-app.zip
 
 # 前端构建产物(服务器自行构建, 不入库, 避免 pull 冲突)
 si-frontend/dist/
@@ -86,3 +97,5 @@ bot/CallingBotSample.Tests/bin/
 bot/CallingBotSample.Tests/obj/
 bot/CallingBotSample/appsettings.json
 bot/CallingBotSample/appsettings.*.json
+!bot/CallingBotSample/appsettings.example.json
+bot/CallingBotSample/wwwroot/temp/

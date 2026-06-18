@@ -19,7 +19,6 @@ namespace CallingBotSample.Services.MicrosoftGraph
             var credential = new ClientSecretCredential(options.TenantId, options.ClientId, options.ClientSecret);
 
             services.AddScoped<GraphServiceClient>(_ => new GraphServiceClient(credential));
-            services.AddTransient<ICallService, CallService>();
             services.AddTransient<IChatService, ChatService>();
 
             return services;

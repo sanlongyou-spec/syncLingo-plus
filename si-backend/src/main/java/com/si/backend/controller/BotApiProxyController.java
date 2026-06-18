@@ -35,11 +35,7 @@ public class BotApiProxyController {
 
     private static final String PROXY_PREFIX = "/bot-api";
     private static final Map<String, Set<HttpMethod>> ALLOWED_OPERATIONS = Map.of(
-            "/api/meetings/summary-file", Set.of(HttpMethod.POST),
-            "/api/meetings/summary", Set.of(HttpMethod.POST),
-            "/api/meetings/summary/chat", Set.of(HttpMethod.POST),
-            "/api/meetings/join", Set.of(HttpMethod.POST),
-            "/api/meetings/participants", Set.of(HttpMethod.GET)
+            "/api/meetings/summary", Set.of(HttpMethod.POST)
     );
 
     private final BotApiProxyProperties properties;

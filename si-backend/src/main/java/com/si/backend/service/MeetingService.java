@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -27,6 +28,8 @@ import java.util.List;
 public class MeetingService {
 
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    private static final Set<String> REPORT_FILE_EXTENSIONS = Set.of("pdf", "doc", "docx");
+    private static final String REPORT_FILE_TYPE_MESSAGE = "会议文件仅支持 PDF 或 Word（.doc/.docx）";
 
     private final MeetingMapper meetingMapper;
     private final PersistentPreMeetingFileMapper fileMapper;
@@ -45,7 +48,6 @@ public class MeetingService {
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
         addFileColumnIfMissing("attendance_json", meetingMapper::addAttendanceJsonColumnIfNotExists);
         addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
-        addFileColumnIfMissing("meeting_url", meetingMapper::addMeetingUrlColumnIfNotExists);
         log.info("[MeetingService] initTables end");
     }
 
@@ -100,22 +102,29 @@ public class MeetingService {
     }
 
     public MeetingFileVo uploadFile(AuthenticatedActor actor, Long meetingId, MultipartFile file) throws IOException {
+        log.info("[MeetingService] uploadFile start, meetingId={}, fileName={}", meetingId, file.getOriginalFilename());
         requireOwner(actor, meetingId);
         String originalName = file.getOriginalFilename();
         if (originalName == null || originalName.isBlank()) originalName = "unnamed";
         String ext = extension(originalName).toLowerCase();
+        if (!REPORT_FILE_EXTENSIONS.contains(ext)) {
+            log.warn("[MeetingService] uploadFile rejected, meetingId={}, fileName={}, ext={}", meetingId, originalName, ext);
+            throw BizException.of(ErrorCode.BAD_REQUEST, REPORT_FILE_TYPE_MESSAGE);
+        }
         byte[] rawBytes = file.getBytes();
         String text = preMeetingService.extractFileText(rawBytes, ext, originalName);
+        String normalizedText = text == null ? "" : text;
         PersistentPreMeetingFile entity = new PersistentPreMeetingFile();
         entity.setMeetingId(meetingId);
         entity.setFileName(originalName);
         entity.setFileType(ext);
-        entity.setFileContent(text);
+        entity.setFileContent(normalizedText);
         entity.setFileData(rawBytes);
         fileMapper.insert(entity);
-        log.info("[MeetingService] uploadFile done, meetingId={}, fileName={}, textLen={}", meetingId, originalName, text.length());
-        if (entity.getId() != null && text != null && !text.isBlank()) {
-            contentEmbeddingService.asyncEmbedFileContent(entity.getId(), meetingId, originalName, text);
+        log.info("[MeetingService] uploadFile done, meetingId={}, fileName={}, textLen={}",
+                meetingId, originalName, normalizedText.length());
+        if (entity.getId() != null && !normalizedText.isBlank()) {
+            contentEmbeddingService.asyncEmbedFileContent(entity.getId(), meetingId, originalName, normalizedText);
         }
         return toFileVo(entity);
     }
@@ -176,29 +185,9 @@ public class MeetingService {
         return f;
     }
 
-    public String getMeetingNoticeText(AuthenticatedActor actor, Long meetingId) {
-        requireView(actor, meetingId);
-        List<PersistentPreMeetingFile> files = fileMapper.findByMeetingId(meetingId);
-        PersistentPreMeetingFile notice = files.stream()
-                .filter(file -> file.getFileName() != null
-                        && (file.getFileName().contains("会议通知") || file.getFileName().contains("会议安排")))
-                .findFirst()
-                .orElse(files.isEmpty() ? null : files.get(0));
-        if (notice == null || notice.getId() == null) {
-            return "";
-        }
-        PersistentPreMeetingFile full = fileMapper.findById(notice.getId());
-        return full == null || full.getFileContent() == null ? "" : full.getFileContent();
-    }
-
     public void saveAttendance(AuthenticatedActor actor, Long meetingId, String attendanceJson) {
         requireOwner(actor, meetingId);
         meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
-    }
-
-    public void setMeetingUrl(AuthenticatedActor actor, Long meetingId, String url) {
-        requireOwner(actor, meetingId);
-        meetingMapper.updateMeetingUrl(meetingId, url);
     }
 
     @Transactional
@@ -223,7 +212,7 @@ public class MeetingService {
         int sessions = sessionMapper.softDeleteByMeetingId(meetingId);
 
         // Hard-delete every other piece of data tied to this meeting so nothing lingers in the DB.
-        meetingMapper.clearAssociatedData(meetingId);              // 应到名单 / 实到核对 / 会议链接
+        meetingMapper.clearAssociatedData(meetingId);              // 应到名单 / 实到核对
         fileMapper.deleteByMeetingId(meetingId);                   // 上传的会议安排 / 会议文件(含二进制)
         actionItemMapper.deleteByMeetingId(meetingId);             // 行动项（按会议）
         contentEmbeddingService.deleteByMeetingId(meetingId);      // 会议级向量
@@ -259,7 +248,6 @@ public class MeetingService {
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
                 .attendanceJson(m.getAttendanceJson())
-                .meetingUrl(m.getMeetingUrl())
                 .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
                         && !m.getExpectedParticipantsJson().isBlank())
                 .createTime(m.getCreateTime())

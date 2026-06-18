@@ -5,7 +5,6 @@ using CallingBotSample.Bots;
 using CallingBotSample.Cache;
 using CallingBotSample.Options;
 using CallingBotSample.Security;
-using CallingBotSample.Services.BotFramework;
 using CallingBotSample.Services.MicrosoftGraph;
 using CallingBotSample.Services.MeetingSummary;
 using CallingBotSample.Services.SyncLingo;
@@ -17,18 +16,14 @@ using Microsoft.Bot.Connector.Authentication;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Graph.Communications.Common.Telemetry;
 
 namespace CallingBotSample
 {
     public class Startup
     {
-        private readonly GraphLogger logger;
-
         public Startup(IConfiguration configuration)
         {
             Configuration = configuration;
-            this.logger = new GraphLogger(typeof(Startup).Assembly.GetName().Name);
         }
 
         public IConfiguration Configuration { get; }
@@ -38,22 +33,15 @@ namespace CallingBotSample
             services.AddControllers();
             services.AddOptions();
 
-            services.AddSingleton<IGraphLogger>(this.logger);
             services.AddSingleton<BotFrameworkAuthentication, ConfigurationBotFrameworkAuthentication>();
             services.AddSingleton<IBotFrameworkHttpAdapter, AdapterWithErrorHandler>();
 
             services.AddTransient<IBot, MessageBot>();
-            services.AddTransient<CallingBot>();
-
             services.Configure<AzureAdOptions>(Configuration.GetSection("AzureAd"));
             services.Configure<BotOptions>(Configuration.GetSection("Bot"));
-            services.Configure<SummaryFileStorageOptions>(Configuration.GetSection("SummaryFileStorage"));
-
             services.AddMicrosoftGraphServices(options => Configuration.Bind("AzureAd", options));
 
-            services.AddSingleton<IConnectorClientFactory, ConnectorClientFactory>();
             services.AddScoped<IMeetingSummaryService, MeetingSummaryService>();
-            services.AddScoped<ISharePointFileStorageService, SharePointFileStorageService>();
             services.AddHttpClient<ISyncLingoBotQueryService, SyncLingoBotQueryService>();
             services.AddCaches();
         }
@@ -64,10 +52,7 @@ namespace CallingBotSample
                 app.UseDeveloperExceptionPage();
 
             app.UseCookiePolicy();
-            app.UseDefaultFiles()
-               .UseStaticFiles()
-               .UseWebSockets()
-               .UseRouting()
+            app.UseRouting()
                .UseMiddleware<TeamsBotInboundSignatureMiddleware>()
                .UseAuthorization()
                .UseEndpoints(endpoints => endpoints.MapControllers());

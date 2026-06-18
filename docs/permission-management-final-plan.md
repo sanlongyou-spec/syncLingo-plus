@@ -331,7 +331,7 @@ P0 产出并持续维护一份**接口授权清单**,每个入口明确:`身份�
 5. **ASR WebSocket**:见 §8(会话先由已鉴权 HTTP 创建,WS 仅绑定本人会话)。
 6. **Teams Bot 代理(`/bot-api/**`,P0.5 不止"限账号")**:同时满足——
    - **允许访问的用户配置**(`BOT_OPERATOR_USER_IDS`),**配置为空时拒绝**(默认关闭,不默认放行);
-   - **转发路径 + HTTP 方法白名单**(只放行明确的 join/participants/summary 等操作);
+   - **转发路径 + HTTP 方法白名单**(当前只放行 `POST /api/meetings/summary`;历史 join/participants 等操作已删除);
    - 转发前**剥离** `Authorization`、`Cookie`、`Proxy-Authorization`、管理/服务密钥等敏感头(防外泄与伪造);
    - **禁止客户端控制转发目标地址与查询参数**(目标固定为配置的 C# Bot)。
    - **P0.5d 只做 Java 侧**(登录 + 用户/路径/方法白名单 + 剥头);**服务身份认证(Java 签名 + C# 校验)统一放 P4**——P0.5 不注入需 C# 校验的身份,以免 C# 一旦开始校验就中断自动摘要直连链路。
@@ -496,7 +496,7 @@ signature = Base64(HmacSHA256(secret, canonical))
 ```
 校验:时钟偏移 ≤ ±300s;nonce 进程内去重(TTL 600s)防重放;常量时间比对。
 
-- **下行(Java→C#,keyId=`java-backend`,密钥 A)**:`BotProxyIntegration`(/bot-api 代理:summary/summary-file/summary/chat/join/participants)与 `MeetingBotIntegration`(直连 /api/meetings/notification)出站签名;C# `TeamsBotInboundSignatureMiddleware` 对 `/api/meetings` 验签。
+- **下行(Java→C#,keyId=`java-backend`,密钥 A)**:`BotProxyIntegration`(`/bot-api` 代理当前仅 `summary`)与 `MeetingBotIntegration`(直连 `/api/meetings/notification`)出站签名;C# `TeamsBotInboundSignatureMiddleware` 对 `/api/meetings` 验签。
 - **上行(C#→Java,keyId=`csharp-bot`,密钥 B)**:C# `SyncLingoBotQueryService` 对 `/api/teams-bot/query[/stream]` 出站签名;Java `TeamsBotSignatureFilter` 验签。
 - **附带修复**:`/api/teams-bot/**` 之前不在 `JwtAuthFilter` 放行清单 → 会被 "Missing token" 401 拦死(C# 仅发静态密钥、无 Bearer)。已加入放行,改由签名过滤器 + 静态 api-secret 保护。`TeamsBotQueryService` 静态密钥比对改为常量时间。
 

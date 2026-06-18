@@ -230,8 +230,8 @@ syncLingo-plus/
 │       │   └── audioCapture.ts          # 麦克风采集 & PCM 编码
 │       ├── components/                  # 通用 UI 组件
 │       ├── views/                       # LoginView / InterpretationView（主界面）/ VoiceCloneView /
-│       │                                #   HistoryView / TerminologyView / TeamsBotView /
-│       │                                #   CostAnalysisView / ShareView / UserShareView
+│       │                                #   HistoryView / MeetingsView / TerminologyView /
+│       │                                #   AdminConsoleView / CostAnalysisView / ShareView / UserShareView
 │       ├── constants/ + constants.ts    # 应用级常量、WS 消息类型
 │       └── types/index.ts               # TypeScript 接口定义
 │
@@ -1199,7 +1199,7 @@ npm run build
 ### 14.5 一键脚本（Windows）
 
 ```batch
-:: 构建并启动全部服务（后端 Docker、前端、Teams Bot、speaker-service、ngrok）
+:: 构建并启动全部服务（后端 Docker、前端、Teams Bot、speaker-service；不启动 ngrok）
 start-all.bat
 
 :: 停止所有服务（含关闭对应 CMD 窗口、docker rm 后端容器）

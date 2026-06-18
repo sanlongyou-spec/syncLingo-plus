@@ -6,11 +6,20 @@ import './UserManagementView.css'
 
 const ROLES = ['ADMIN', 'OPERATOR', 'VIEWER'] as const
 const ROLE_LABEL: Record<string, string> = { ADMIN: '管理员', OPERATOR: '操作员', VIEWER: '查看者' }
+const ROLE_DESCRIPTION: Record<string, string> = {
+  ADMIN: '管理账号，仅用于用户管理、安全运维、审计和密码设置；登录后不进入同传业务界面。',
+  OPERATOR: '使用者账号，可进行会议准备、同传、术语、热词、摘要、通知等日常业务操作。',
+  VIEWER: '查看者账号，只读角色；可查看被授权的会议内容和本人偏好，不可启动同传、管理会议、维护术语或进行运维。',
+}
 const STATUS_LABEL: Record<string, string> = { ACTIVE: '启用', PENDING: '待启用', DISABLED: '已停用' }
 
 const EMPTY_FORM = { username: '', password: '', role: 'OPERATOR', nickname: '', email: '' }
 
-export default function UserManagementView() {
+interface UserManagementViewProps {
+  embedded?: boolean
+}
+
+export default function UserManagementView({ embedded = false }: UserManagementViewProps) {
   const [users, setUsers] = useState<UserSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [forbidden, setForbidden] = useState(false)
@@ -106,18 +115,7 @@ export default function UserManagementView() {
       .then(() => { setResettingId(null); setNewPwd('') })
   }
 
-  return (
-    <div className="si-root">
-      <header className="si-topbar">
-        <div className="si-topbar-left">
-          <h1 className="si-brand">用户管理</h1>
-          <span className="si-brand-sub">账号、角色与启停(仅管理员)</span>
-        </div>
-        <div className="si-topbar-right">
-          <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.HOME }}>返回同传</button>
-        </div>
-      </header>
-
+  const content = (
       <main className="usermgmt-main">
         {error && <div className="usermgmt-banner usermgmt-banner--error">{error}</div>}
         {success && <div className="usermgmt-banner usermgmt-banner--success">{success}</div>}
@@ -140,6 +138,14 @@ export default function UserManagementView() {
                 <label>邮箱(可选)<input value={form.email} onChange={e => setForm(p => ({ ...p, email: e.target.value }))} /></label>
                 <button type="submit" disabled={creating}>{creating ? '创建中...' : '创建用户'}</button>
               </form>
+              <div className="usermgmt-role-help" aria-label="角色说明">
+                {ROLES.map(role => (
+                  <div key={role} className="usermgmt-role-help-item">
+                    <strong>{ROLE_LABEL[role]}</strong>
+                    <span>{ROLE_DESCRIPTION[role]}</span>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section className="usermgmt-card usermgmt-table-card">
@@ -203,6 +209,25 @@ export default function UserManagementView() {
           </div>
         )}
       </main>
+  )
+
+  if (embedded) {
+    return content
+  }
+
+  return (
+    <div className="si-root">
+      <header className="si-topbar">
+        <div className="si-topbar-left">
+          <h1 className="si-brand">用户管理</h1>
+          <span className="si-brand-sub">账号、角色与启停(仅管理员)</span>
+        </div>
+        <div className="si-topbar-right">
+          <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.ADMIN_CONSOLE }}>返回管理控制台</button>
+        </div>
+      </header>
+
+      {content}
     </div>
   )
 }

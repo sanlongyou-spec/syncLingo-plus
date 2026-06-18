@@ -17,21 +17,13 @@ import type {
   HotwordSuggestion,
   UserLanguagePreference,
   MeetingSummaryVo,
-  PreMeetingFile,
-  PreMeetingAttendanceResult,
-  PreMeetingSummaryResult,
   PreMeetingDailyUsage,
   ChatMessage,
   PreMeetingChatResponse,
   TeamsSummarySendResponse,
-  MeetingParticipant,
-  MeetingParticipantsResponse,
   Meeting,
   MeetingMember,
   MeetingFile,
-  MeetingNotificationPreview,
-  MeetingNotificationRecipient,
-  MeetingNotificationSendResult,
   SpeakerSummaryResult,
   SpeakerSummaryRecord,
   MeetingActionItem,
@@ -42,34 +34,7 @@ import type {
   AudioRecord,
 } from '../types'
 
-const getApiErrorMessage = async (error: unknown, fallback: string): Promise<string> => {
-  const responseData = (error as { response?: { data?: unknown } })?.response?.data
-  if (responseData instanceof Blob) {
-    const text = await responseData.text()
-    if (text) {
-      try {
-        const parsed = JSON.parse(text) as { message?: string; error?: string }
-        return parsed.message || parsed.error || fallback
-      } catch {
-        return text
-      }
-    }
-  }
-  const errorLike = error as { response?: { data?: { message?: string; error?: string } }; message?: string }
-  return errorLike.response?.data?.message || errorLike.response?.data?.error || errorLike.message || fallback
-}
-
 const RESULT_OK_CODE = 200
-
-const ensureResultData = <T>(result: Result<T>, fallback: string): Result<T> => {
-  if (result.code !== RESULT_OK_CODE) {
-    throw new Error(result.message?.trim() || fallback)
-  }
-  if (result.data == null) {
-    throw new Error(fallback)
-  }
-  return result
-}
 
 const resultFromError = <T>(error: unknown): Result<T> | null => {
   const data = (error as { response?: { data?: unknown } })?.response?.data
@@ -183,6 +148,7 @@ export interface CaptchaChallenge {
 export interface LoginResult {
   userId: number
   token: string
+  role: string
 }
 
 export const issueLoginCaptcha = (username: string): Promise<Result<CaptchaChallenge>> =>
@@ -207,6 +173,9 @@ export const refreshAuth = async (): Promise<Result<LoginResult>> => {
   const result = await client.post<Result<LoginResult>>('/api/auth/refresh', {}).then(r => r.data)
   if (result.code === RESULT_OK_CODE && result.data?.token) {
     setAccessToken(result.data.token)
+    if (result.data.role) {
+      localStorage.setItem(STORAGE_KEYS.ROLE, result.data.role)
+    }
   }
   return result
 }
@@ -221,15 +190,6 @@ export const logout = async (): Promise<Result<void>> => {
     localStorage.removeItem(STORAGE_KEYS.ROLE)
   }
 }
-
-export const changeOwnPassword = (
-  currentPassword: string,
-  newPassword: string,
-): Promise<Result<void>> =>
-  client.post<Result<void>>('/api/account/password', { currentPassword, newPassword }).then(r => r.data)
-
-export const logoutAllDevices = (): Promise<Result<void>> =>
-  client.post<Result<void>>('/api/account/logout-all', {}).then(r => r.data)
 
 export const getTerminologies = (keyword = '', enabled?: boolean): Promise<Result<Terminology[]>> =>
   client.get<Result<Terminology[]>>('/api/terminology', { params: { keyword, enabled } }).then(r => r.data)
@@ -333,61 +293,6 @@ export const getMeetingSummary = (sessionId: string): Promise<Result<MeetingSumm
 export const regenerateMeetingSummary = (sessionId: string, customRequirements?: string): Promise<Result<MeetingSummaryVo>> =>
   client.post<Result<MeetingSummaryVo>>(`/api/summary/${sessionId}`, customRequirements ? { customRequirements } : undefined).then(r => r.data)
 
-export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[]>> => {
-  const form = new FormData()
-  form.append('file', file)
-  return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
-    headers: { 'Content-Type': undefined },
-  }).then(r => r.data)
-}
-
-export const summarizePreMeetingFile = (
-  fileId: string,
-  requirements: string,
-  meetingId?: number | null,
-): Promise<Result<PreMeetingSummaryResult>> =>
-  client.post<Result<PreMeetingSummaryResult>>('/api/pre-meeting/summarize', { fileId, requirements, meetingId }, {
-    timeout: 300_000,
-  }).then(r => ensureResultData(r.data, '生成总结失败'))
-
-export const generatePreMeetingAttendance = (
-  fileId: string,
-  actualParticipants: MeetingParticipant[],
-): Promise<Result<PreMeetingAttendanceResult>> =>
-  client.post<Result<PreMeetingAttendanceResult>>('/api/pre-meeting/attendance', {
-    fileId,
-    actualParticipants,
-  }).then(r => r.data)
-
-// Re-generate attendance from the 应到 list saved on the meeting (no in-memory 会议安排 needed).
-export const generateAttendanceFromMeeting = (
-  meetingId: number,
-  actualParticipants: MeetingParticipant[],
-): Promise<Result<PreMeetingAttendanceResult>> =>
-  client.post<Result<PreMeetingAttendanceResult>>('/api/pre-meeting/attendance', {
-    meetingId,
-    actualParticipants,
-  }).then(r => r.data)
-
-// Persist the 应到 list parsed from a freshly-uploaded 会议安排 onto the meeting.
-export const saveExpectedParticipants = (fileId: string, meetingId: number): Promise<Result<number>> =>
-  client.post<Result<number>>('/api/pre-meeting/attendance/save-expected', { fileId, meetingId }).then(r => r.data)
-
-export interface ExportPreMeetingAttendanceDocxParams {
-  fileId?: string | null
-  meetingId?: number | null
-  actualParticipants: MeetingParticipant[]
-}
-
-export const exportPreMeetingAttendanceDocx = (
-  params: ExportPreMeetingAttendanceDocxParams,
-): Promise<Blob> =>
-  client.post<Blob>('/api/pre-meeting/attendance/export', params, { responseType: 'blob', timeout: 60_000 })
-    .then(r => r.data)
-    .catch(async error => {
-      throw new Error(await getApiErrorMessage(error, '导出实际参会名单失败'))
-    })
-
 export const getPreMeetingUsage = (days = 365): Promise<Result<PreMeetingDailyUsage[]>> =>
   client.get<Result<PreMeetingDailyUsage[]>>('/api/pre-meeting/usage', { params: { days } }).then(r => r.data)
 
@@ -403,12 +308,6 @@ const formatBody = (summary: string, fmt?: SummaryExportFormat) => ({
   ...(fmt?.bodySize ? { bodySize: String(fmt.bodySize) } : {}),
   ...(fmt?.headingSize ? { headingSize: String(fmt.headingSize) } : {}),
 })
-
-export const exportPreMeetingDocx = (fileId: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
-  client.post<Blob>(`/api/pre-meeting/export/${fileId}`, formatBody(summary, fmt), { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
-
-export const exportPreMeetingPdf = (fileId: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
-  client.post<Blob>(`/api/pre-meeting/export/pdf/${fileId}`, formatBody(summary, fmt), { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
 export const chatWithPreMeeting = (
   question: string,
@@ -433,7 +332,7 @@ export const chatWithPreMeeting = (
 export const generateSummaryDoc = (title: string, summary: string, fmt?: SummaryExportFormat): Promise<Blob> =>
   client.post<Blob>('/api/pre-meeting/summary-doc', { title, ...formatBody(summary, fmt) }, { responseType: 'blob', timeout: 60_000 }).then(r => r.data)
 
-// Generate a 会议总结 PDF (仿宋18/TNR16, same as the AI summary) from a history summary text.
+// Generate a 会议总结 PDF (仿宋18/TNR16) from a history summary text.
 export const generateSummaryPdf = (title: string, summary: string): Promise<Blob> =>
   client.post<Blob>('/api/pre-meeting/summary-pdf', { title, summary }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
@@ -453,36 +352,6 @@ export const generateSpeakerSummaryPdf = (params: {
     body: params.body,
   }, { responseType: 'blob', timeout: 120_000 }).then(r => r.data)
 
-export interface SummaryFileSendResult {
-  sent: boolean
-  userSent: number
-  userFailed: number
-  chatThreadId: string | null
-  downloadUrl: string
-  error?: string | null
-}
-
-// Upload a generated PDF to the bot; the bot stores it in Teams/SharePoint and sends the
-// SharePoint link to the chosen account(s) and/or the active meeting chat.
-export const sendSummaryFileToTeams = (
-  blob: Blob,
-  fileName: string,
-  opts: { title?: string; recipients?: string[]; sendToChat?: boolean },
-): Promise<SummaryFileSendResult> => {
-  const form = new FormData()
-  form.append('file', blob, fileName)
-  form.append('fileName', fileName)
-  if (opts.title) form.append('title', opts.title)
-  ;(opts.recipients ?? []).forEach(r => form.append('recipients', r))
-  form.append('sendToChat', String(!!opts.sendToChat))
-  return client.post<SummaryFileSendResult>('/bot-api/api/meetings/summary-file', form)
-    .then(r => r.data)
-    .catch(error => {
-      const message = error?.response?.data?.error || error?.message || 'Word 发送失败'
-      throw new Error(message)
-    })
-}
-
 export const sendTeamsSummaryToUsers = (
   content: string,
   recipients: string[],
@@ -490,31 +359,18 @@ export const sendTeamsSummaryToUsers = (
   client.post<TeamsSummarySendResponse>('/bot-api/api/meetings/summary', { content, recipients })
     .then(r => r.data)
     .catch(error => {
+      const data = error?.response?.data as Partial<TeamsSummarySendResponse> | undefined
+      if (data && typeof data === 'object' && 'sent' in data) {
+        return {
+          sent: Boolean(data.sent),
+          sentCount: Number(data.sentCount ?? 0),
+          failedCount: Number(data.failedCount ?? data.failures?.length ?? recipients.length),
+          recipients: Array.isArray(data.recipients) ? data.recipients : [],
+          failures: Array.isArray(data.failures) ? data.failures : [],
+          error: data.error,
+        }
+      }
       const message = error?.response?.data?.error || error?.message || 'Teams user summary delivery failed'
-      throw new Error(message)
-    })
-
-export const sendSummaryToMeetingChat = (content: string): Promise<{ sent: boolean; threadId: string }> =>
-  client.post<{ sent: boolean; threadId: string }>('/bot-api/api/meetings/summary/chat', { content })
-    .then(r => r.data)
-    .catch(error => {
-      const message = error?.response?.data?.error || error?.message || '发送到会议聊天失败'
-      throw new Error(message)
-    })
-
-export const joinMeeting = (meetingUrl: string): Promise<{ callId: string; threadId: string; meetingTitle?: string | null }> =>
-  client.post<{ callId: string; threadId: string; meetingTitle?: string | null }>('/bot-api/api/meetings/join', { meetingUrl })
-    .then(r => r.data)
-    .catch(error => {
-      const message = error?.response?.data?.error || error?.message || '机器人加入会议失败'
-      throw new Error(message)
-    })
-
-export const getMeetingParticipants = (): Promise<MeetingParticipantsResponse> =>
-  client.get<MeetingParticipantsResponse>('/bot-api/api/meetings/participants')
-    .then(r => r.data)
-    .catch(error => {
-      const message = error?.response?.data?.error || error?.message || '获取参会人员失败'
       throw new Error(message)
     })
 
@@ -542,15 +398,8 @@ export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Resu
   }).then(r => r.data)
 }
 
-export const getMeetingFiles = (meetingId: number): Promise<Result<MeetingFile[]>> =>
-  client.get<Result<MeetingFile[]>>(`/api/meetings/${meetingId}/files`).then(r => r.data)
-
 export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}`).then(r => r.data)
-
-// Re-load a previously uploaded meeting file into the in-memory store so it can be re-selected / re-summarized.
-export const loadMeetingFileForSummary = (meetingId: number, fileId: number): Promise<Result<PreMeetingSummaryResult>> =>
-  client.post<Result<PreMeetingSummaryResult>>(`/api/meetings/${meetingId}/files/${fileId}/load`, {}).then(r => r.data)
 
 export const generateSpeakerSummary = (params: {
   sessionId: string
@@ -584,48 +433,6 @@ export const regenerateSpeakerSummary = (
 
 export const getMeetingSessions = (meetingId: number): Promise<Result<InterpretationStatus[]>> =>
   client.get<Result<InterpretationStatus[]>>(`/api/meetings/${meetingId}/sessions`).then(r => r.data)
-
-export const saveMeetingFileSummary = (meetingId: number, fileId: number, summary: string): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}/summary`, { summary }).then(r => r.data)
-
-export const saveMeetingAttendance = (meetingId: number, attendanceJson: string): Promise<Result<void>> =>
-  client.put<Result<void>>(`/api/meetings/${meetingId}/attendance`, { attendanceJson }).then(r => r.data)
-
-export const previewMeetingNotification = (
-  meetingId: number,
-  meetingUrl: string,
-  fileId?: string,
-): Promise<MeetingNotificationPreview> =>
-  client.post<Result<MeetingNotificationPreview>>(`/api/meetings/${meetingId}/notification-preview`, {
-    meetingUrl,
-    ...(fileId ? { fileId } : {}),
-  }).then(r => {
-    if (r.data?.code !== 200) throw new Error(r.data?.message || '设置会议链接失败')
-    return r.data.data
-  })
-
-export const getMeetingNotificationRecipients = (
-  meetingId: number,
-): Promise<MeetingNotificationRecipient[]> =>
-  client.get<Result<MeetingNotificationRecipient[]>>(
-    `/api/meetings/${meetingId}/notification-recipients`,
-  ).then(r => {
-    if (r.data?.code !== 200) throw new Error(r.data?.message || '读取会议通知账号失败')
-    return r.data.data || []
-  })
-
-export const sendMeetingNotification = (
-  meetingId: number,
-  content: string,
-  recipients: string[],
-): Promise<MeetingNotificationSendResult> =>
-  client.post<Result<MeetingNotificationSendResult>>(`/api/meetings/${meetingId}/notification-send`, {
-    content,
-    recipients,
-  }).then(r => {
-    if (r.data?.code !== 200) throw new Error(r.data?.message || '发送会议通知失败')
-    return r.data.data
-  })
 
 export const deleteMeeting = (meetingId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}`).then(r => r.data)
@@ -685,9 +492,10 @@ export const getAudioRecords = (
   keyword?: string,
   page?: number,
   size?: number,
+  meetingId?: number,
 ): Promise<Result<{ items: AudioRecord[]; total: number }>> =>
   client.get<Result<{ items: AudioRecord[]; total: number }>>('/api/audio-records', {
-    params: { keyword: keyword || '', page: page ?? 1, size: size ?? 50 },
+    params: { keyword: keyword || '', page: page ?? 1, size: size ?? 50, ...(meetingId ? { meetingId } : {}) },
   }).then(r => r.data)
 
 export const renameAudioRecord = (id: number, name: string): Promise<Result<void>> =>

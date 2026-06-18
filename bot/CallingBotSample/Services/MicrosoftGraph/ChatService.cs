@@ -27,7 +27,7 @@ namespace CallingBotSample.Services.MicrosoftGraph
         private readonly AzureAdOptions azureAdOptions;
         private readonly BotOptions botOptions;
         private readonly IBotFrameworkHttpAdapter adapter;
-        private readonly ICallCache callCache;
+        private readonly IConversationReferenceCache conversationReferenceCache;
         private readonly ILogger<ChatService> logger;
 
         public ChatService(
@@ -35,14 +35,14 @@ namespace CallingBotSample.Services.MicrosoftGraph
             IOptions<AzureAdOptions> azureAdOptions,
             IOptions<BotOptions> botOptions,
             IBotFrameworkHttpAdapter adapter,
-            ICallCache callCache,
+            IConversationReferenceCache conversationReferenceCache,
             ILogger<ChatService> logger)
         {
             this.graphServiceClient = graphServiceClient;
             this.azureAdOptions = azureAdOptions.Value;
             this.botOptions = botOptions.Value;
             this.adapter = adapter;
-            this.callCache = callCache;
+            this.conversationReferenceCache = conversationReferenceCache;
             this.logger = logger;
         }
 
@@ -66,7 +66,7 @@ namespace CallingBotSample.Services.MicrosoftGraph
             // Fast path: reuse ConversationReference from when the user last messaged the bot.
             // This is the most reliable proactive messaging approach because the ServiceUrl and
             // conversation ID come directly from Teams, not from Graph API inference.
-            var cachedRef = callCache.GetConversationReference(target.AadId);
+            var cachedRef = conversationReferenceCache.GetConversationReference(target.AadId);
             if (cachedRef != null)
             {
                 logger.LogInformation("[ChatService] Using cached ConversationReference for aadId={AadId}", target.AadId);
@@ -199,24 +199,6 @@ namespace CallingBotSample.Services.MicrosoftGraph
             };
         }
 
-        private ConversationReference CreateMeetingChatReference(string threadId)
-        {
-            return new ConversationReference
-            {
-                ActivityId = null,
-                Bot = new ChannelAccount { Id = $"28:{botOptions.AppId}" },
-                Conversation = new ConversationAccount
-                {
-                    Id = threadId,
-                    IsGroup = true,
-                    ConversationType = "groupChat",
-                    TenantId = azureAdOptions.TenantId
-                },
-                ChannelId = "msteams",
-                ServiceUrl = GetTenantServiceUrl()
-            };
-        }
-
         private string GetTenantServiceUrl()
             => $"https://smba.trafficmanager.net/id/{azureAdOptions.TenantId}/";
 
@@ -274,84 +256,6 @@ namespace CallingBotSample.Services.MicrosoftGraph
                 DisplayName = user.DisplayName,
                 Email = user.Mail ?? user.UserPrincipalName
             };
-        }
-
-        /// <inheritdoc/>
-        public async Task SendToMeetingChatAsync(string threadId, string htmlContent)
-        {
-            logger.LogInformation("[ChatService] SendToMeetingChat start, threadId={ThreadId}", threadId);
-
-            // Use the ConversationReference captured from OnMembersAddedAsync (after bot was installed
-            // in the meeting chat via EnsureBotInMeetingChatAsync). This is the only reliable approach —
-            // constructing a ConversationReference manually results in 403 because the Bot Framework
-            // Service checks that the bot is in the conversation roster.
-            var cachedRef = callCache.GetMeetingChatConversationReference(threadId);
-            if (cachedRef != null)
-            {
-                logger.LogInformation("[ChatService] Using cached meeting chat ConversationReference, threadId={ThreadId}", threadId);
-                await ExecuteContinueConversation(cachedRef, htmlContent);
-                logger.LogInformation("[ChatService] SendToMeetingChat done (cached path), threadId={ThreadId}", threadId);
-                return;
-            }
-
-            logger.LogInformation("[ChatService] No cached meeting chat ConversationReference. Ensuring app installation before direct send, threadId={ThreadId}", threadId);
-            await EnsureBotInMeetingChatAsync(threadId);
-
-            cachedRef = callCache.GetMeetingChatConversationReference(threadId);
-            if (cachedRef != null)
-            {
-                logger.LogInformation("[ChatService] Meeting chat ConversationReference arrived after install check, threadId={ThreadId}", threadId);
-                await ExecuteContinueConversation(CreateProactiveReference(cachedRef), htmlContent);
-                logger.LogInformation("[ChatService] SendToMeetingChat done (post-install cached path), threadId={ThreadId}", threadId);
-                return;
-            }
-
-            logger.LogInformation("[ChatService] Sending to meeting chat using threadId fallback, threadId={ThreadId}", threadId);
-            await ExecuteContinueConversation(CreateMeetingChatReference(threadId), htmlContent);
-            logger.LogInformation("[ChatService] SendToMeetingChat done (threadId fallback), threadId={ThreadId}", threadId);
-        }
-
-        /// <inheritdoc/>
-        public async Task EnsureBotInMeetingChatAsync(string threadId)
-        {
-            if (string.IsNullOrWhiteSpace(botOptions.CatalogAppId) || botOptions.CatalogAppId.StartsWith("<<"))
-            {
-                logger.LogWarning("[ChatService] CatalogAppId not configured — cannot install bot in meeting chat.");
-                return;
-            }
-
-            var sw = Stopwatch.StartNew();
-            logger.LogInformation("[ChatService] EnsureBotInMeetingChat start, threadId={ThreadId}", threadId);
-            try
-            {
-                // Attempt install directly — handle 409 if already installed.
-                // Skipping a pre-check filter query because $filter on navigation properties
-                // requires ConsistencyLevel:eventual which is unreliable in this context.
-                var installation = new TeamsAppInstallation
-                {
-                    AdditionalData = new System.Collections.Generic.Dictionary<string, object>
-                    {
-                        { "teamsApp@odata.bind", $"https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/{botOptions.CatalogAppId}" }
-                    }
-                };
-                await graphServiceClient.Chats[threadId].InstalledApps.Request().AddAsync(installation);
-                logger.LogInformation("[ChatService] Bot installed in meeting chat, threadId={ThreadId}, ms={Ms}", threadId, sw.ElapsedMilliseconds);
-            }
-            catch (ServiceException ex) when ((int)ex.StatusCode == 409)
-            {
-                logger.LogInformation("[ChatService] Bot already installed in meeting chat (409), threadId={ThreadId}, ms={Ms}", threadId, sw.ElapsedMilliseconds);
-            }
-            catch (ServiceException ex)
-            {
-                // Log but don't throw — if this fails (e.g., permission not yet granted),
-                // the join meeting operation should still succeed.
-                logger.LogError(ex, "[ChatService] Failed to install bot in meeting chat. " +
-                    "Ensure TeamsAppInstallation.ReadWriteSelfForChat.All is granted. threadId={ThreadId}", threadId);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "[ChatService] Unexpected error while installing bot in meeting chat. threadId={ThreadId}", threadId);
-            }
         }
 
         // Install the bot for a user and return the installId.
@@ -420,7 +324,7 @@ namespace CallingBotSample.Services.MicrosoftGraph
             var sw = Stopwatch.StartNew();
             while (sw.ElapsedMilliseconds < maxWaitMs)
             {
-                var convRef = callCache.GetConversationReference(aadId);
+                var convRef = conversationReferenceCache.GetConversationReference(aadId);
                 if (convRef != null)
                 {
                     logger.LogInformation("[ChatService] ConversationReference available after {Ms}ms for aadId={AadId}", sw.ElapsedMilliseconds, aadId);

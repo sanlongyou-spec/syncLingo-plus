@@ -15,7 +15,7 @@ namespace CallingBotSample.Cache
         public static IServiceCollection AddCaches(this IServiceCollection services)
         {
             services.AddMemoryCache();
-            services.AddSingleton<ICallCache, CallCache>();
+            services.AddSingleton<IConversationReferenceCache, ConversationReferenceCache>();
 
             return services;
         }

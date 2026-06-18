@@ -1,0 +1,18 @@
+[Unit]
+Description=syncLingo speaker service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/syncLingo/speaker-service
+Environment=HOST=127.0.0.1
+Environment=PORT=7000
+Environment=VOICE_GENDER_ENABLED=true
+Environment=VOICE_GENDER_MODEL_DIR=models/wav2vec2-large-robust-6-ft-age-gender
+ExecStart=/opt/syncLingo/speaker-service/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 7000
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

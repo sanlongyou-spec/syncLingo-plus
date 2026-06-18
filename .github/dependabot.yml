@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /si-backend
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /si-frontend
+    schedule:
+      interval: weekly
+  - package-ecosystem: nuget
+    directory: /bot/CallingBotSample
+    schedule:
+      interval: weekly
+  - package-ecosystem: nuget
+    directory: /bot/CallingBotSample.Tests
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

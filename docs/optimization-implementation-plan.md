@@ -1410,3 +1410,46 @@ GET    /api/admin/audit-logs
 ### Residual Issues
 
 - Production migration still requires backup and rehearsal on a copied database before enabling profile-aware rebuild on the server.
+
+## Weekly Optimization Record: 2026-W25 Commercial Release Hardening and Linux Deployment Cleanup
+
+### Goal
+
+- Treat the repository as a completed commercial project ready for GitHub publishing and Linux server deployment.
+- Remove active ngrok usage from scripts, deployment docs, and Teams production guidance.
+- Replace stale Teams Bot / SharePoint / auto-join planning docs with current capability boundaries.
+- Add the missing commercial project skeleton: README, proprietary license, security policy, contribution guide, changelog, CI, Dependabot, Linux deployment templates, and production checklist.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Active ngrok removal | Done | `start-all.bat` and `stop-all.bat` no longer require or manage ngrok. |
+| Teams Bot source path cleanup | Done | Local startup now points to `bot/CallingBotSample` instead of the old external sample path. |
+| Production ingress clarification | Done | Nginx routes `/bot-api/**` through Java authorization, while `/api/messages` goes directly to C# Bot. |
+| GitHub project skeleton | Done | Added root README, LICENSE, SECURITY, CONTRIBUTING, CHANGELOG, CI, and Dependabot. |
+| Linux deployment templates | Done | Added backend env, Bot appsettings, systemd, and Nginx templates under `deploy/linux/`. |
+| Stale docs cleanup | Done | Replaced outdated deployment and Teams planning docs with current, concise instructions. |
+| Artifact hygiene | Done | Expanded `.gitignore` and `.dockerignore`; removed tracked temporary Bot audio files. |
+
+### Affected Modules
+
+- Root startup/shutdown scripts.
+- Root and backend Dockerfiles.
+- Frontend Vite proxy and user-facing Teams notification help text.
+- Teams Bot manifest and example production config.
+- Deployment and commercial readiness documentation.
+- GitHub CI/dependency automation.
+
+### Acceptance Criteria
+
+- No active script starts or requires ngrok.
+- Production docs direct Azure Bot to `https://<domain>/api/messages`.
+- `/bot-api/**` is documented and configured as a Java-authorized path.
+- GitHub publishing does not include secrets, local model downloads, temporary Bot WAV files, or generated app packages.
+- Commercial operators have one canonical Linux deployment path and one go-live checklist.
+
+### Residual Issues
+
+- Real production domain, privacy policy URL, terms URL, Teams app IDs, Azure Bot credentials, and server secrets remain manual deployment inputs.
+- Historical weekly records still mention old experiments for auditability; they are not current instructions.

@@ -17,23 +17,15 @@ export const ROUTES = {
   HOME: '#/',
   HISTORY: '#/history',
   TERMINOLOGY: '#/terminology',
-  TEAMS_BOT: '#/teams-bot',
+  MEETINGS: '#/meetings',
   COST_ANALYSIS: '#/cost-analysis',
+  ADMIN_CONSOLE: '#/admin',
   USER_MANAGEMENT: '#/user-management',
-  ACCOUNT_SECURITY: '#/account-security',
   SECURITY_OPERATIONS: '#/security-operations',
 } as const
 
-export const TEAMS_BOT_STORAGE_KEYS = {
-  RECIPIENTS: 'si_teams_recipients',
-  RECIPIENT_HISTORY: 'si_teams_recipient_history',
-  MEETING_LINK: 'si_teams_last_meeting_link',
-  PRE_MEETING_DEFAULT_REQ: 'si_pre_meeting_default_req',
-  LAST_ATTENDANCE: 'si_last_attendance',
-  LAST_SCHEDULE_FILE: 'si_last_schedule_file',
-  MEETING_THREAD_ID: 'si_meeting_thread_id',
-  LAST_SELECTED_MEETING_ID: 'si_teams_last_meeting_id',
-  ALL_KNOWN_PARTICIPANTS: 'si_all_known_participants',
+export const MEETINGS_STORAGE_KEYS = {
+  LAST_SELECTED_MEETING_ID: 'si_meetings_last_selected_meeting_id',
 } as const
 
 export const HTTP_STATUS = {

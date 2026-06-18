@@ -1423,3 +1423,57 @@ Pass criteria:
   - `dotnet build CallingBotSample.csproj` passed with existing nullable/deprecation warnings and 0 errors.
   - `git diff --check` passed with line-ending warnings only.
 - Residual issues: Production migration requires backup and rehearsal before enabling on the server; final retrieval tuning needs real historical data questions and baseline/post-optimization comparison reports.
+
+## Weekly Validation Record: 2026-W25 Commercial Release Hardening and Linux Deployment Cleanup
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W25 Commercial Release Hardening and Linux Deployment Cleanup`.
+
+### Validation Goals
+
+- Prove active startup/shutdown scripts no longer depend on ngrok.
+- Prove current deployment docs describe Linux + Nginx + HTTPS, not a tunnel.
+- Prove Teams notification ingress is documented as Java-authorized `/bot-api/**`.
+- Prove GitHub-facing files avoid committing secrets and generated artifacts.
+
+### Automated Checks
+
+```powershell
+rg -n "ngrok|si-ngrok|auction-uncombed|external/Microsoft-Teams-Samples|summary-file|SharePoint" `
+  README.md docs deploy start-all.bat stop-all.bat si-frontend bot si-backend scripts `
+  --glob '!**/node_modules/**' --glob '!**/target/**' --glob '!**/dist/**' --glob '!**/bin/**' --glob '!**/obj/**'
+
+cd si-backend
+mvn test
+
+cd ..\si-frontend
+npm run build
+
+cd ..\bot\CallingBotSample
+dotnet build CallingBotSample.csproj
+
+cd ..\CallingBotSample.Tests
+dotnet test CallingBotSample.Tests.csproj
+
+cd ..\..\speaker-service
+python -m compileall -q .
+```
+
+### Manual Validation
+
+- Read `docs/deployment-runbook.md` end to end and confirm no step installs or starts a tunnel.
+- Confirm Azure Bot Messaging endpoint is configured to the production domain `/api/messages`.
+- Confirm Nginx routes `/bot-api/**` to Java backend and `/api/messages` to C# Bot.
+- Confirm the Teams app package has production IDs and domain before upload.
+- Confirm server-only `backend.env` and Bot `appsettings.Production.json` are not committed.
+
+### Pass Criteria
+
+- Searches only show old terms inside explicit "deprecated/not used" notes or preserved historical weekly records.
+- Full affected module builds/tests pass.
+- Deployment can be followed from clean Linux server templates without ngrok.
+
+### Result Record
+
+- Pending execution after this documentation and cleanup change set.

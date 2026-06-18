@@ -2,7 +2,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
 
-    [string]$RootDir = ''
+    [string]$RootDir = '',
+
+    [ValidateSet('dev', 'prod', 'test')]
+    [string]$Profile = 'prod'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,6 +110,7 @@ foreach ($file in $configFiles) {
 $envOverrides = @{}
 $envFiles = @(
     (Join-Path $RootDir '.env'),
+    (Join-Path $RootDir 'backend.env.local'),
     (Join-Path $RootDir 'si-backend/.env')
 )
 
@@ -115,6 +119,45 @@ foreach ($file in $envFiles) {
     foreach ($key in $values.Keys) {
         if (-not [string]::IsNullOrWhiteSpace($values[$key]) -and $values[$key] -notlike 'YOUR_*' -and $values[$key] -notlike 'your_*') {
             $envOverrides[$key] = $values[$key]
+        }
+    }
+}
+
+$localSecretFiles = @(
+    (Join-Path $RootDir 'deploy-secrets.env.local')
+)
+$localSecretKeys = @(
+    'JWT_SECRET',
+    'TEAMS_BOT_API_SECRET',
+    'ADMIN_API_SECRET',
+    'INTERNAL_OPS_API_SECRET',
+    'SERVICE_SIGNATURE_DOWNSTREAM_KEY',
+    'SERVICE_SIGNATURE_UPSTREAM_KEY'
+)
+
+foreach ($file in $localSecretFiles) {
+    $values = Read-DotEnv $file
+    foreach ($key in $localSecretKeys) {
+        if (-not $values.ContainsKey($key)) { continue }
+        $value = $values[$key]
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -like 'YOUR_*' -or $value -like 'your_*') { continue }
+
+        $current = ''
+        if ($envOverrides.ContainsKey($key)) {
+            $current = $envOverrides[$key]
+        }
+
+        if ($key -eq 'JWT_SECRET') {
+            if ([string]::IsNullOrWhiteSpace($current) -or
+                $current -eq 'change_this_secret_to_random_32_plus_chars' -or
+                $current.Length -lt 32) {
+                $envOverrides[$key] = $value
+            }
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            $envOverrides[$key] = $value
         }
     }
 }
@@ -132,7 +175,7 @@ function Get-Cfg {
 }
 
 $envValues = [ordered]@{
-    SPRING_PROFILES_ACTIVE          = 'prod'
+    SPRING_PROFILES_ACTIVE          = $Profile
     DB_HOST                         = 'host.docker.internal'
     DB_PORT                         = '3306'
     DB_NAME                         = 'si_backend'
@@ -177,6 +220,7 @@ $envValues = [ordered]@{
 foreach ($key in @($envOverrides.Keys)) {
     $envValues[$key] = $envOverrides[$key]
 }
+$envValues['SPRING_PROFILES_ACTIVE'] = $Profile
 
 $required = @(
     'DB_PASSWORD',

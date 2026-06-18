@@ -755,7 +755,7 @@ public class TeamsBotQueryService {
                         .append(") ")
                         .append(file.getFileName());
                 if (file.getSummary() != null && !file.getSummary().isBlank()) {
-                    reply.append("（已有 AI 总结）");
+                    reply.append("（已有文件摘要）");
                 }
                 reply.append("\n");
                 if (sources.size() < MAX_STRUCTURED_SOURCES) {
@@ -769,7 +769,7 @@ public class TeamsBotQueryService {
                             .sourceDate(dateOf(meeting))
                             .snippet(file.getSummary() != null && !file.getSummary().isBlank()
                                     ? truncate(file.getSummary().replaceAll("\\s+", " "), 180)
-                                    : "文件已上传，可在网页端查看或生成 AI 总结。")
+                                    : "文件已上传，可在网页端查看会议文件。")
                             .build());
                 }
             }

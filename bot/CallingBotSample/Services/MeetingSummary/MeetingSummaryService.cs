@@ -84,7 +84,5 @@ namespace CallingBotSample.Services.MeetingSummary
             }
         }
 
-        public Task SendToMeetingChatAsync(string threadId, string htmlContent)
-            => chatService.SendToMeetingChatAsync(threadId, htmlContent);
     }
 }

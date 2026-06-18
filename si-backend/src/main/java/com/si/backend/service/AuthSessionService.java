@@ -46,7 +46,7 @@ public class AuthSessionService {
         String refreshToken = randomToken();
         AuthSession session = newSession(user.getId(), UUID.randomUUID().toString(), null, hash(refreshToken));
         authSessionMapper.insert(session);
-        LoginResponse response = new LoginResponse(user.getId(), createAccessToken(user));
+        LoginResponse response = new LoginResponse(user.getId(), createAccessToken(user), user.getRole());
         log.info("[AuthSessionService] issueForUser end, userId={}, sessionId={}", user.getId(), session.getSessionId());
         return new IssuedAuth(response, refreshToken);
     }
@@ -90,7 +90,7 @@ public class AuthSessionService {
         authSessionMapper.insert(next);
 
         log.info("[AuthSessionService] refresh end, userId={}, familyId={}", user.getId(), session.getFamilyId());
-        return new IssuedAuth(new LoginResponse(user.getId(), createAccessToken(user)), nextRefresh);
+        return new IssuedAuth(new LoginResponse(user.getId(), createAccessToken(user), user.getRole()), nextRefresh);
     }
 
     public void logout(String refreshToken) {

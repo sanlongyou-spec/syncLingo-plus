@@ -20,7 +20,11 @@ const parsePositiveInt = (value: string) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-export default function SecurityOperationsView() {
+interface SecurityOperationsViewProps {
+  embedded?: boolean
+}
+
+export default function SecurityOperationsView({ embedded = false }: SecurityOperationsViewProps) {
   const [meetingId, setMeetingId] = useState('')
   const [targetUserId, setTargetUserId] = useState('')
   const [accessLevel, setAccessLevel] = useState<AccessLevel>('VIEW')
@@ -156,18 +160,7 @@ export default function SecurityOperationsView() {
     }
   }
 
-  return (
-    <div className="si-root">
-      <header className="si-topbar">
-        <div className="si-topbar-left">
-          <h1 className="si-brand">安全运维</h1>
-          <span className="si-brand-sub">成员授权、支持访问与审计</span>
-        </div>
-        <div className="si-topbar-right">
-          <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.HOME }}>返回同传</button>
-        </div>
-      </header>
-
+  const content = (
       <main className="secops-main">
         {error && <div className="secops-banner secops-banner--error">{error}</div>}
         {success && <div className="secops-banner secops-banner--success">{success}</div>}
@@ -260,6 +253,25 @@ export default function SecurityOperationsView() {
           </div>
         </section>
       </main>
+  )
+
+  if (embedded) {
+    return content
+  }
+
+  return (
+    <div className="si-root">
+      <header className="si-topbar">
+        <div className="si-topbar-left">
+          <h1 className="si-brand">安全运维</h1>
+          <span className="si-brand-sub">成员授权、支持访问与审计</span>
+        </div>
+        <div className="si-topbar-right">
+          <button className="si-pill-btn" onClick={() => { window.location.hash = ROUTES.ADMIN_CONSOLE }}>返回管理控制台</button>
+        </div>
+      </header>
+
+      {content}
     </div>
   )
 }
