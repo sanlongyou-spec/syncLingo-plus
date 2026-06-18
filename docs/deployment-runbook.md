@@ -160,6 +160,9 @@ Before deploying a risky release, prepare or verify a rollback point. The
 current production rollback baseline is recorded in
 `docs/server-rollback-2026-06-19.md`.
 
+The 2026-06-19 production deployment and the exact fixes applied on the server
+are recorded in `docs/server-deployment-2026-06-19.md`.
+
 Preferred release flow:
 
 1. Commit the local release code.
@@ -229,9 +232,14 @@ cd /opt/syncLingo/bot/CallingBotSample
 dotnet publish -c Release -o /opt/syncLingo/runtime/bot
 cp appsettings.Production.json /opt/syncLingo/runtime/bot/appsettings.Production.json
 
-cp /opt/syncLingo/deploy/linux/nginx/synclingo.conf /etc/nginx/sites-available/synclingo.conf
-sed -i 's/sync.example.com/julongtongchuan.icu/g' /etc/nginx/sites-available/synclingo.conf
-ln -sf /etc/nginx/sites-available/synclingo.conf /etc/nginx/sites-enabled/synclingo.conf
+mkdir -p /etc/nginx/backup-disabled
+find /etc/nginx/sites-enabled -maxdepth 1 -type f -name '*.bak*' -exec mv {} /etc/nginx/backup-disabled/ \;
+
+# The current production server already uses si.conf. Keep one enabled site per
+# domain to avoid duplicate server_name warnings and ignored config blocks.
+cp /opt/syncLingo/deploy/linux/nginx/synclingo.conf /etc/nginx/sites-available/si.conf
+sed -i 's/sync.example.com/julongtongchuan.icu/g' /etc/nginx/sites-available/si.conf
+ln -sf /etc/nginx/sites-available/si.conf /etc/nginx/sites-enabled/si.conf
 nginx -t
 
 systemctl restart si-speaker si-bot
@@ -250,6 +258,9 @@ location /bot-api/ { proxy_pass http://127.0.0.1:8080; }
 
 Do not proxy browser `/bot-api/**` directly to `127.0.0.1:3978`; the Java
 backend must enforce authorization and sign the downstream Bot request.
+
+Do not keep backup files under `/etc/nginx/sites-enabled`; nginx loads them as
+active server blocks.
 
 ## 10. Operations
 
