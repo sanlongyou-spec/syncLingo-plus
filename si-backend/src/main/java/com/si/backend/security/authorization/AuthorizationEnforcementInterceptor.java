@@ -14,11 +14,7 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * P5 角色功能权限执行(默认 ENFORCE)。
- *
- * <p>仅对声明了 {@link AuthorizationSpec} 且 identity=USER 的接口生效;
- * 匿名/服务/系统身份由认证 Filter 与各自密钥裁决,不在此处。
- * 资源归属(IDOR)由 ResourceOwnershipPolicy 在 facade/service 强制,与本拦截器无关。
+ * Enforces role-to-permission authorization for endpoints annotated with {@link AuthorizationSpec}.
  */
 @Slf4j
 @Component
@@ -29,28 +25,39 @@ public class AuthorizationEnforcementInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        long startMs = System.currentTimeMillis();
         if (!(handler instanceof HandlerMethod handlerMethod)) {
             return true;
         }
         AuthorizationSpec spec = AuthorizationSpecResolver.resolve(handlerMethod);
         if (spec == null || spec.identity() != IdentityType.USER) {
-            return true; // 未声明 / 非用户身份接口:不在角色执行范围
-        }
-
-        Role role = AuthContext.currentRole();
-        PermissionCode required = spec.permission();
-        if (RolePermissions.grants(role, required)) {
             return true;
         }
 
-        // 角色不足
-        if (authorizationProperties.getMode() == AuthorizationMode.ENFORCE) {
-            log.warn("[Authz] DENY (enforce), path={}, role={}, required={}",
-                    request.getRequestURI(), role, required);
+        Role role = AuthContext.currentRole();
+        Long actorId = AuthContext.currentUserId();
+        PermissionCode required = spec.permission();
+        AuthorizationMode mode = authorizationProperties.getMode();
+        String handlerName = handlerMethod.getBeanType().getSimpleName() + "."
+                + handlerMethod.getMethod().getName();
+
+        if (RolePermissions.grants(role, required)) {
+            log.info("[Authz] ALLOW, actorId={}, role={}, required={}, mode={}, method={}, path={}, handler={}, costMs={}",
+                    actorId, role, required, mode, request.getMethod(), request.getRequestURI(),
+                    handlerName, System.currentTimeMillis() - startMs);
+            return true;
+        }
+
+        if (mode == AuthorizationMode.ENFORCE) {
+            log.warn("[Authz] DENY, actorId={}, role={}, required={}, mode={}, method={}, path={}, handler={}, costMs={}",
+                    actorId, role, required, mode, request.getMethod(), request.getRequestURI(),
+                    handlerName, System.currentTimeMillis() - startMs);
             throw BizException.of(ErrorCode.FORBIDDEN, "无权限");
         }
-        log.warn("[Authz] would-deny (report-only), path={}, role={}, required={}",
-                request.getRequestURI(), role, required);
+
+        log.warn("[Authz] REPORT_ONLY_DENY, actorId={}, role={}, required={}, mode={}, method={}, path={}, handler={}, costMs={}",
+                actorId, role, required, mode, request.getMethod(), request.getRequestURI(),
+                handlerName, System.currentTimeMillis() - startMs);
         return true;
     }
 }

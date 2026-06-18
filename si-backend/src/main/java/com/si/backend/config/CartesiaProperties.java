@@ -13,6 +13,7 @@ public class CartesiaProperties {
     private String apiUrl = "wss://api.cartesia.ai";
     private TtsProperties tts = new TtsProperties();
     private PoolProperties pool = new PoolProperties();
+    private VoiceGenderTtsProperties voiceGender = new VoiceGenderTtsProperties();
 
     /** 默认中文音色 ID，可通过 CARTESIA_DEFAULT_VOICE_ID_ZH 环境变量覆盖 */
     private String defaultVoiceIdChinese = "6eb8965c-e295-47bd-a9e4-3eeebb3abcff";
@@ -35,5 +36,13 @@ public class CartesiaProperties {
         private int maxTotalPerVoice = 10;
         private int minIdlePerVoice = 2;
         private long maxWaitMillis = 5000L;
+    }
+
+    @Data
+    public static class VoiceGenderTtsProperties {
+        private boolean enabled = true;
+        private String maleVoiceId;
+        private String femaleVoiceId;
+        private String unknownFallback = "target-default";
     }
 }

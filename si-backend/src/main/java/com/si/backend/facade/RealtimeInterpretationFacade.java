@@ -7,9 +7,11 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.SpeakerVoiceGenderService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
+import com.si.backend.service.VoiceGender;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -38,6 +40,7 @@ public class RealtimeInterpretationFacade {
     private final InterpretationRecordService recordService;
     private final AudioRecordService audioRecordService;
     private final SpeakerTurnService speakerTurnService;
+    private final SpeakerVoiceGenderService speakerVoiceGenderService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -102,9 +105,11 @@ public class RealtimeInterpretationFacade {
                 (text, lang, speakerId) -> {
                     sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
                             .compareAndSet(0, System.currentTimeMillis());
+                    speakerVoiceGenderService.observeSpeaker(sessionId, speakerId);
                     onRecognizing.accept(text, lang, speakerId);
                 },
                 (text, lang, speakerId) -> {
+                    speakerVoiceGenderService.observeSpeaker(sessionId, speakerId);
                     onRecognized.accept(text, lang, speakerId);
                     long startedMs = sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0)).getAndSet(0);
                     long speechStartAtMs = startedMs > 0 ? startedMs : System.currentTimeMillis();
@@ -119,6 +124,7 @@ public class RealtimeInterpretationFacade {
         asrService.pushAudio(sessionId, pcmFrame);
         if (pcmFrame != null && pcmFrame.length > 0) {
             audioRecordService.appendPcm(sessionId, pcmFrame);
+            speakerVoiceGenderService.appendAudio(sessionId, pcmFrame);
             long audioMs = Math.round((double) pcmFrame.length * 1000
                     / (Constants.DEFAULT_SAMPLE_RATE_ASR * Constants.AUDIO_CHANNELS_MONO * (Constants.BITS_PER_SAMPLE / 8)));
             sessionService.addAsrAudioMs(sessionId, audioMs);
@@ -145,6 +151,7 @@ public class RealtimeInterpretationFacade {
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
         speakerTurnService.cleanupSession(sessionId);
+        speakerVoiceGenderService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] stopInterpretation done, sessionId={}", sessionId);
     }
 
@@ -347,7 +354,7 @@ public class RealtimeInterpretationFacade {
             completeTtsReservation(reservation, "inactive_before_tts");
             return;
         }
-        final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang);
+        final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang, sessionId, speakerId);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
         final long ttsSequence = reservation.sequence();
@@ -550,10 +557,23 @@ public class RealtimeInterpretationFacade {
             String sessionId, String lang, String taskId, long sequence,
             CompletableFuture<Void> previous, CompletableFuture<Void> completion, AtomicBoolean released) {}
 
-    private String resolveVoiceId(String voiceId, String targetLang) {
-        if (voiceId != null && !voiceId.isBlank()) return voiceId;
+    private String resolveVoiceId(String voiceId, String targetLang, String sessionId, String speakerId) {
+        if (voiceId != null && !voiceId.isBlank()) {
+            log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=explicit, voiceId={}",
+                    sessionId, speakerId, targetLang, voiceId);
+            return voiceId;
+        }
+        String genderVoiceId = resolveVoiceIdByGender(sessionId, speakerId);
+        if (genderVoiceId != null) {
+            log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=gender, voiceId={}",
+                    sessionId, speakerId, targetLang, genderVoiceId);
+            return genderVoiceId;
+        }
         if (Constants.LANG_ZH_CN.equalsIgnoreCase(targetLang) || Constants.LANG_CLONE_ZH.equalsIgnoreCase(targetLang)) {
-            return cartesiaProperties.getDefaultVoiceIdChinese();
+            String resolved = cartesiaProperties.getDefaultVoiceIdChinese();
+            log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=target-default-zh, voiceId={}",
+                    sessionId, speakerId, targetLang, resolved);
+            return resolved;
         }
         if (Constants.LANG_EN_SHORT.equalsIgnoreCase(targetLang)
                 || Constants.LANG_EN_US.equalsIgnoreCase(targetLang)
@@ -563,9 +583,54 @@ public class RealtimeInterpretationFacade {
                 log.warn("[RealtimeInterpretationFacade] English voice is blank, fallback to default voice");
                 return Constants.VOICE_ID_DEFAULT;
             }
+            log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=target-default-en, voiceId={}",
+                    sessionId, speakerId, targetLang, englishVoiceId);
             return englishVoiceId;
         }
-        return cartesiaProperties.getDefaultVoiceIdIndonesian();
+        String resolved = cartesiaProperties.getDefaultVoiceIdIndonesian();
+        log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=target-default-id, voiceId={}",
+                sessionId, speakerId, targetLang, resolved);
+        return resolved;
+    }
+
+    private String resolveVoiceIdByGender(String sessionId, String speakerId) {
+        CartesiaProperties.VoiceGenderTtsProperties voiceGenderProperties = cartesiaProperties.getVoiceGender();
+        if (voiceGenderProperties == null || !voiceGenderProperties.isEnabled()) {
+            log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender skipped, sessionId={}, speakerId={}, reason=disabled",
+                    sessionId, speakerId);
+            return null;
+        }
+        VoiceGender gender = speakerVoiceGenderService.resolveGender(sessionId, speakerId);
+        log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender, sessionId={}, speakerId={}, gender={}, fallback={}",
+                sessionId, speakerId, gender, voiceGenderProperties.getUnknownFallback());
+        if (gender == VoiceGender.MALE) {
+            return normalizedGenderVoiceId(voiceGenderProperties.getMaleVoiceId(), "male", sessionId, speakerId);
+        }
+        if (gender == VoiceGender.FEMALE) {
+            return normalizedGenderVoiceId(voiceGenderProperties.getFemaleVoiceId(), "female", sessionId, speakerId);
+        }
+        String fallback = voiceGenderProperties.getUnknownFallback();
+        if ("male".equalsIgnoreCase(fallback)) {
+            return normalizedGenderVoiceId(voiceGenderProperties.getMaleVoiceId(), "unknown-male-fallback", sessionId, speakerId);
+        }
+        if ("female".equalsIgnoreCase(fallback)) {
+            return normalizedGenderVoiceId(voiceGenderProperties.getFemaleVoiceId(), "unknown-female-fallback", sessionId, speakerId);
+        }
+        log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender no match, sessionId={}, speakerId={}, gender={}, fallback={}",
+                sessionId, speakerId, gender, fallback);
+        return null;
+    }
+
+    private String normalizedGenderVoiceId(String voiceId, String reason, String sessionId, String speakerId) {
+        if (voiceId == null || voiceId.isBlank()) {
+            log.warn("[RealtimeInterpretationFacade] gender voiceId blank, reason={}, sessionId={}, speakerId={}, fallback=target-default",
+                    reason, sessionId, speakerId);
+            return null;
+        }
+        String resolved = voiceId.trim();
+        log.info("[RealtimeInterpretationFacade] gender voiceId selected, reason={}, sessionId={}, speakerId={}, voiceId={}",
+                reason, sessionId, speakerId, resolved);
+        return resolved;
     }
 
     private String cartesiaLanguage(String targetLang) {
@@ -602,6 +667,7 @@ public class RealtimeInterpretationFacade {
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
         speakerTurnService.cleanupSession(sessionId);
+        speakerVoiceGenderService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
     }
 

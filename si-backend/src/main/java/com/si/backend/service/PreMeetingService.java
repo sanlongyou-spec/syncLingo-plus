@@ -1802,6 +1802,10 @@ public class PreMeetingService {
             String sessionId,
             String question,
             List<ChatTurn> history) throws IOException {
+        long startMs = System.currentTimeMillis();
+        log.info("[PreMeetingService] chat start, fileId={}, sessionId={}, questionLen={}, questionHash={}, historySize={}",
+                fileId, sessionId, question != null ? question.length() : 0,
+                diagnosticHash(question), history != null ? history.size() : 0);
         StringBuilder context = new StringBuilder();
         List<String> sources = new ArrayList<>();
 
@@ -1827,8 +1831,17 @@ public class PreMeetingService {
 
         log.info("[PreMeetingService] chat, fileId={}, sessionId={}, contextLen={}, historySize={}",
                 fileId, sessionId, context.length(), history != null ? history.size() : 0);
+        log.info("[PreMeetingService] chat context built, fileId={}, sessionId={}, questionHash={}, contextLen={}, sources={}",
+                fileId, sessionId, diagnosticHash(question), context.length(), sources.size());
+        long llmStartMs = System.currentTimeMillis();
         String answer = llmIntegration.chat(context.toString(), question, history);
+        log.info("[PreMeetingService] chat llm done, questionHash={}, answerLen={}, llmMs={}",
+                diagnosticHash(question), answer != null ? answer.length() : 0,
+                System.currentTimeMillis() - llmStartMs);
         String contextSummary = sources.isEmpty() ? "无参考资料" : "基于：" + String.join("、", sources);
+        log.info("[PreMeetingService] chat end, questionHash={}, contextLen={}, answerLen={}, costMs={}",
+                diagnosticHash(question), context.length(), answer != null ? answer.length() : 0,
+                System.currentTimeMillis() - startMs);
         return PreMeetingChatVo.builder().answer(answer).contextSummary(contextSummary).build();
     }
 
@@ -1838,14 +1851,26 @@ public class PreMeetingService {
             List<ChatTurn> history,
             int days) throws IOException {
 
+        long startMs = System.currentTimeMillis();
         String since = days > 0 ? LocalDate.now().minusDays(days).toString() : null;
-        log.info("[PreMeetingService] chatCrossMeeting vector, userId={}, days={}", userId, days);
+        log.info("[PreMeetingService] chatCrossMeeting start, userId={}, days={}, since={}, questionLen={}, questionHash={}, historySize={}",
+                userId, days, since, question != null ? question.length() : 0,
+                diagnosticHash(question), history != null ? history.size() : 0);
 
         // P0-3: resolve pronouns/ellipsis against recent history so retrieval matches the real intent.
         String retrievalQuery = ragEnhancementService.rewriteQuery(history, question);
+        log.info("[PreMeetingService] chatCrossMeeting retrieval query, userId={}, questionHash={}, retrievalHash={}, changed={}",
+                userId, diagnosticHash(question), diagnosticHash(retrievalQuery),
+                retrievalQuery != null && !retrievalQuery.equals(question));
+        long embedStartMs = System.currentTimeMillis();
         float[] queryVec = llmIntegration.embed(retrievalQuery);
+        log.info("[PreMeetingService] chatCrossMeeting embedded, userId={}, retrievalHash={}, dims={}, costMs={}",
+                userId, diagnosticHash(retrievalQuery), queryVec.length,
+                System.currentTimeMillis() - embedStartMs);
         List<VectorSearchService.SearchResult> hits =
                 vectorSearchService.search(userId, retrievalQuery, queryVec, null, null, since, 40);
+        log.info("[PreMeetingService] chatCrossMeeting recall done, userId={}, retrievalHash={}, hits={}",
+                userId, diagnosticHash(retrievalQuery), hits.size());
 
         if (hits.isEmpty()) {
             String range = days > 0 ? "过去 " + days + " 天的" : "所有";
@@ -1893,11 +1918,20 @@ public class PreMeetingService {
             context.append("\n");
         }
 
+        log.info("[PreMeetingService] chatCrossMeeting context built, userId={}, questionHash={}, sessions={}, contextLen={}",
+                userId, diagnosticHash(question), bySession.size(), context.length());
+        long llmStartMs = System.currentTimeMillis();
         String answer = llmIntegration.chatCrossMeeting(context.toString(), question, history);
+        log.info("[PreMeetingService] chatCrossMeeting llm done, userId={}, questionHash={}, answerLen={}, llmMs={}",
+                userId, diagnosticHash(question), answer != null ? answer.length() : 0,
+                System.currentTimeMillis() - llmStartMs);
         int refCount = Math.min(3, sessionLabels.size());
         String contextSummary = "语义检索了 " + bySession.size() + " 场会议，引用：" +
                 String.join("、", sessionLabels.subList(0, refCount));
 
+        log.info("[PreMeetingService] chatCrossMeeting end, userId={}, questionHash={}, sessions={}, answerLen={}, costMs={}",
+                userId, diagnosticHash(question), bySession.size(),
+                answer != null ? answer.length() : 0, System.currentTimeMillis() - startMs);
         return PreMeetingChatVo.builder()
                 .answer(answer)
                 .contextSummary(contextSummary)
@@ -1919,7 +1953,12 @@ public class PreMeetingService {
     }
 
     public UnifiedContextResult buildUnifiedContextResult(long userId, String question, QuestionFilter filter) {
-        log.info("[PreMeetingService] buildUnifiedContext vector, userId={}", userId);
+        long startMs = System.currentTimeMillis();
+        log.info("[PreMeetingService] buildUnifiedContext start, userId={}, questionLen={}, questionHash={}, filterMeetingId={}, filterSpeaker={}, filterSince={}",
+                userId, question != null ? question.length() : 0, diagnosticHash(question),
+                filter != null ? filter.meetingId() : null,
+                filter != null ? filter.speakerName() : null,
+                filter != null ? filter.since() : null);
         try {
             // P0: multi-query expansion → merged recall → LLM rerank (all no-ops when flags off).
             // P1-4: split multi-hop / comparison questions into sub-questions, then expand each.
@@ -1932,6 +1971,8 @@ public class PreMeetingService {
                 }
                 if (queries.size() >= maxQueries) break;
             }
+            log.info("[PreMeetingService] buildUnifiedContext queries built, userId={}, questionHash={}, queryCount={}, maxQueries={}",
+                    userId, diagnosticHash(question), queries.size(), maxQueries);
             int perQueryTopK = openAiProperties.getRagRecallPerQueryTopK() > 0
                     ? openAiProperties.getRagRecallPerQueryTopK()
                     : 40;
@@ -1940,10 +1981,14 @@ public class PreMeetingService {
             log.info("[PreMeetingService] multiQueryRecall done, userId={}, queries={}, perQueryTopK={}, hits={}, costMs={}",
                     userId, queries.size(), perQueryTopK, hits.size(), System.currentTimeMillis() - recallStart);
             if (hits.isEmpty()) {
-                log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions=0, sources=0", userId);
+                log.info("[PreMeetingService] buildUnifiedContext done, userId={}, questionHash={}, sessions=0, sources=0, reason=noHits, costMs={}",
+                        userId, diagnosticHash(question), System.currentTimeMillis() - startMs);
                 return new UnifiedContextResult("", List.of());
             }
+            int hitsBeforeRerank = hits.size();
             hits = ragEnhancementService.rerank(question, hits);
+            log.info("[PreMeetingService] buildUnifiedContext rerank applied, userId={}, questionHash={}, before={}, after={}",
+                    userId, diagnosticHash(question), hitsBeforeRerank, hits.size());
 
             Map<String, List<VectorSearchService.SearchResult>> bySession = new LinkedHashMap<>();
             for (VectorSearchService.SearchResult hit : hits) {
@@ -1993,11 +2038,13 @@ public class PreMeetingService {
 
                 context.append("\n");
             }
-            log.info("[PreMeetingService] buildUnifiedContext done, userId={}, sessions={}",
-                    userId, bySession.size());
+            log.info("[PreMeetingService] buildUnifiedContext done, userId={}, questionHash={}, sessions={}, sources={}, contextLen={}, costMs={}",
+                    userId, diagnosticHash(question), bySession.size(), sources.size(), context.length(),
+                    System.currentTimeMillis() - startMs);
             return new UnifiedContextResult(context.toString(), sources);
         } catch (Exception e) {
-            log.warn("[PreMeetingService] buildUnifiedContext embed failed: {}", e.getMessage());
+            log.warn("[PreMeetingService] buildUnifiedContext failed, userId={}, questionHash={}, costMs={}: {}",
+                    userId, diagnosticHash(question), System.currentTimeMillis() - startMs, e.getMessage());
             return new UnifiedContextResult("", List.of());
         }
     }
@@ -2005,17 +2052,31 @@ public class PreMeetingService {
     /** Embeds each (expanded) query, runs vector search, and merges hits keeping the best score per chunk. */
     private List<VectorSearchService.SearchResult> multiQueryRecall(
             long userId, List<String> queries, QuestionFilter filter, int perQueryTopK) {
+        long startMs = System.currentTimeMillis();
+        Long filterMeetingId = filter != null ? filter.meetingId() : null;
+        String filterSpeaker = filter != null ? filter.speakerName() : null;
+        String filterSince = filter != null ? filter.since() : null;
+        log.info("[PreMeetingService] multiQueryRecall start, userId={}, queries={}, perQueryTopK={}, filterMeetingId={}, filterSpeaker={}, filterSince={}",
+                userId, queries != null ? queries.size() : 0, perQueryTopK,
+                filterMeetingId, filterSpeaker, filterSince);
         Map<String, VectorSearchService.SearchResult> merged = new LinkedHashMap<>();
         for (String q : queries) {
+            long queryStartMs = System.currentTimeMillis();
             float[] vec;
             try {
                 vec = llmIntegration.embed(q);
+                log.info("[PreMeetingService] multiQueryRecall embedded, userId={}, queryHash={}, dims={}, costMs={}",
+                        userId, diagnosticHash(q), vec.length, System.currentTimeMillis() - queryStartMs);
             } catch (Exception e) {
-                log.warn("[PreMeetingService] multiQueryRecall embed failed for a query: {}", e.getMessage());
+                log.warn("[PreMeetingService] multiQueryRecall embed failed, userId={}, queryHash={}, costMs={}: {}",
+                        userId, diagnosticHash(q), System.currentTimeMillis() - queryStartMs, e.getMessage());
                 continue;
             }
             List<VectorSearchService.SearchResult> hits = vectorSearchService.search(
-                    userId, q, vec, filter.meetingId(), filter.speakerName(), filter.since(), perQueryTopK);
+                    userId, q, vec, filterMeetingId, filterSpeaker, filterSince, perQueryTopK);
+            log.info("[PreMeetingService] multiQueryRecall query done, userId={}, queryHash={}, hits={}, mergedBefore={}, costMs={}",
+                    userId, diagnosticHash(q), hits.size(), merged.size(),
+                    System.currentTimeMillis() - queryStartMs);
             for (VectorSearchService.SearchResult h : hits) {
                 String key = h.sourceType() + "|" + h.sourceId() + "|" + h.refId() + "|"
                         + (h.sourceText() == null ? "" : h.sourceText());
@@ -2027,6 +2088,8 @@ public class PreMeetingService {
         }
         List<VectorSearchService.SearchResult> out = new ArrayList<>(merged.values());
         out.sort(Comparator.comparingDouble((VectorSearchService.SearchResult r) -> (double) r.score()).reversed());
+        log.info("[PreMeetingService] multiQueryRecall end, userId={}, queries={}, merged={}, costMs={}",
+                userId, queries != null ? queries.size() : 0, out.size(), System.currentTimeMillis() - startMs);
         return out;
     }
 
@@ -2100,6 +2163,10 @@ public class PreMeetingService {
             }
         }
         return text.length();
+    }
+
+    private String diagnosticHash(String value) {
+        return value == null ? "null" : Integer.toHexString(value.hashCode());
     }
 
     private void addSourceFromHit(

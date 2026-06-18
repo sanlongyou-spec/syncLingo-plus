@@ -5,6 +5,7 @@ import com.si.backend.mapper.TerminologyMapper;
 import com.si.backend.service.TerminologyService.TerminologyProtection;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -12,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -105,5 +108,87 @@ class TerminologyMatchTest {
         TerminologyProtection p = svc.applyBeforeTranslate(UID, src, "en", "id");
         assertEquals(src, p.getProtectedText(), "AI 不应命中 raining 内部");
         assertTrue(p.getTargetTermByPlaceholder().isEmpty());
+    }
+
+    @Test
+    void longestOverlappingSourceTermWins() {
+        TerminologyService svc = serviceWith(List.of(
+                term("合同", "kontrak", "contract"),
+                term("合同履约保证金", "jaminan pelaksanaan kontrak", "contract performance bond")
+        ));
+        String src = "合同履约保证金到账";
+
+        TerminologyProtection p = svc.applyBeforeTranslate(UID, src, "zh", "id");
+
+        assertEquals("__SI_TERM_0__到账", p.getProtectedText());
+        assertEquals(1, p.getTargetTermByPlaceholder().size());
+        assertEquals("jaminan pelaksanaan kontrak", p.getTargetTermByPlaceholder().get("__SI_TERM_0__"));
+    }
+
+    @Test
+    void ambiguousSameSourceTermIsSkipped() {
+        TerminologyService svc = serviceWith(List.of(
+                term("保证金", "deposit", "deposit"),
+                term("保证金", "jaminan", "guarantee")
+        ));
+        String src = "保证金今天到账";
+
+        TerminologyProtection p = svc.applyBeforeTranslate(UID, src, "zh", "id");
+
+        assertEquals(src, p.getProtectedText());
+        assertTrue(p.getTargetTermByPlaceholder().isEmpty());
+    }
+
+    @Test
+    void largeTermListOnlyProtectsActualSentenceHits() {
+        List<Terminology> terms = new ArrayList<>();
+        for (int i = 0; i < 500; i++) {
+            terms.add(term("无关术语" + i, "istilah tidak terkait " + i, "irrelevant term " + i));
+        }
+        terms.add(term("专用术语", "istilah khusus", "special term"));
+        TerminologyService svc = serviceWith(terms);
+
+        TerminologyProtection p = svc.applyBeforeTranslate(UID, "今天只说专用术语", "zh", "id");
+
+        assertEquals("今天只说__SI_TERM_0__", p.getProtectedText());
+        assertEquals(1, p.getTargetTermByPlaceholder().size());
+        assertEquals("istilah khusus", p.getTargetTermByPlaceholder().get("__SI_TERM_0__"));
+    }
+
+    @Test
+    void targetTermIsProtectedBeforeCompressionRewriteAndRestoredAfterward() {
+        TerminologyService svc = serviceWith(List.of(term("卡塔西亚", "Kartesia", "Cartesia")));
+        String src = "We use Cartesia today";
+        TerminologyProtection p = svc.applyBeforeTranslate(UID, src, "en", "id");
+        String restored = svc.applyAfterTranslate(src, "Kami memakai __SI_TERM_0__ hari ini", "en", "id", p, UID);
+
+        String rewriteInput = svc.protectTargetTermsForRewrite(restored, p);
+        String finalText = svc.applyAfterTranslate(src, rewriteInput, "en", "id", p, UID);
+
+        assertTrue(rewriteInput.contains("__SI_TERM_0__"), rewriteInput);
+        assertFalse(rewriteInput.contains("Kartesia"), rewriteInput);
+        assertTrue(finalText.contains("Kartesia"), finalText);
+        assertFalse(finalText.contains("SI_TERM"), finalText);
+    }
+
+    @Test
+    void terminologyIndexIsInvalidatedAfterMutation() {
+        TerminologyMapper mapper = mock(TerminologyMapper.class);
+        when(mapper.findEnabled(UID)).thenReturn(
+                List.of(term("旧词", "istilah lama", "old term")),
+                List.of(term("新词", "istilah baru", "new term"))
+        );
+        when(mapper.updateEnabled(7L, UID, false)).thenReturn(1);
+        TerminologyService svc = new TerminologyService(mapper);
+
+        TerminologyProtection first = svc.applyBeforeTranslate(UID, "旧词", "zh", "id");
+        TerminologyProtection cached = svc.applyBeforeTranslate(UID, "新词", "zh", "id");
+        svc.updateEnabled(7L, UID, false);
+        TerminologyProtection afterInvalidation = svc.applyBeforeTranslate(UID, "新词", "zh", "id");
+
+        assertEquals(1, first.getTargetTermByPlaceholder().size());
+        assertTrue(cached.getTargetTermByPlaceholder().isEmpty());
+        assertEquals("istilah baru", afterInvalidation.getTargetTermByPlaceholder().get("__SI_TERM_0__"));
+        verify(mapper, times(2)).findEnabled(UID);
     }
 }

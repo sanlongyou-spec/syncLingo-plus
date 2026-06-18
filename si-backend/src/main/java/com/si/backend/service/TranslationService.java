@@ -54,8 +54,8 @@ public class TranslationService {
      *                      由调用方按"该语言通道是否有播放积压"决定(见 RealtimeInterpretationFacade 阶段1)。
      */
     public String translate(String text, String sourceLang, String targetLang, Long userId, boolean allowCompress) {
-        log.info("[TranslationService] translate start, textLen={}, sourceLang={}, targetLang={}",
-                text != null ? text.length() : 0, sourceLang, targetLang);
+        log.info("[TranslationService] translate start, userId={}, textLen={}, textHash={}, sourceLang={}, targetLang={}, allowCompress={}",
+                userId, text != null ? text.length() : 0, diagnosticHash(text), sourceLang, targetLang, allowCompress);
         if (text == null || text.isBlank()) {
             log.info("[TranslationService] translate end, blankInput=true, targetLang={}", targetLang);
             return "";
@@ -66,16 +66,42 @@ public class TranslationService {
         TerminologyService.TerminologyProtection terminologyProtection =
                 terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
         String protectedText = terminologyProtection.getProtectedText();
+        log.info("[TranslationService] terminology before translate done, userId={}, textHash={}, termCount={}, protectedLen={}, changed={}",
+                userId, diagnosticHash(text), terminologyProtection.getTargetTermByPlaceholder().size(),
+                protectedText != null ? protectedText.length() : 0, protectedText != null && !protectedText.equals(text));
 
         long mtStart = System.currentTimeMillis();
         String result = translator.translate(protectedText, sourceLang, targetLang, userId);
-        log.info("[TranslationService] google translate done, sourceLang={}, targetLang={}, costMs={}",
-                sourceLang, targetLang, System.currentTimeMillis() - mtStart);
+        log.info("[TranslationService] google translate done, userId={}, textHash={}, sourceLang={}, targetLang={}, protectedLen={}, resultLen={}, costMs={}",
+                userId, diagnosticHash(text), sourceLang, targetLang,
+                protectedText != null ? protectedText.length() : 0, result != null ? result.length() : 0,
+                System.currentTimeMillis() - mtStart);
+        String beforeMtRestore = result;
         result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
+        log.info("[TranslationService] terminology after mt restore done, userId={}, textHash={}, beforeLen={}, afterLen={}, changed={}",
+                userId, diagnosticHash(text), beforeMtRestore != null ? beforeMtRestore.length() : 0,
+                result != null ? result.length() : 0, beforeMtRestore != null && !beforeMtRestore.equals(result));
+        String beforeRewriteProtection = result;
+        result = terminologyService.protectTargetTermsForRewrite(result, terminologyProtection);
+        log.info("[TranslationService] terminology before rewrite protect done, userId={}, textHash={}, beforeLen={}, afterLen={}, changed={}",
+                userId, diagnosticHash(text), beforeRewriteProtection != null ? beforeRewriteProtection.length() : 0,
+                result != null ? result.length() : 0,
+                beforeRewriteProtection != null && !beforeRewriteProtection.equals(result));
+        String beforeCompress = result;
         result = compressIfNeeded(text, sourceLang, targetLang, result, start, allowCompress);
+        log.info("[TranslationService] compress stage done, userId={}, textHash={}, beforeLen={}, afterLen={}, changed={}",
+                userId, diagnosticHash(text), beforeCompress != null ? beforeCompress.length() : 0,
+                result != null ? result.length() : 0, beforeCompress != null && !beforeCompress.equals(result));
+        String beforeFinalRestore = result;
+        result = terminologyService.applyAfterTranslate(text, result, sourceLang, targetLang, terminologyProtection, userId);
+        log.info("[TranslationService] terminology final restore done, userId={}, textHash={}, beforeLen={}, afterLen={}, changed={}",
+                userId, diagnosticHash(text), beforeFinalRestore != null ? beforeFinalRestore.length() : 0,
+                result != null ? result.length() : 0, beforeFinalRestore != null && !beforeFinalRestore.equals(result));
 
-        log.info("[TranslationService] translate end, textLen={}, targetLang={}, costMs={}, resultLen={}",
-                text.length(), targetLang, System.currentTimeMillis() - start, result != null ? result.length() : 0);
+        log.info("[TranslationService] translate end, userId={}, textLen={}, textHash={}, targetLang={}, termCount={}, costMs={}, resultLen={}",
+                userId, text.length(), diagnosticHash(text), targetLang,
+                terminologyProtection.getTargetTermByPlaceholder().size(),
+                System.currentTimeMillis() - start, result != null ? result.length() : 0);
         return result;
     }
 
@@ -205,5 +231,9 @@ public class TranslationService {
     private boolean isEnglishTarget(String targetLang) {
         return Constants.LANG_EN_SHORT.equalsIgnoreCase(targetLang)
                 || Constants.LANG_EN_US.equalsIgnoreCase(targetLang);
+    }
+
+    private static String diagnosticHash(String value) {
+        return value == null ? "null" : Integer.toHexString(value.hashCode());
     }
 }

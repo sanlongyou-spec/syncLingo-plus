@@ -5,8 +5,8 @@ import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.entity.Meeting;
 import com.si.backend.entity.MeetingActionItem;
-import com.si.backend.entity.PersistentPreMeetingFile;
 import com.si.backend.entity.MeetingMember;
+import com.si.backend.entity.PersistentPreMeetingFile;
 import com.si.backend.entity.SessionAudioRecord;
 import com.si.backend.entity.SpeakerSummaryRecord;
 import com.si.backend.mapper.MeetingActionItemMapper;
@@ -23,7 +23,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 /**
- * P0.5 ownership policy. Every check receives an explicit actor and returns the authorized resource.
+ * Central resource ownership and meeting access policy.
  */
 @Slf4j
 @Service
@@ -40,71 +40,104 @@ public class ResourceOwnershipPolicy {
     private final SupportAccessGrantMapper supportAccessGrantMapper;
 
     public InterpretationSession requireOwnedSession(AuthenticatedActor actor, String sessionId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedSession start, actorId={}, role={}, sessionId={}",
+                actor.userId(), actor.role(), sessionId);
         InterpretationSession session = resolveSession(sessionId);
         requireOwner(actor, session != null ? session.getUserId() : null, "session", sessionId);
+        log.info("[ResourceOwnershipPolicy] requireOwnedSession allow, actorId={}, sessionId={}, ownerId={}, costMs={}",
+                actor.userId(), sessionId, session != null ? session.getUserId() : null,
+                System.currentTimeMillis() - startMs);
         return session;
     }
 
     public Meeting requireOwnedMeeting(AuthenticatedActor actor, Long meetingId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedMeeting start, actorId={}, role={}, meetingId={}",
+                actor.userId(), actor.role(), meetingId);
         Meeting meeting = meetingId == null ? null : meetingMapper.findById(meetingId);
         requireOwner(actor, meeting != null ? meeting.getUserId() : null, "meeting", meetingId);
+        log.info("[ResourceOwnershipPolicy] requireOwnedMeeting allow, actorId={}, meetingId={}, ownerId={}, costMs={}",
+                actor.userId(), meetingId, meeting != null ? meeting.getUserId() : null,
+                System.currentTimeMillis() - startMs);
         return meeting;
     }
 
-    /**
-     * P3 数据范围 ASSIGNED:owner 拥有全部权限;否则需 meeting_member 中具备足够级别(OPERATE 蕴含 VIEW)。
-     * 非 owner 且无足够授权 → 404(防枚举)。ADMIN 不在此走捷径(内容访问由 support grant 另行处理)。
-     */
     public Meeting requireMeetingAccess(AuthenticatedActor actor, Long meetingId, AccessLevel required) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireMeetingAccess start, actorId={}, role={}, meetingId={}, required={}",
+                actor.userId(), actor.role(), meetingId, required);
         Meeting meeting = meetingId == null ? null : meetingMapper.findById(meetingId);
         if (meeting == null) {
             throwNotFound("meeting", meetingId);
         }
         if (actor.userId().equals(meeting.getUserId())) {
-            return meeting; // owner:完全访问
-        }
-        MeetingMember member = meetingMemberMapper.findMember(meetingId, actor.userId());
-        if (member != null && AccessLevel.satisfies(member.getAccessLevel(), required)) {
-            return meeting; // 被分配且级别足够
-        }
-        // P3:ADMIN 持有生效的临时内容授权 → 允许内容读(VIEW)。OPERATE(写)不经此通道。
-        if (required == AccessLevel.VIEW && actor.isAdmin()
-                && supportAccessGrantMapper.countActive(
-                        actor.userId(), SupportAccessGrantService.RESOURCE_MEETING, String.valueOf(meetingId)) > 0) {
-            log.info("[ResourceOwnershipPolicy] admin content grant access, meetingId={}, actorId={}", meetingId, actor.userId());
+            log.info("[ResourceOwnershipPolicy] requireMeetingAccess allow, reason=owner, actorId={}, meetingId={}, required={}, costMs={}",
+                    actor.userId(), meetingId, required, System.currentTimeMillis() - startMs);
             return meeting;
         }
-        log.warn("[ResourceOwnershipPolicy] meeting access denied, meetingId={}, actorId={}, required={}",
-                meetingId, actor.userId(), required);
+
+        MeetingMember member = meetingMemberMapper.findMember(meetingId, actor.userId());
+        if (member != null && AccessLevel.satisfies(member.getAccessLevel(), required)) {
+            log.info("[ResourceOwnershipPolicy] requireMeetingAccess allow, reason=member, actorId={}, meetingId={}, required={}, granted={}, costMs={}",
+                    actor.userId(), meetingId, required, member.getAccessLevel(), System.currentTimeMillis() - startMs);
+            return meeting;
+        }
+
+        if (required == AccessLevel.VIEW && actor.isAdmin()
+                && supportAccessGrantMapper.countActive(
+                actor.userId(), SupportAccessGrantService.RESOURCE_MEETING, String.valueOf(meetingId)) > 0) {
+            log.info("[ResourceOwnershipPolicy] requireMeetingAccess allow, reason=supportGrant, actorId={}, meetingId={}, required={}, costMs={}",
+                    actor.userId(), meetingId, required, System.currentTimeMillis() - startMs);
+            return meeting;
+        }
+
+        log.warn("[ResourceOwnershipPolicy] requireMeetingAccess deny, reason=insufficientAccess, actorId={}, role={}, meetingId={}, ownerId={}, memberLevel={}, required={}, costMs={}",
+                actor.userId(), actor.role(), meetingId, meeting.getUserId(),
+                member != null ? member.getAccessLevel() : null, required,
+                System.currentTimeMillis() - startMs);
         throwNotFound("meeting", meetingId);
-        return meeting; // unreachable
+        return meeting;
     }
 
     public PersistentPreMeetingFile requireOwnedFile(AuthenticatedActor actor, Long fileId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedFile start, actorId={}, role={}, fileId={}",
+                actor.userId(), actor.role(), fileId);
         PersistentPreMeetingFile file = fileId == null ? null : fileMapper.findByIdFull(fileId);
         if (file == null) {
             throwNotFound("file", fileId);
         }
         requireOwnedMeeting(actor, file.getMeetingId());
+        log.info("[ResourceOwnershipPolicy] requireOwnedFile allow, actorId={}, fileId={}, meetingId={}, costMs={}",
+                actor.userId(), fileId, file.getMeetingId(), System.currentTimeMillis() - startMs);
         return file;
     }
 
     public SpeakerSummaryRecord requireOwnedSpeakerSummary(AuthenticatedActor actor, Long summaryId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedSpeakerSummary start, actorId={}, role={}, summaryId={}",
+                actor.userId(), actor.role(), summaryId);
         SpeakerSummaryRecord summary = summaryId == null ? null : speakerSummaryMapper.findById(summaryId);
         if (summary == null) {
             throwNotFound("speakerSummary", summaryId);
         }
         requireOwnedSession(actor, summary.getSessionId());
+        log.info("[ResourceOwnershipPolicy] requireOwnedSpeakerSummary allow, actorId={}, summaryId={}, sessionId={}, costMs={}",
+                actor.userId(), summaryId, summary.getSessionId(), System.currentTimeMillis() - startMs);
         return summary;
     }
 
     public MeetingActionItem requireOwnedActionItem(AuthenticatedActor actor, Long actionItemId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedActionItem start, actorId={}, role={}, actionItemId={}",
+                actor.userId(), actor.role(), actionItemId);
         MeetingActionItem actionItem = actionItemId == null ? null : actionItemMapper.findById(actionItemId);
         if (actionItem == null) {
             throwNotFound("actionItem", actionItemId);
@@ -114,13 +147,22 @@ public class ResourceOwnershipPolicy {
         } else {
             requireOwner(actor, actionItem.getUserId(), "actionItem", actionItemId);
         }
+        log.info("[ResourceOwnershipPolicy] requireOwnedActionItem allow, actorId={}, actionItemId={}, sessionId={}, ownerId={}, costMs={}",
+                actor.userId(), actionItemId, actionItem.getSessionId(), actionItem.getUserId(),
+                System.currentTimeMillis() - startMs);
         return actionItem;
     }
 
     public SessionAudioRecord requireOwnedAudio(AuthenticatedActor actor, Long audioRecordId) {
+        long startMs = System.currentTimeMillis();
         requireActor(actor);
+        log.info("[ResourceOwnershipPolicy] requireOwnedAudio start, actorId={}, role={}, audioRecordId={}",
+                actor.userId(), actor.role(), audioRecordId);
         SessionAudioRecord audio = audioRecordId == null ? null : audioRecordMapper.findById(audioRecordId);
         requireOwner(actor, audio != null ? audio.getUserId() : null, "audioRecord", audioRecordId);
+        log.info("[ResourceOwnershipPolicy] requireOwnedAudio allow, actorId={}, audioRecordId={}, ownerId={}, costMs={}",
+                actor.userId(), audioRecordId, audio != null ? audio.getUserId() : null,
+                System.currentTimeMillis() - startMs);
         return audio;
     }
 
@@ -134,14 +176,15 @@ public class ResourceOwnershipPolicy {
 
     private void requireActor(AuthenticatedActor actor) {
         if (actor == null || actor.userId() == null) {
+            log.warn("[ResourceOwnershipPolicy] actor missing");
             throw BizException.of(ErrorCode.UNAUTHORIZED, "Unauthenticated");
         }
     }
 
     private void requireOwner(AuthenticatedActor actor, Long ownerId, String resourceType, Object resourceId) {
         if (ownerId == null || !actor.userId().equals(ownerId)) {
-            log.warn("[ResourceOwnershipPolicy] ownership denied, resourceType={}, resourceId={}, actorId={}",
-                    resourceType, resourceId, actor.userId());
+            log.warn("[ResourceOwnershipPolicy] ownership denied, resourceType={}, resourceId={}, actorId={}, role={}, ownerId={}",
+                    resourceType, resourceId, actor.userId(), actor.role(), ownerId);
             throwNotFound(resourceType, resourceId);
         }
     }

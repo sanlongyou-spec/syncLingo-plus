@@ -85,11 +85,18 @@ public class RagEnhancementService {
      * disabled or fails, returns just the original question.
      */
     public List<String> expandQueries(String question) {
+        long methodStartMs = System.currentTimeMillis();
+        log.info("[RagEnhancementService] expandQueries enter, enabled={}, questionLen={}, questionHash={}",
+                openAiProperties.isRagQueryExpansionEnabled(),
+                question != null ? question.length() : 0,
+                diagnosticHash(question));
         List<String> result = new ArrayList<>();
         if (question != null && !question.isBlank()) {
             result.add(question.trim());
         }
         if (!openAiProperties.isRagQueryExpansionEnabled() || question == null || question.isBlank()) {
+            log.info("[RagEnhancementService] expandQueries skipped, questionHash={}, result={}, costMs={}",
+                    diagnosticHash(question), result.size(), System.currentTimeMillis() - methodStartMs);
             return result;
         }
         int want = Math.max(1, openAiProperties.getRagQueryExpansionCount());
@@ -119,8 +126,14 @@ public class RagEnhancementService {
      * any failure.
      */
     public String rewriteQuery(List<ChatTurn> history, String question) {
+        long methodStartMs = System.currentTimeMillis();
+        log.info("[RagEnhancementService] rewriteQuery enter, enabled={}, questionLen={}, questionHash={}, historySize={}, historyLimit={}",
+                queryRewriteEnabled, question != null ? question.length() : 0,
+                diagnosticHash(question), history != null ? history.size() : 0, rewriteHistoryTurns);
         if (!queryRewriteEnabled || question == null || question.isBlank()
                 || history == null || history.isEmpty()) {
+            log.info("[RagEnhancementService] rewriteQuery skipped, questionHash={}, costMs={}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs);
             return question;
         }
         try {
@@ -136,12 +149,20 @@ public class RagEnhancementService {
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
                     REWRITE_SYSTEM_PROMPT, sb.toString(), 200L, helperTimeout());
             String rewritten = stripFences(raw).trim();
-            if (rewritten.isBlank()) return question;
-            log.info("[RagEnhancementService] rewriteQuery done, len {}->{}, costMs={}",
-                    question.length(), rewritten.length(), System.currentTimeMillis() - start);
+            if (rewritten.isBlank()) {
+                log.info("[RagEnhancementService] rewriteQuery blankResult, questionHash={}, rawLen={}, costMs={}",
+                        diagnosticHash(question), raw != null ? raw.length() : 0,
+                        System.currentTimeMillis() - start);
+                return question;
+            }
+            log.info("[RagEnhancementService] rewriteQuery done, questionHash={}, rewrittenHash={}, len {}->{}, changed={}, rawLen={}, costMs={}",
+                    diagnosticHash(question), diagnosticHash(rewritten),
+                    question.length(), rewritten.length(), !rewritten.equals(question),
+                    raw != null ? raw.length() : 0, System.currentTimeMillis() - start);
             return rewritten;
         } catch (Exception e) {
-            log.warn("[RagEnhancementService] rewriteQuery failed, using original: {}", e.getMessage());
+            log.warn("[RagEnhancementService] rewriteQuery failed, questionHash={}, costMs={}, using original: {}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs, e.getMessage());
             return question;
         }
     }
@@ -152,18 +173,27 @@ public class RagEnhancementService {
      * failure.
      */
     public List<String> decompose(String question) {
+        long methodStartMs = System.currentTimeMillis();
+        log.info("[RagEnhancementService] decompose enter, enabled={}, questionLen={}, questionHash={}, max={}",
+                decomposeEnabled, question != null ? question.length() : 0,
+                diagnosticHash(question), decomposeMax);
         List<String> result = new ArrayList<>();
         if (question != null && !question.isBlank()) {
             result.add(question.trim());
         }
         if (!decomposeEnabled || question == null || question.isBlank()) {
+            log.info("[RagEnhancementService] decompose skipped, questionHash={}, result={}, costMs={}",
+                    diagnosticHash(question), result.size(), System.currentTimeMillis() - methodStartMs);
             return result;
         }
         try {
             long start = System.currentTimeMillis();
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
                     DECOMPOSE_SYSTEM_PROMPT, "问题：" + question, 300L, helperTimeout());
-            for (String sub : parseStringArray(raw)) {
+            List<String> parsed = parseStringArray(raw);
+            log.info("[RagEnhancementService] decompose parsed, questionHash={}, rawLen={}, parsedCount={}",
+                    diagnosticHash(question), raw != null ? raw.length() : 0, parsed.size());
+            for (String sub : parsed) {
                 String trimmed = sub.trim();
                 if (!trimmed.isBlank() && result.stream().noneMatch(trimmed::equalsIgnoreCase)) {
                     result.add(trimmed);
@@ -171,11 +201,17 @@ public class RagEnhancementService {
                 if (result.size() >= decomposeMax + 1) break;
             }
             if (result.size() > 1) {
-                log.info("[RagEnhancementService] decompose done, subQuestions={}, costMs={}",
-                        result.size() - 1, System.currentTimeMillis() - start);
+                log.info("[RagEnhancementService] decompose done, questionHash={}, subQuestions={}, total={}, costMs={}",
+                        diagnosticHash(question), result.size() - 1, result.size(),
+                        System.currentTimeMillis() - start);
+            } else {
+                log.info("[RagEnhancementService] decompose done, questionHash={}, subQuestions=0, total={}, costMs={}",
+                        diagnosticHash(question), result.size(), System.currentTimeMillis() - start);
             }
         } catch (Exception e) {
-            log.warn("[RagEnhancementService] decompose failed, using original only: {}", e.getMessage());
+            log.warn("[RagEnhancementService] decompose failed, questionHash={}, result={}, costMs={}, using original only: {}",
+                    diagnosticHash(question), result.size(), System.currentTimeMillis() - methodStartMs,
+                    e.getMessage());
         }
         return result;
     }
@@ -186,7 +222,13 @@ public class RagEnhancementService {
      * any failure (so the loop terminates safely).
      */
     public AgenticDecision agenticFollowup(String question, String contextSoFar) {
+        long methodStartMs = System.currentTimeMillis();
+        log.info("[RagEnhancementService] agenticFollowup enter, enabled={}, questionLen={}, questionHash={}, contextLen={}",
+                agenticEnabled, question != null ? question.length() : 0,
+                diagnosticHash(question), contextSoFar != null ? contextSoFar.length() : 0);
         if (!agenticEnabled || question == null || question.isBlank()) {
+            log.info("[RagEnhancementService] agenticFollowup skipped, questionHash={}, costMs={}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs);
             return new AgenticDecision(true, null);
         }
         try {
@@ -194,14 +236,20 @@ public class RagEnhancementService {
             String ctx = contextSoFar == null ? "" : contextSoFar;
             if (ctx.length() > 4000) ctx = ctx.substring(0, 4000);
             String user = "原问题：" + question + "\n已检索到的资料：\n" + ctx;
+            log.info("[RagEnhancementService] agenticFollowup start, questionHash={}, clippedContextLen={}, model={}, timeoutSeconds={}",
+                    diagnosticHash(question), ctx.length(), openAiProperties.effectiveRagHelperModel(),
+                    helperTimeout().toSeconds());
             String raw = llmIntegration.complete(openAiProperties.effectiveRagHelperModel(),
                     AGENTIC_SYSTEM_PROMPT, user, 200L, helperTimeout());
             AgenticDecision decision = parseAgenticDecision(raw);
-            log.info("[RagEnhancementService] agenticFollowup done, enough={}, hasNext={}, costMs={}",
-                    decision.enough(), decision.nextQuery() != null, System.currentTimeMillis() - start);
+            log.info("[RagEnhancementService] agenticFollowup done, questionHash={}, rawLen={}, enough={}, hasNext={}, nextHash={}, costMs={}",
+                    diagnosticHash(question), raw != null ? raw.length() : 0,
+                    decision.enough(), decision.nextQuery() != null,
+                    diagnosticHash(decision.nextQuery()), System.currentTimeMillis() - start);
             return decision;
         } catch (Exception e) {
-            log.warn("[RagEnhancementService] agenticFollowup failed, treating as enough: {}", e.getMessage());
+            log.warn("[RagEnhancementService] agenticFollowup failed, questionHash={}, costMs={}, treating as enough: {}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs, e.getMessage());
             return new AgenticDecision(true, null);
         }
     }
@@ -232,7 +280,13 @@ public class RagEnhancementService {
      */
     public List<VectorSearchService.SearchResult> rerank(
             String question, List<VectorSearchService.SearchResult> hits) {
+        long methodStartMs = System.currentTimeMillis();
+        log.info("[RagEnhancementService] rerank enter, enabled={}, questionLen={}, questionHash={}, hits={}",
+                openAiProperties.isRagRerankEnabled(), question != null ? question.length() : 0,
+                diagnosticHash(question), hits != null ? hits.size() : 0);
         if (!openAiProperties.isRagRerankEnabled() || hits == null || hits.size() <= 1) {
+            log.info("[RagEnhancementService] rerank skipped, questionHash={}, costMs={}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs);
             return hits;
         }
         int topK = Math.max(1, openAiProperties.getRagRerankTopK());
@@ -250,6 +304,8 @@ public class RagEnhancementService {
 
             List<Integer> order = parseIntArray(raw, candidates.size());
             if (order.isEmpty()) {
+                log.warn("[RagEnhancementService] rerank empty order, questionHash={}, rawLen={}, keeping original",
+                        diagnosticHash(question), raw != null ? raw.length() : 0);
                 return hits;
             }
             List<VectorSearchService.SearchResult> reranked = new ArrayList<>();
@@ -257,11 +313,13 @@ public class RagEnhancementService {
                 reranked.add(candidates.get(idx));
                 if (reranked.size() >= topK) break;
             }
-            log.info("[RagEnhancementService] rerank done, in={}, candidates={}, out={}, costMs={}",
-                    hits.size(), candidates.size(), reranked.size(), System.currentTimeMillis() - start);
+            log.info("[RagEnhancementService] rerank done, questionHash={}, in={}, candidates={}, orderSize={}, out={}, costMs={}",
+                    diagnosticHash(question), hits.size(), candidates.size(), order.size(),
+                    reranked.size(), System.currentTimeMillis() - start);
             return reranked;
         } catch (Exception e) {
-            log.warn("[RagEnhancementService] rerank failed, keeping original order: {}", e.getMessage());
+            log.warn("[RagEnhancementService] rerank failed, questionHash={}, costMs={}, keeping original order: {}",
+                    diagnosticHash(question), System.currentTimeMillis() - methodStartMs, e.getMessage());
             return hits;
         }
     }
@@ -315,5 +373,9 @@ public class RagEnhancementService {
     private String stripFences(String raw) {
         if (raw == null) return "[]";
         return raw.replaceAll("(?s)```(?:json)?\\s*", "").replace("```", "").trim();
+    }
+
+    private String diagnosticHash(String value) {
+        return value == null ? "null" : Integer.toHexString(value.hashCode());
     }
 }

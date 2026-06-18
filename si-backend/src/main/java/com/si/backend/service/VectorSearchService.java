@@ -97,7 +97,15 @@ public class VectorSearchService {
             String filterSince,
             int topK) {
 
-        if (queryVec == null || queryVec.length == 0) return List.of();
+        long startMs = System.currentTimeMillis();
+        log.info("[VectorSearchService] search start, userId={}, queryLen={}, queryHash={}, queryDims={}, filterMeetingId={}, filterSpeakerName={}, filterSince={}, requestedTopK={}",
+                userId, queryText != null ? queryText.length() : 0, diagnosticHash(queryText),
+                queryVec != null ? queryVec.length : 0, filterMeetingId, filterSpeakerName, filterSince, topK);
+        if (queryVec == null || queryVec.length == 0) {
+            log.warn("[VectorSearchService] search skipped, reason=emptyQueryVector, userId={}, costMs={}",
+                    userId, System.currentTimeMillis() - startMs);
+            return List.of();
+        }
         int limit = topK > 0 ? topK : openAiProperties.getEmbeddingTopK();
         float minScore = openAiProperties.getEmbeddingMinScore();
         String profile = InterpretationResultService.currentEmbeddingProfile(openAiProperties);
@@ -109,7 +117,13 @@ public class VectorSearchService {
                 deduplicateBySource(embeddingMapper.findByUserId(
                         userId, filterMeetingId, filterSpeakerName, filterSince, profile, candidateLimit));
         int m = candidates.size();
-        if (m == 0) return List.of();
+        log.info("[VectorSearchService] search candidates loaded, userId={}, profile={}, rawLimit={}, dedupedCandidates={}, costMs={}",
+                userId, profile, candidateLimit, m, System.currentTimeMillis() - startMs);
+        if (m == 0) {
+            log.info("[VectorSearchService] search end, userId={}, resultCount=0, reason=noCandidates, costMs={}",
+                    userId, System.currentTimeMillis() - startMs);
+            return List.of();
+        }
 
         double[] dense = new double[m];
         for (int i = 0; i < m; i++) {
@@ -158,6 +172,11 @@ public class VectorSearchService {
                     (float) ranking[idx]));
             if (results.size() >= limit) break;
         }
+        float topScore = results.isEmpty() ? 0F : results.get(0).score();
+        float lastScore = results.isEmpty() ? 0F : results.get(results.size() - 1).score();
+        log.info("[VectorSearchService] search end, userId={}, profile={}, hybrid={}, candidates={}, resultCount={}, minScore={}, topScore={}, lastScore={}, costMs={}",
+                userId, profile, hybrid, m, results.size(), minScore, topScore, lastScore,
+                System.currentTimeMillis() - startMs);
         return results;
     }
 
@@ -179,5 +198,9 @@ public class VectorSearchService {
             return "result:" + row.getResultId();
         }
         return "row:" + row.getId();
+    }
+
+    private static String diagnosticHash(String value) {
+        return value == null ? "null" : Integer.toHexString(value.hashCode());
     }
 }

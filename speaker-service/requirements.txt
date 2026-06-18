@@ -7,3 +7,4 @@ webrtcvad>=2.0.10
 sherpa-onnx>=1.13.0
 wtpsplit>=0.4.0
 onnxruntime>=1.18.0
+audonnx>=0.7.0

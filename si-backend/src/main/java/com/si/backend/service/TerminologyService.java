@@ -21,7 +21,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -29,6 +31,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 术语服务，提供术语管理与翻译后修正能力。
@@ -38,7 +43,10 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class TerminologyService {
 
+    private static final long INDEX_CACHE_TTL_MILLIS = 5 * 60 * 1000L;
+
     private final TerminologyMapper terminologyMapper;
+    private final Map<Long, TerminologyIndexSnapshot> terminologyIndexCache = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void initTable() {
@@ -79,6 +87,7 @@ public class TerminologyService {
             terminology.setReviewStatus("APPROVED");
         }
         terminologyMapper.insert(terminology);
+        invalidateTerminologyIndex(terminology.getUserId());
         log.info("[TerminologyService] createTerminology end, id={}", terminology.getId());
         return terminology;
     }
@@ -183,6 +192,7 @@ public class TerminologyService {
                     .skippedCount(skipped)
                     .totalCount(created)
                     .build();
+            invalidateTerminologyIndex(uid);
             log.info("[TerminologyService] importExcel end, userId={}, created={}, skipped={}", uid, created, skipped);
             return result;
         } catch (BizException e) {
@@ -247,6 +257,7 @@ public class TerminologyService {
     public void updateEnabled(Long id, Long userId, Boolean enabled) {
         log.info("[TerminologyService] updateEnabled start, id={}, userId={}, enabled={}", id, userId, enabled);
         requireModified(terminologyMapper.updateEnabled(id, userId, Boolean.TRUE.equals(enabled)));
+        invalidateTerminologyIndex(userId);
         log.info("[TerminologyService] updateEnabled end, id={}", id);
     }
 
@@ -262,6 +273,7 @@ public class TerminologyService {
             terminology.setReviewStatus("APPROVED");
         }
         requireModified(terminologyMapper.update(terminology));
+        invalidateTerminologyIndex(userId);
         log.info("[TerminologyService] updateTerminology end, id={}", id);
     }
 
@@ -269,6 +281,7 @@ public class TerminologyService {
     public void deleteTerminology(Long id, Long userId) {
         log.info("[TerminologyService] deleteTerminology start, id={}, userId={}", id, userId);
         requireModified(terminologyMapper.deleteById(id, userId));
+        invalidateTerminologyIndex(userId);
         log.info("[TerminologyService] deleteTerminology end, id={}", id);
     }
 
@@ -285,32 +298,81 @@ public class TerminologyService {
     }
 
     public TerminologyProtection applyBeforeTranslate(Long userId, String sourceText, String sourceLang, String targetLang) {
-        log.debug("[TerminologyService] applyBeforeTranslate start, sourceLang={}, targetLang={}", sourceLang, targetLang);
+        long startMs = System.currentTimeMillis();
+        log.info("[TerminologyService] applyBeforeTranslate start, userId={}, sourceLang={}, targetLang={}, sourceLen={}, sourceHash={}",
+                userId, sourceLang, targetLang, sourceText != null ? sourceText.length() : 0, diagnosticHash(sourceText));
         if (sourceText == null || sourceText.isBlank()) {
+            log.info("[TerminologyService] applyBeforeTranslate end, userId={}, sourceHash={}, reason=blankInput, costMs={}",
+                    userId, diagnosticHash(sourceText), System.currentTimeMillis() - startMs);
             return TerminologyProtection.empty(sourceText);
         }
-        String protectedText = sourceText;
-        Map<String, String> targetTermByPlaceholder = new LinkedHashMap<>();
-        int placeholderIndex = 0;
-        for (Terminology terminology : terminologyMapper.findEnabled(userId)) {
-            String sourceTerm = termByLang(terminology, sourceLang);
-            String targetTerm = termByLang(terminology, targetLang);
-            if (sourceTerm == null || sourceTerm.isBlank() || targetTerm == null || targetTerm.isBlank()) {
-                continue;
-            }
-            if (!termMatches(protectedText, sourceTerm)) {
-                continue;
-            }
-            String placeholder = Constants.TERMINOLOGY_PLACEHOLDER_PREFIX
-                    + placeholderIndex
-                    + Constants.TERMINOLOGY_PLACEHOLDER_SUFFIX;
-            protectedText = replaceTerm(protectedText, sourceTerm, placeholder);
-            targetTermByPlaceholder.put(placeholder, cleanTermValue(targetTerm));
-            placeholderIndex++;
+        List<TerminologyCandidate> candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang);
+        if (candidates.isEmpty()) {
+            log.info("[TerminologyService] applyBeforeTranslate end, userId={}, sourceHash={}, candidates=0, reason=noCandidates, costMs={}",
+                    userId, diagnosticHash(sourceText), System.currentTimeMillis() - startMs);
+            return TerminologyProtection.empty(sourceText);
         }
-        log.debug("[TerminologyService] applyBeforeTranslate end, changed={}, termCount={}",
-                !protectedText.equals(sourceText), targetTermByPlaceholder.size());
-        return new TerminologyProtection(protectedText, targetTermByPlaceholder);
+        List<TerminologyOccurrence> rawOccurrences = findSourceOccurrences(sourceText, candidates);
+        List<TerminologyOccurrence> selectedOccurrences = selectLongestNonOverlapping(rawOccurrences);
+        log.info("[TerminologyService] applyBeforeTranslate matched, userId={}, sourceHash={}, candidates={}, rawOccurrences={}, selectedOccurrences={}",
+                userId, diagnosticHash(sourceText), candidates.size(), rawOccurrences.size(), selectedOccurrences.size());
+        if (selectedOccurrences.isEmpty()) {
+            log.info("[TerminologyService] applyBeforeTranslate end, userId={}, sourceHash={}, changed=false, termCount=0, costMs={}",
+                    userId, diagnosticHash(sourceText), System.currentTimeMillis() - startMs);
+            return TerminologyProtection.empty(sourceText);
+        }
+        StringBuilder protectedText = new StringBuilder(sourceText);
+        Map<String, String> targetTermByPlaceholder = new LinkedHashMap<>();
+        Map<String, String> sourceTermByPlaceholder = new LinkedHashMap<>();
+        List<String> placeholders = new ArrayList<>();
+        for (int i = 0; i < selectedOccurrences.size(); i++) {
+            TerminologyOccurrence occurrence = selectedOccurrences.get(i);
+            String placeholder = Constants.TERMINOLOGY_PLACEHOLDER_PREFIX
+                    + i
+                    + Constants.TERMINOLOGY_PLACEHOLDER_SUFFIX;
+            placeholders.add(placeholder);
+            targetTermByPlaceholder.put(placeholder, occurrence.candidate().targetTerm());
+            sourceTermByPlaceholder.put(placeholder, occurrence.candidate().sourceTerm());
+        }
+        for (int i = selectedOccurrences.size() - 1; i >= 0; i--) {
+            TerminologyOccurrence occurrence = selectedOccurrences.get(i);
+            protectedText.replace(occurrence.start(), occurrence.end(), placeholders.get(i));
+        }
+        log.info("[TerminologyService] applyBeforeTranslate end, userId={}, sourceHash={}, changed=true, termCount={}, protectedLen={}, costMs={}",
+                userId, diagnosticHash(sourceText), targetTermByPlaceholder.size(), protectedText.length(),
+                System.currentTimeMillis() - startMs);
+        return new TerminologyProtection(protectedText.toString(), targetTermByPlaceholder, sourceTermByPlaceholder);
+    }
+
+    public String protectTargetTermsForRewrite(String targetText, TerminologyProtection protection) {
+        long startMs = System.currentTimeMillis();
+        int placeholderCount = protection != null ? protection.getTargetTermByPlaceholder().size() : 0;
+        log.info("[TerminologyService] protectTargetTermsForRewrite start, textLen={}, textHash={}, placeholders={}",
+                targetText != null ? targetText.length() : 0, diagnosticHash(targetText), placeholderCount);
+        if (targetText == null || targetText.isBlank() || protection == null
+                || protection.getTargetTermByPlaceholder().isEmpty()) {
+            log.info("[TerminologyService] protectTargetTermsForRewrite end, textHash={}, changed=false, reason=notApplicable, costMs={}",
+                    diagnosticHash(targetText), System.currentTimeMillis() - startMs);
+            return targetText;
+        }
+        List<TargetTermOccurrence> rawOccurrences = findTargetOccurrences(targetText, protection.getTargetTermByPlaceholder());
+        List<TargetTermOccurrence> selectedOccurrences = selectLongestNonOverlappingTargets(rawOccurrences);
+        log.info("[TerminologyService] protectTargetTermsForRewrite matched, textHash={}, placeholders={}, rawOccurrences={}, selectedOccurrences={}",
+                diagnosticHash(targetText), placeholderCount, rawOccurrences.size(), selectedOccurrences.size());
+        if (selectedOccurrences.isEmpty()) {
+            log.info("[TerminologyService] protectTargetTermsForRewrite end, textHash={}, changed=false, termCount=0, costMs={}",
+                    diagnosticHash(targetText), System.currentTimeMillis() - startMs);
+            return targetText;
+        }
+        StringBuilder protectedText = new StringBuilder(targetText);
+        for (int i = selectedOccurrences.size() - 1; i >= 0; i--) {
+            TargetTermOccurrence occurrence = selectedOccurrences.get(i);
+            protectedText.replace(occurrence.start(), occurrence.end(), occurrence.placeholder());
+        }
+        log.info("[TerminologyService] protectTargetTermsForRewrite end, textHash={}, changed=true, termCount={}, protectedLen={}, costMs={}",
+                diagnosticHash(targetText), selectedOccurrences.size(), protectedText.length(),
+                System.currentTimeMillis() - startMs);
+        return protectedText.toString();
     }
 
     public String applyAfterTranslate(
@@ -321,15 +383,23 @@ public class TerminologyService {
             TerminologyProtection protection,
             Long userId
     ) {
-        log.debug("[TerminologyService] applyAfterTranslate start, sourceLang={}, targetLang={}", sourceLang, targetLang);
+        long startMs = System.currentTimeMillis();
+        int placeholderCount = protection != null ? protection.getTargetTermByPlaceholder().size() : 0;
+        log.info("[TerminologyService] applyAfterTranslate start, userId={}, sourceLang={}, targetLang={}, sourceLen={}, targetLen={}, targetHash={}, placeholders={}",
+                userId, sourceLang, targetLang, sourceText != null ? sourceText.length() : 0,
+                targetText != null ? targetText.length() : 0, diagnosticHash(targetText), placeholderCount);
         if (sourceText == null || sourceText.isBlank() || targetText == null || targetText.isBlank()) {
+            log.info("[TerminologyService] applyAfterTranslate end, userId={}, targetHash={}, reason=blankInput, costMs={}",
+                    userId, diagnosticHash(targetText), System.currentTimeMillis() - startMs);
             return targetText;
         }
         String correctedText = targetText;
+        int restoredCount = 0;
         if (protection != null) {
             for (Map.Entry<String, String> entry : protection.getTargetTermByPlaceholder().entrySet()) {
                 String placeholder = entry.getKey();
                 String targetTerm = entry.getValue();
+                String beforeRestore = correctedText;
                 // 先精确替换；再容错替换：翻译/LLM 常把 __SI_TERM_0__ 改成大小写/下划线/空格变体，按序号做宽松匹配
                 correctedText = correctedText
                         .replace(placeholder, targetTerm)
@@ -339,15 +409,199 @@ public class TerminologyService {
                     correctedText = tolerantPlaceholderPattern(idx).matcher(correctedText)
                             .replaceAll(java.util.regex.Matcher.quoteReplacement(targetTerm));
                 }
+                if (!beforeRestore.equals(correctedText)) {
+                    restoredCount++;
+                }
             }
         }
+        int residualBeforeCleanup = countResidualPlaceholders(correctedText);
         // 兜底：清除任何残留的占位符(没还原成功的)，绝不让 SI_TERM_N 出现在最终译文/TTS
         correctedText = RESIDUAL_PLACEHOLDER.matcher(correctedText).replaceAll("")
                 .replaceAll("\\s{2,}", " ").trim();
         // 术语只走"译前占位符 → 译后内联还原"这条干净路径(上面)。
         // 已移除原先"在句尾追加 (目标译名)"的兜底：术语多/多候选时会满屏括号、污染译文。
-        log.debug("[TerminologyService] applyAfterTranslate end, changed={}", !correctedText.equals(targetText));
+        log.info("[TerminologyService] applyAfterTranslate end, userId={}, targetHash={}, changed={}, placeholders={}, restored={}, residualBeforeCleanup={}, resultLen={}, costMs={}",
+                userId, diagnosticHash(targetText), !correctedText.equals(targetText), placeholderCount, restoredCount,
+                residualBeforeCleanup, correctedText.length(), System.currentTimeMillis() - startMs);
         return correctedText;
+    }
+
+    private TerminologyIndexSnapshot loadTerminologyIndex(Long userId) {
+        if (userId == null) {
+            log.info("[TerminologyService] terminology index skipped, reason=anonymousUser");
+            return new TerminologyIndexSnapshot(List.of(), System.currentTimeMillis());
+        }
+        long now = System.currentTimeMillis();
+        TerminologyIndexSnapshot cached = terminologyIndexCache.get(userId);
+        if (cached != null && !cached.isExpired(now)) {
+            log.info("[TerminologyService] terminology index cache hit, userId={}, enabledCount={}, ageMs={}, languagePairIndexes={}",
+                    userId, cached.enabledTerms.size(), now - cached.loadedAtMillis, cached.candidatesByLanguagePair.size());
+            return cached;
+        }
+        if (cached != null) {
+            log.info("[TerminologyService] terminology index cache expired, userId={}, enabledCount={}, ageMs={}",
+                    userId, cached.enabledTerms.size(), now - cached.loadedAtMillis);
+        } else {
+            log.info("[TerminologyService] terminology index cache miss, userId={}", userId);
+        }
+        long loadStartMs = System.currentTimeMillis();
+        List<Terminology> enabledTerms = terminologyMapper.findEnabled(userId);
+        TerminologyIndexSnapshot snapshot = new TerminologyIndexSnapshot(enabledTerms, now);
+        terminologyIndexCache.put(userId, snapshot);
+        log.info("[TerminologyService] terminology index loaded, userId={}, enabledCount={}, costMs={}",
+                userId, enabledTerms.size(), System.currentTimeMillis() - loadStartMs);
+        return snapshot;
+    }
+
+    private void invalidateTerminologyIndex(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        terminologyIndexCache.remove(userId);
+        log.debug("[TerminologyService] terminology index invalidated, userId={}", userId);
+    }
+
+    private List<TerminologyCandidate> buildCandidates(
+            List<Terminology> enabledTerms,
+            String sourceLang,
+            String targetLang
+    ) {
+        long startMs = System.currentTimeMillis();
+        Map<String, TerminologyCandidate> candidateBySourceKey = new LinkedHashMap<>();
+        Set<String> ambiguousSourceKeys = new HashSet<>();
+        int skippedInvalid = 0;
+        for (Terminology terminology : enabledTerms) {
+            String sourceTerm = cleanSourceTerm(termByLang(terminology, sourceLang));
+            String targetTerm = cleanTermValue(termByLang(terminology, targetLang));
+            if (!isMatchableTerm(sourceTerm) || targetTerm == null || targetTerm.isBlank()) {
+                skippedInvalid++;
+                continue;
+            }
+            String sourceKey = normalizeTermKey(sourceTerm);
+            TerminologyCandidate existing = candidateBySourceKey.get(sourceKey);
+            if (existing == null) {
+                candidateBySourceKey.put(sourceKey, new TerminologyCandidate(
+                        sourceTerm,
+                        targetTerm,
+                        wordPatternIfNeeded(sourceTerm),
+                        terminology.getId()
+                ));
+                continue;
+            }
+            if (!normalizeTargetTerm(existing.targetTerm()).equals(normalizeTargetTerm(targetTerm))) {
+                ambiguousSourceKeys.add(sourceKey);
+            }
+        }
+        List<TerminologyCandidate> candidates = candidateBySourceKey.entrySet().stream()
+                .filter(entry -> !ambiguousSourceKeys.contains(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .sorted(Comparator
+                        .comparingInt((TerminologyCandidate candidate) -> candidate.sourceTerm().length()).reversed()
+                        .thenComparing(candidate -> candidate.sourceTerm().toLowerCase(Locale.ROOT))
+                        .thenComparing(candidate -> candidate.id() != null ? candidate.id() : Long.MAX_VALUE))
+                .toList();
+        if (!ambiguousSourceKeys.isEmpty()) {
+            log.info("[TerminologyService] ambiguous terminology skipped, sourceLang={}, targetLang={}, count={}",
+                    sourceLang, targetLang, ambiguousSourceKeys.size());
+        }
+        log.info("[TerminologyService] terminology candidates built, sourceLang={}, targetLang={}, enabledCount={}, candidateKeys={}, ambiguous={}, skippedInvalid={}, count={}, costMs={}",
+                sourceLang, targetLang, enabledTerms != null ? enabledTerms.size() : 0,
+                candidateBySourceKey.size(), ambiguousSourceKeys.size(), skippedInvalid, candidates.size(),
+                System.currentTimeMillis() - startMs);
+        return candidates;
+    }
+
+    private List<TerminologyOccurrence> findSourceOccurrences(String text, List<TerminologyCandidate> candidates) {
+        List<TerminologyOccurrence> occurrences = new ArrayList<>();
+        for (TerminologyCandidate candidate : candidates) {
+            if (candidate.sourcePattern() != null) {
+                Matcher matcher = candidate.sourcePattern().matcher(text);
+                while (matcher.find()) {
+                    occurrences.add(new TerminologyOccurrence(matcher.start(), matcher.end(), candidate));
+                }
+                continue;
+            }
+            int fromIndex = 0;
+            while (fromIndex < text.length()) {
+                int start = text.indexOf(candidate.sourceTerm(), fromIndex);
+                if (start < 0) {
+                    break;
+                }
+                occurrences.add(new TerminologyOccurrence(start, start + candidate.sourceTerm().length(), candidate));
+                fromIndex = start + 1;
+            }
+        }
+        return occurrences;
+    }
+
+    private List<TargetTermOccurrence> findTargetOccurrences(
+            String text,
+            Map<String, String> targetTermByPlaceholder
+    ) {
+        List<TargetTermOccurrence> occurrences = new ArrayList<>();
+        for (Map.Entry<String, String> entry : targetTermByPlaceholder.entrySet()) {
+            String placeholder = entry.getKey();
+            String targetTerm = cleanSourceTerm(entry.getValue());
+            if (!isMatchableTerm(targetTerm)) {
+                continue;
+            }
+            Pattern pattern = wordPatternIfNeeded(targetTerm);
+            if (pattern != null) {
+                Matcher matcher = pattern.matcher(text);
+                while (matcher.find()) {
+                    occurrences.add(new TargetTermOccurrence(matcher.start(), matcher.end(), placeholder));
+                }
+                continue;
+            }
+            int fromIndex = 0;
+            while (fromIndex < text.length()) {
+                int start = text.indexOf(targetTerm, fromIndex);
+                if (start < 0) {
+                    break;
+                }
+                occurrences.add(new TargetTermOccurrence(start, start + targetTerm.length(), placeholder));
+                fromIndex = start + 1;
+            }
+        }
+        return occurrences;
+    }
+
+    private List<TerminologyOccurrence> selectLongestNonOverlapping(List<TerminologyOccurrence> occurrences) {
+        List<TerminologyOccurrence> priority = new ArrayList<>(occurrences);
+        priority.sort(Comparator
+                .comparingInt(TerminologyOccurrence::length).reversed()
+                .thenComparing(TerminologyOccurrence::start)
+                .thenComparing(occurrence -> occurrence.candidate().sourceTerm().toLowerCase(Locale.ROOT)));
+        List<TerminologyOccurrence> selected = new ArrayList<>();
+        for (TerminologyOccurrence occurrence : priority) {
+            if (selected.stream().noneMatch(existing -> overlaps(existing.start(), existing.end(),
+                    occurrence.start(), occurrence.end()))) {
+                selected.add(occurrence);
+            }
+        }
+        selected.sort(Comparator.comparingInt(TerminologyOccurrence::start));
+        return selected;
+    }
+
+    private List<TargetTermOccurrence> selectLongestNonOverlappingTargets(List<TargetTermOccurrence> occurrences) {
+        List<TargetTermOccurrence> priority = new ArrayList<>(occurrences);
+        priority.sort(Comparator
+                .comparingInt(TargetTermOccurrence::length).reversed()
+                .thenComparing(TargetTermOccurrence::start)
+                .thenComparing(TargetTermOccurrence::placeholder));
+        List<TargetTermOccurrence> selected = new ArrayList<>();
+        for (TargetTermOccurrence occurrence : priority) {
+            if (selected.stream().noneMatch(existing -> overlaps(existing.start(), existing.end(),
+                    occurrence.start(), occurrence.end()))) {
+                selected.add(occurrence);
+            }
+        }
+        selected.sort(Comparator.comparingInt(TargetTermOccurrence::start));
+        return selected;
+    }
+
+    private boolean overlaps(int firstStart, int firstEnd, int secondStart, int secondEnd) {
+        return firstStart < secondEnd && secondStart < firstEnd;
     }
 
     /** 术语最小长度：短于此值（单字母 "f" / 单个汉字）一律不参与匹配，避免命中词内部。 */
@@ -368,10 +622,60 @@ public class TerminologyService {
         return hasLetter;
     }
 
-    private static java.util.regex.Pattern wordPattern(String term) {
-        return java.util.regex.Pattern.compile(
-                "\\b" + java.util.regex.Pattern.quote(term) + "\\b",
-                java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CHARACTER_CLASS);
+    private static Pattern wordPattern(String term) {
+        return Pattern.compile(
+                "\\b" + Pattern.quote(term) + "\\b",
+                Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
+    }
+
+    private Pattern wordPatternIfNeeded(String term) {
+        return isLatinTerm(term) ? wordPattern(term) : null;
+    }
+
+    private boolean isMatchableTerm(String term) {
+        return term != null && term.trim().length() >= MIN_TERM_LEN;
+    }
+
+    private String cleanSourceTerm(String term) {
+        if (term == null) {
+            return null;
+        }
+        String cleaned = term.trim();
+        return cleaned.isBlank() ? null : cleaned;
+    }
+
+    private String normalizeTermKey(String term) {
+        String cleaned = cleanSourceTerm(term);
+        if (cleaned == null) {
+            return "";
+        }
+        return isLatinTerm(cleaned) ? cleaned.toLowerCase(Locale.ROOT) : cleaned;
+    }
+
+    private String normalizeTargetTerm(String term) {
+        String cleaned = cleanSourceTerm(term);
+        return cleaned == null ? "" : cleaned.toLowerCase(Locale.ROOT);
+    }
+
+    private String languagePairKey(String sourceLang, String targetLang) {
+        return normalizeLanguageKey(sourceLang) + "->" + normalizeLanguageKey(targetLang);
+    }
+
+    private String normalizeLanguageKey(String lang) {
+        if (lang == null || lang.isBlank()) {
+            return "";
+        }
+        String lower = lang.trim().toLowerCase(Locale.ROOT);
+        if (lower.startsWith("zh")) {
+            return "zh";
+        }
+        if (lower.startsWith("id") || Constants.LANG_ID_ISO6391.equalsIgnoreCase(lower)) {
+            return "id";
+        }
+        if (lower.startsWith(Constants.LANG_EN_SHORT)) {
+            return Constants.LANG_EN_SHORT;
+        }
+        return lower;
     }
 
     /** 残留占位符兜底清洗：匹配 SI_TERM_数字 的各种被改写变体(大小写/下划线/空格)。 */
@@ -393,29 +697,6 @@ public class TerminologyService {
         return first.isBlank() ? term.trim() : first;
     }
 
-    /** 长度<2 的术语（单字母/单汉字）一律不匹配；拉丁文按单词边界，CJK 按子串。 */
-    private boolean termMatches(String text, String term) {
-        if (term.trim().length() < MIN_TERM_LEN) {
-            return false;
-        }
-        if (isLatinTerm(term)) {
-            return wordPattern(term).matcher(text).find();
-        }
-        return text.contains(term);
-    }
-
-    /** 与 {@link #termMatches} 一致的替换：长度<2 跳过；拉丁文按单词边界，CJK 按子串。 */
-    private String replaceTerm(String text, String term, String replacement) {
-        if (term.trim().length() < MIN_TERM_LEN) {
-            return text;
-        }
-        if (isLatinTerm(term)) {
-            return wordPattern(term).matcher(text)
-                    .replaceAll(java.util.regex.Matcher.quoteReplacement(replacement));
-        }
-        return text.replace(term, replacement);
-    }
-
     private String termByLang(Terminology terminology, String lang) {
         if (lang == null) return null;
         String lower = lang.toLowerCase();
@@ -425,6 +706,73 @@ public class TerminologyService {
         return null;
     }
 
+    private static int countResidualPlaceholders(String text) {
+        if (text == null || text.isBlank()) {
+            return 0;
+        }
+        int count = 0;
+        Matcher matcher = RESIDUAL_PLACEHOLDER.matcher(text);
+        while (matcher.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    private static String diagnosticHash(String value) {
+        return value == null ? "null" : Integer.toHexString(value.hashCode());
+    }
+
+    private final class TerminologyIndexSnapshot {
+
+        private final List<Terminology> enabledTerms;
+        private final long loadedAtMillis;
+        private final Map<String, List<TerminologyCandidate>> candidatesByLanguagePair = new ConcurrentHashMap<>();
+
+        private TerminologyIndexSnapshot(List<Terminology> enabledTerms, long loadedAtMillis) {
+            this.enabledTerms = List.copyOf(enabledTerms);
+            this.loadedAtMillis = loadedAtMillis;
+        }
+
+        private boolean isExpired(long nowMillis) {
+            return nowMillis - loadedAtMillis > INDEX_CACHE_TTL_MILLIS;
+        }
+
+        private List<TerminologyCandidate> candidates(String sourceLang, String targetLang) {
+            return candidatesByLanguagePair.computeIfAbsent(
+                    languagePairKey(sourceLang, targetLang),
+                    ignored -> buildCandidates(enabledTerms, sourceLang, targetLang)
+            );
+        }
+    }
+
+    private record TerminologyCandidate(
+            String sourceTerm,
+            String targetTerm,
+            Pattern sourcePattern,
+            Long id
+    ) {
+    }
+
+    private record TerminologyOccurrence(
+            int start,
+            int end,
+            TerminologyCandidate candidate
+    ) {
+        private int length() {
+            return end - start;
+        }
+    }
+
+    private record TargetTermOccurrence(
+            int start,
+            int end,
+            String placeholder
+    ) {
+        private int length() {
+            return end - start;
+        }
+    }
+
     /**
      * Translation pre-hook result containing protected text and placeholder mappings.
      */
@@ -432,10 +780,20 @@ public class TerminologyService {
 
         private final String protectedText;
         private final Map<String, String> targetTermByPlaceholder;
+        private final Map<String, String> sourceTermByPlaceholder;
 
         public TerminologyProtection(String protectedText, Map<String, String> targetTermByPlaceholder) {
+            this(protectedText, targetTermByPlaceholder, Collections.emptyMap());
+        }
+
+        public TerminologyProtection(
+                String protectedText,
+                Map<String, String> targetTermByPlaceholder,
+                Map<String, String> sourceTermByPlaceholder
+        ) {
             this.protectedText = protectedText;
             this.targetTermByPlaceholder = new LinkedHashMap<>(targetTermByPlaceholder);
+            this.sourceTermByPlaceholder = new LinkedHashMap<>(sourceTermByPlaceholder);
         }
 
         public static TerminologyProtection empty(String text) {
@@ -448,6 +806,10 @@ public class TerminologyService {
 
         public Map<String, String> getTargetTermByPlaceholder() {
             return targetTermByPlaceholder;
+        }
+
+        public Map<String, String> getSourceTermByPlaceholder() {
+            return sourceTermByPlaceholder;
         }
     }
 }

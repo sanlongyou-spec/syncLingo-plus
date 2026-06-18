@@ -31,6 +31,10 @@ public class TtsService {
             if (properties.getDefaultVoiceIdEnglish() != null && !properties.getDefaultVoiceIdEnglish().isBlank()) {
                 cartesiaStreamingIntegration.prewarmPool(properties.getDefaultVoiceIdEnglish(), warmCount);
             }
+            if (properties.getVoiceGender() != null) {
+                prewarmIfConfigured(properties.getVoiceGender().getMaleVoiceId(), warmCount);
+                prewarmIfConfigured(properties.getVoiceGender().getFemaleVoiceId(), warmCount);
+            }
             log.info("[TtsService] init end");
         });
     }
@@ -63,5 +67,11 @@ public class TtsService {
                     onError.accept(error);
                 }
         );
+    }
+
+    private void prewarmIfConfigured(String voiceId, int warmCount) {
+        if (voiceId != null && !voiceId.isBlank()) {
+            cartesiaStreamingIntegration.prewarmPool(voiceId.trim(), warmCount);
+        }
     }
 }
