@@ -11,8 +11,10 @@ Production release:
 
 - Repository path: `/opt/syncLingo`
 - Branch: `final-version`
-- Deployed commit: `23a16d1adff050288f474dc7563f5a4db2b11e18`
-- Commit title: `merge remote final-version baseline`
+- Initial deployed commit: `23a16d1adff050288f474dc7563f5a4db2b11e18`
+- Initial commit title: `merge remote final-version baseline`
+- Follow-up deployed commit: `c495a2c9d566da078eb41ed75a3e8eeec2ec1fd2`
+- Follow-up commit title: `restore meeting notice notification workflow`
 - Rollback baseline: `docs/server-rollback-2026-06-19.md`
 - Public domain: `https://julongtongchuan.icu`
 - Frontend nginx root: `/var/www/si`
@@ -187,6 +189,103 @@ Speaker health then returned:
   "sat_model_loaded": true,
   "voice_gender_model_loaded": true
 }
+```
+
+### Follow-Up Release: Meeting Notice and Voice Gender Runtime
+
+The follow-up release restored the meeting-notice workflow on the Meetings page
+and completed the backend voice-gender runtime configuration.
+
+The server repository was updated to:
+
+```text
+c495a2c (HEAD -> final-version, origin/final-version) restore meeting notice notification workflow
+```
+
+The first backend rebuild attempt failed because Maven was not installed on the
+server. After Maven was installed, the host Java compiler still could not build
+the backend:
+
+```text
+Fatal error compiling: error: release version 21 not supported
+```
+
+The backend requires Java 21. The successful build therefore used Dockerized
+Maven with Temurin 21:
+
+```bash
+cd /opt/syncLingo
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v /root/.m2:/root/.m2 \
+  -w /workspace \
+  maven:3.9.9-eclipse-temurin-21 \
+  mvn -DskipTests package -f si-backend/pom.xml
+
+ls -lh si-backend/target/si-backend-1.0.0.jar
+```
+
+After the jar existed, the backend image was rebuilt from `si-backend/`:
+
+```bash
+NEW_COMMIT=$(git rev-parse HEAD)
+NEW_TAG=${NEW_COMMIT:0:7}
+
+cd /opt/syncLingo/si-backend
+docker build -t si-backend:$NEW_TAG -t si-backend:latest .
+
+docker rm -f si-backend
+docker run -d --name si-backend --restart=always --network host \
+  --env-file /opt/syncLingo/backend.env \
+  -e JAVA_OPTS="-Xms512m -Xmx3g" \
+  si-backend:latest
+```
+
+The backend restart verified that the meeting-notice persistence column was
+present:
+
+```text
+[MeetingService] column already exists: meeting_url
+```
+
+The voice-gender backend integration was then enabled in
+`/opt/syncLingo/backend.env`:
+
+```bash
+VOICE_GENDER_SERVICE_ENABLED=true
+VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
+TTS_VOICE_GENDER_ENABLED=true
+CARTESIA_GLOBAL_MALE_VOICE_ID=6eb8965c-e295-47bd-a9e4-3eeebb3abcff
+CARTESIA_GLOBAL_FEMALE_VOICE_ID=a053f6bc-7df4-40de-96d4-de026bc47ce8
+```
+
+The two voice IDs above are the temporary production test IDs used during this
+deployment. Replace them with the final chosen Cartesia global male/female
+voice IDs before final voice acceptance.
+
+After restarting `si-backend`, the verification output was:
+
+```text
+{"code":200,"message":"success","data":{"service":"si-backend","status":"UP"}}
+[VoiceGenderIntegration] enabled=true, url=http://127.0.0.1:7000/voice-gender, timeoutMs=1500
+[SpeakerVoiceGenderService] enabled=true, minAudioSeconds=6, maxAudioSeconds=8, queueCapacity=32
+[MeetingService] column already exists: meeting_url
+Started SiBackendApplication
+```
+
+Runtime voice-gender verification command for live meeting tests:
+
+```bash
+docker logs -f si-backend 2>&1 | grep -E 'VoiceGenderIntegration|SpeakerVoiceGenderService|detect end|resolveVoiceIdByGender|gender voiceId selected|gender voiceId blank'
+```
+
+Expected successful selection logs:
+
+```text
+detect end ... accepted=MALE
+gender voiceId selected, reason=male ... voiceId=<global-male-voice-id>
+detect end ... accepted=FEMALE
+gender voiceId selected, reason=female ... voiceId=<global-female-voice-id>
 ```
 
 ## Verification Evidence

@@ -19,6 +19,8 @@
 - [ ] `backend.env` 与 Bot 配置 `chmod 600`。
 - [ ] 没有真实密钥写入 Git。
 - [ ] 已轮换曾经暴露过的密钥或 token。
+- [ ] `backend.env` 中 `VOICE_GENDER_SERVICE_ENABLED=true`、`TTS_VOICE_GENDER_ENABLED=true`。
+- [ ] `CARTESIA_GLOBAL_MALE_VOICE_ID` 和 `CARTESIA_GLOBAL_FEMALE_VOICE_ID` 已填真实 Cartesia voice ID，未保留占位文字。
 
 ## 3. 数据库
 
@@ -30,6 +32,7 @@
 ## 4. 服务
 
 - [ ] `si-backend` Docker 容器 `--network host` 运行。
+- [ ] 后端 jar 使用 Java 21 构建；宿主机 JDK 不满足时使用 `maven:3.9.9-eclipse-temurin-21` Docker 构建。
 - [ ] `si-speaker` systemd 运行在 `127.0.0.1:7000`。
 - [ ] `si-bot` systemd 运行在 `127.0.0.1:3978`。
 - [ ] Nginx 路由：
@@ -52,6 +55,7 @@
 
 - [ ] 登录、刷新登录、退出登录正常。
 - [ ] 会议创建、会议文件上传只接受 PDF/Word。
+- [ ] 会议通知上传后能解析参会名单、Teams 会议链接，并能发送通知。
 - [ ] 同传开始/停止、ASR、翻译、TTS、分享页收听正常。
 - [ ] 男/女音色按检测结果使用全局男声/女声。
 - [ ] 术语路由和术语命中日志正常。
@@ -62,6 +66,7 @@
 ## 7. 运维
 
 - [ ] `docker logs si-backend` 无启动错误。
+- [ ] `docker logs si-backend` 显示 `meeting_url` 字段检查、`VoiceGenderIntegration enabled=true`、`SpeakerVoiceGenderService enabled=true`。
 - [ ] `journalctl -u si-speaker` 无模型加载错误。
 - [ ] `journalctl -u si-bot` 无 Graph/Bot Framework 配置错误。
 - [ ] 日志滚动和磁盘告警已配置。

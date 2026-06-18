@@ -42,6 +42,10 @@ systemctl enable --now docker nginx
 
 安装 Node.js 18+ 和 .NET 6 SDK，版本以 `si-frontend/package.json` 和 `bot/CallingBotSample/CallingBotSample.csproj` 为准。
 
+后端源码要求 Java 21 编译。服务器宿主机可以安装 Maven + JDK 21；如果宿主机
+`javac` 低于 21，必须使用本文中的 Dockerized Maven 构建方式，避免
+`release version 21 not supported`。
+
 ## 3. 代码与密钥
 
 ```bash
@@ -66,6 +70,20 @@ chmod 600 /opt/syncLingo/backend.env /opt/syncLingo/bot/CallingBotSample/appsett
 - Azure Speech / Google Translate / Cartesia / OpenAI or OpenRouter keys
 - `BOT_API_ALLOWED_USER_IDS`：允许从网页发送 Teams 通知的操作员用户 ID 列表
 
+语音性别检测和全局男/女音色需要设置：
+
+```bash
+VOICE_GENDER_SERVICE_ENABLED=true
+VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
+TTS_VOICE_GENDER_ENABLED=true
+CARTESIA_GLOBAL_MALE_VOICE_ID=<real-cartesia-male-voice-id>
+CARTESIA_GLOBAL_FEMALE_VOICE_ID=<real-cartesia-female-voice-id>
+```
+
+`CARTESIA_GLOBAL_MALE_VOICE_ID` 和 `CARTESIA_GLOBAL_FEMALE_VOICE_ID` 必须是真实
+Cartesia voice ID，不要保留占位文字。否则后端可以检测性别，但 TTS 会因为没有
+可用全局男/女音色而回退。
+
 ## 4. MySQL
 
 ```bash
@@ -85,6 +103,16 @@ docker run -d --name si-mysql --restart=always \
 
 ```bash
 cd /opt/syncLingo
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v /root/.m2:/root/.m2 \
+  -w /workspace \
+  maven:3.9.9-eclipse-temurin-21 \
+  mvn -DskipTests package -f si-backend/pom.xml
+
+ls -lh si-backend/target/si-backend-1.0.0.jar
+
+cd /opt/syncLingo/si-backend
 docker build -t si-backend:latest .
 docker rm -f si-backend 2>/dev/null || true
 docker run -d --name si-backend --restart=always --network host \
@@ -93,6 +121,7 @@ docker run -d --name si-backend --restart=always --network host \
   si-backend:latest
 
 curl -sf http://127.0.0.1:8080/api/health
+docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|VoiceGenderIntegration|SpeakerVoiceGenderService|ERROR|Exception'
 ```
 
 ## 6. Speaker Service
@@ -102,6 +131,8 @@ cd /opt/syncLingo/speaker-service
 python3 -m venv .venv
 .venv/bin/pip install -U pip wheel
 .venv/bin/pip install -r requirements.txt
+if [ -f requirements-optional.txt ]; then .venv/bin/pip install -r requirements-optional.txt; fi
+if [ -f tools/ensure_voice_gender_model.py ]; then .venv/bin/python tools/ensure_voice_gender_model.py; fi
 ```
 
 声纹和性别模型放在 `speaker-service/models/`，模型下载产物不入库。
@@ -211,6 +242,15 @@ git pull --ff-only origin final-version
 NEW_COMMIT=$(git rev-parse HEAD)
 NEW_TAG=$(git rev-parse --short=12 HEAD)
 
+docker run --rm \
+  -v "$PWD":/workspace \
+  -v /root/.m2:/root/.m2 \
+  -w /workspace \
+  maven:3.9.9-eclipse-temurin-21 \
+  mvn -DskipTests package -f si-backend/pom.xml
+ls -lh si-backend/target/si-backend-1.0.0.jar
+
+cd /opt/syncLingo/si-backend
 docker build -t si-backend:$NEW_TAG -t si-backend:latest .
 docker rm -f si-backend
 docker run -d --name si-backend --restart=always --network host \
@@ -245,6 +285,7 @@ nginx -t
 systemctl restart si-speaker si-bot
 systemctl reload nginx
 curl -sf http://127.0.0.1:8080/api/health
+docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|VoiceGenderIntegration|SpeakerVoiceGenderService|ERROR|Exception'
 systemctl is-active si-speaker si-bot nginx
 docker ps --filter name=si-backend --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 echo "deployed commit=$NEW_COMMIT imageTag=$NEW_TAG"
@@ -281,6 +322,24 @@ journalctl -u si-bot -f
 tail -f /var/log/nginx/access.log /var/log/nginx/error.log
 ```
 
+Voice gender runtime check during a real meeting:
+
+```bash
+docker logs -f si-backend 2>&1 | grep -E 'VoiceGenderIntegration|SpeakerVoiceGenderService|detect end|resolveVoiceIdByGender|gender voiceId selected|gender voiceId blank'
+```
+
+Expected successful selection examples:
+
+```text
+detect end ... accepted=MALE
+gender voiceId selected, reason=male ... voiceId=<real-cartesia-male-voice-id>
+detect end ... accepted=FEMALE
+gender voiceId selected, reason=female ... voiceId=<real-cartesia-female-voice-id>
+```
+
+If `gender voiceId blank` appears, the backend is detecting gender but the
+global male/female voice IDs are missing or still placeholders in `backend.env`.
+
 Backups:
 
 ```bash
@@ -296,6 +355,7 @@ Also back up `speaker-service/embeddings.json` or any production speaker databas
 - HTTPS opens the frontend.
 - Login, refresh-token, logout, and admin-only screens work.
 - Operator can create a meeting, upload only PDF/Word meeting files, start/stop interpretation, and view history.
+- Operator can upload a meeting notice, parse the participant list and Teams link, and send notifications.
 - Viewer cannot see admin/user-management functions.
 - `/bot-api/**` rejects unauthorized users.
 - Teams notification result lists successful and failed accounts.
