@@ -11,7 +11,7 @@ public class VoiceGenderProperties {
 
     private boolean enabled = false;
     private String url = "http://localhost:7000";
-    private int timeoutMs = 1500;
+    private int timeoutMs = 3000;
     private int sampleRate = 16000;
     private int minAudioSeconds = 6;
     private int maxAudioSeconds = 8;

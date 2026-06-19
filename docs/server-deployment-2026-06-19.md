@@ -254,6 +254,7 @@ The voice-gender backend integration was then enabled in
 ```bash
 VOICE_GENDER_SERVICE_ENABLED=true
 VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
+VOICE_GENDER_TIMEOUT_MS=3000
 TTS_VOICE_GENDER_ENABLED=true
 CARTESIA_GLOBAL_MALE_VOICE_ID=6eb8965c-e295-47bd-a9e4-3eeebb3abcff
 CARTESIA_GLOBAL_FEMALE_VOICE_ID=a053f6bc-7df4-40de-96d4-de026bc47ce8
@@ -267,7 +268,7 @@ After restarting `si-backend`, the verification output was:
 
 ```text
 {"code":200,"message":"success","data":{"service":"si-backend","status":"UP"}}
-[VoiceGenderIntegration] enabled=true, url=http://127.0.0.1:7000/voice-gender, timeoutMs=1500
+[VoiceGenderIntegration] enabled=true, url=http://127.0.0.1:7000/voice-gender, timeoutMs=3000
 [SpeakerVoiceGenderService] enabled=true, minAudioSeconds=6, maxAudioSeconds=8, queueCapacity=32
 [MeetingService] column already exists: meeting_url
 Started SiBackendApplication

@@ -75,6 +75,7 @@ chmod 600 /opt/syncLingo/backend.env /opt/syncLingo/bot/CallingBotSample/appsett
 ```bash
 VOICE_GENDER_SERVICE_ENABLED=true
 VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
+VOICE_GENDER_TIMEOUT_MS=3000
 TTS_VOICE_GENDER_ENABLED=true
 CARTESIA_GLOBAL_MALE_VOICE_ID=<real-cartesia-male-voice-id>
 CARTESIA_GLOBAL_FEMALE_VOICE_ID=<real-cartesia-female-voice-id>

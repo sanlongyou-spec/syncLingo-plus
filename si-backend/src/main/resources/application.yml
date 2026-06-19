@@ -215,7 +215,7 @@ voice-gender:
   service:
     enabled: ${VOICE_GENDER_SERVICE_ENABLED:false}
     url: ${VOICE_GENDER_SERVICE_URL:http://localhost:7000}
-    timeout-ms: ${VOICE_GENDER_TIMEOUT_MS:1500}
+    timeout-ms: ${VOICE_GENDER_TIMEOUT_MS:3000}
     sample-rate: ${VOICE_GENDER_SAMPLE_RATE:16000}
     min-audio-seconds: ${VOICE_GENDER_MIN_AUDIO_SECONDS:6}
     max-audio-seconds: ${VOICE_GENDER_MAX_AUDIO_SECONDS:8}

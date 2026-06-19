@@ -19,7 +19,7 @@
 - [ ] `backend.env` 与 Bot 配置 `chmod 600`。
 - [ ] 没有真实密钥写入 Git。
 - [ ] 已轮换曾经暴露过的密钥或 token。
-- [ ] `backend.env` 中 `VOICE_GENDER_SERVICE_ENABLED=true`、`TTS_VOICE_GENDER_ENABLED=true`。
+- [ ] `backend.env` 中 `VOICE_GENDER_SERVICE_ENABLED=true`、`VOICE_GENDER_TIMEOUT_MS=3000`、`TTS_VOICE_GENDER_ENABLED=true`。
 - [ ] `CARTESIA_GLOBAL_MALE_VOICE_ID` 和 `CARTESIA_GLOBAL_FEMALE_VOICE_ID` 已填真实 Cartesia voice ID，未保留占位文字。
 
 ## 3. 数据库
