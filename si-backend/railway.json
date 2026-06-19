@@ -1,0 +1,13 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "mvn -DskipTests package"
+  },
+  "deploy": {
+    "startCommand": "APP_PORT=${PORT:-8080} java ${JAVA_OPTS:-} -jar target/si-backend-1.0.0.jar",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ALWAYS"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "python",
+  "packages": {
+    "python": "3.11"
+  },
+  "deploy": {
+    "aptPackages": [
+      "libgomp1",
+      "libsndfile1"
+    ],
+    "variables": {
+      "OMP_NUM_THREADS": "1",
+      "VOICE_GENDER_NUM_THREADS": "1"
+    }
+  }
+}

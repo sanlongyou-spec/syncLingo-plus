@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "java",
+  "packages": {
+    "java": "21"
+  },
+  "deploy": {
+    "aptPackages": [
+      "libssl3",
+      "libasound2",
+      "libreoffice-writer",
+      "fonts-noto-cjk"
+    ],
+    "variables": {
+      "LANG": "en_US.UTF-8",
+      "LC_ALL": "en_US.UTF-8"
+    }
+  }
+}
