@@ -6,6 +6,7 @@ import com.si.backend.service.ShareWsTicketService;
 import io.github.jaredmdobson.concentus.OpusException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -60,6 +61,10 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     private final Map<String, OpusStreamEncoder> encoders = new ConcurrentHashMap<>();
     private final ShareWsTicketService shareWsTicketService;
 
+    /** 最大并发收听(音频)连接数：超过即拒绝新听众，防止带宽/线程/内存被压垮。 */
+    @Value("${share.max-audio-connections:130}")
+    private int maxAudioConnections = 130;
+
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         String ticket = UriComponentsBuilder.fromUri(session.getUri()).build()
@@ -71,6 +76,18 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         if (sessionId == null || sessionId.isBlank() || lang == null) {
             log.warn("[ShareAudioWebSocketHandler] missing/invalid share ticket, close, connectionId={}", session.getId());
             closeQuietly(session);
+            return;
+        }
+        // 并发上限保护：达到最大收听连接数则拒绝新听众，前端据关闭码提示"人数已满"。
+        int current = connectionMap.size();
+        if (current >= maxAudioConnections) {
+            log.warn("[ShareAudioWebSocketHandler] capacity full, reject, current={}, max={}, sessionId={}, connectionId={}",
+                    current, maxAudioConnections, sessionId, session.getId());
+            try {
+                session.close(new CloseStatus(Constants.WS_CLOSE_SHARE_FULL, "share audio capacity full"));
+            } catch (IOException ignored) {
+                // ignore
+            }
             return;
         }
         AudioSubscriber subscriber = new AudioSubscriber(session, sessionId, lang);

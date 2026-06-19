@@ -24,6 +24,8 @@ const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 1.35x 排空更快
 // 积压硬上限: 变速仍追不上、积压超过此值时, 丢弃已排队的旧音频并跳回接近实时,
 // 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。文本不受影响。
 const DROP_BACKLOG_SEC = 8.0
+// 与后端 Constants.WS_CLOSE_SHARE_FULL 对应：收听人数已满的 WS 关闭码
+const SHARE_FULL_CLOSE_CODE = 4290
 const catchupRate = (backlogSec: number): number => {
   if (backlogSec <= CATCHUP_START_SEC) return 1.0
   if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
@@ -98,6 +100,7 @@ export default function UserShareView() {
   const [currentRecognizing, setCurrentRecognizing] = useState('')
   const [currentLanguage, setCurrentLanguage] = useState('')
   const [isWaiting, setIsWaiting] = useState(true)
+  const [roomFull, setRoomFull] = useState(false)
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -187,6 +190,7 @@ export default function UserShareView() {
     const sessionId = activeSessionIdRef.current
     if (!sessionId) return
     stopAudio()
+    setRoomFull(false)
     const canonical = toCanonicalLang(lang)
     selectedLangRef.current = canonical
     setSelectedLang(canonical)
@@ -348,11 +352,20 @@ export default function UserShareView() {
         console.warn('[UserShareView] decode chunk failed:', err)
       }
     }
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       if (audioWsRef.current !== ws
         || selectedLangRef.current !== canonical
         || activeSessionIdRef.current !== sessionId
         || audioCtxRef.current !== ctx) return
+      // 服务端因收听人数已满拒绝(4290)：不重连，提示用户稍后再试
+      if (event.code === SHARE_FULL_CLOSE_CODE) {
+        if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
+        try { decoderRef.current?.close() } catch { /* already closed */ }
+        audioWsRef.current = null
+        setSelectedLang(null)
+        setRoomFull(true)
+        return
+      }
       // Keep AudioContext and all scheduled audio intact; only reconnect WS + decoder.
       // This prevents any queued audio from being discarded on a transient network drop.
       window.setTimeout(() => {
@@ -609,6 +622,9 @@ export default function UserShareView() {
                     >
                       关闭声音
                     </button>
+                  )}
+                  {roomFull && (
+                    <span className="si-share-audio-full">收听人数已满，请稍后再试</span>
                   )}
                 </div>
               )}

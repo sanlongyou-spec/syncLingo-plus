@@ -1059,6 +1059,12 @@ body {
   color: #555;
 }
 
+.si-share-audio-full {
+  font-size: 13px;
+  color: #c0392b;
+  font-weight: 600;
+}
+
 .si-share-audio-btn {
   padding: 5px 14px;
   border: 1px solid #d0d0e0;

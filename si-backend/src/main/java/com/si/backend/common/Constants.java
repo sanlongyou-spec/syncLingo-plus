@@ -84,6 +84,8 @@ public final class Constants {
     public static final int WS_MAX_BINARY_MESSAGE_SIZE = 10 * 1024 * 1024;
     /** P5:WS 握手一次性票据参数(替代把长效 JWT 放进 query)。 */
     public static final String WS_QUERY_PARAM_TICKET = "ticket";
+    /** 分享音频收听人数已满时的 WS 关闭码(应用自定义 4000-4999)，前端据此提示"人数已满"。 */
+    public static final int WS_CLOSE_SHARE_FULL = 4290;
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 消息类型（前后端共用）

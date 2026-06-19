@@ -241,6 +241,10 @@ jwt:
   secret: ${JWT_SECRET:change_this_secret_to_random_32_plus_chars}
   expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 
+# 分享页收听并发上限：超过即拒绝新听众，防止带宽/内存被打满。
+share:
+  max-audio-connections: ${SHARE_MAX_AUDIO_CONNECTIONS:130}
+
 app:
   authz:
     mode: ${APP_AUTHZ_MODE:ENFORCE}
