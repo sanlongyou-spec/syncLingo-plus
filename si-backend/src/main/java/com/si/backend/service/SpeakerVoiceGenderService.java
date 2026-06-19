@@ -61,8 +61,25 @@ public class SpeakerVoiceGenderService {
                     sessionId, pcmFrame != null ? pcmFrame.length : 0);
             return;
         }
+        // 当前说话人性别已判定（或已达最大重试）→ 整段会话复用同一结果，
+        // 后续音频帧直接丢弃，不再缓冲/快照/调度，避免每帧拷贝与 CPU 抢占。
+        String activeSpeakerId = audioBufferService.activeSpeaker(sessionId);
+        if (activeSpeakerId != null && isDetectionSettled(cacheKey(sessionId, activeSpeakerId))) {
+            audioBufferService.dropSpeakerBuffer(sessionId, activeSpeakerId);
+            return;
+        }
         audioBufferService.append(sessionId, pcmFrame);
         audioBufferService.snapshotActiveIfReady(sessionId).ifPresent(this::scheduleDetectionIfNeeded);
+    }
+
+    /** 该说话人是否已无需再检测：已判出 MALE/FEMALE，或已达最大重试次数。 */
+    private boolean isDetectionSettled(String key) {
+        VoiceGender gender = genderCache.get(key);
+        if (gender == VoiceGender.MALE || gender == VoiceGender.FEMALE) {
+            return true;
+        }
+        AtomicInteger attempts = attemptCounts.get(key);
+        return attempts != null && attempts.get() >= properties.getMaxRetries();
     }
 
     public void observeSpeaker(String sessionId, String speakerId) {

@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -34,6 +35,30 @@ class SpeakerVoiceGenderServiceTest {
             verify(integration, timeout(1000).times(1)).detect(any(), eq("speaker-a"));
             assertTrue(waitFor(() -> service.resolveGender("session-1", "speaker-a") == VoiceGender.MALE,
                     Duration.ofSeconds(2)));
+        } finally {
+            service.shutdown();
+        }
+    }
+
+    @Test
+    void resolvedSpeakerIsNotDetectedAgainOnFurtherAudio() {
+        VoiceGenderProperties properties = properties();
+        VoiceGenderIntegration integration = mock(VoiceGenderIntegration.class);
+        when(integration.detect(any(), eq("speaker-a")))
+                .thenReturn(new VoiceGenderDetectionResult(
+                        VoiceGender.MALE, 0.91D, 0.91D, 0.06D, 0.03D, 120L, true, "accepted"));
+        SpeakerVoiceGenderService service = service(properties, integration);
+        try {
+            service.observeSpeaker("session-1", "speaker-a");
+            service.appendAudio("session-1", pcmSeconds(6));
+            assertTrue(waitFor(() -> service.resolveGender("session-1", "speaker-a") == VoiceGender.MALE,
+                    Duration.ofSeconds(2)));
+
+            // 已判定后继续灌入大量音频，不应再触发任何检测
+            for (int i = 0; i < 5; i++) {
+                service.appendAudio("session-1", pcmSeconds(8));
+            }
+            verify(integration, after(300).times(1)).detect(any(), eq("speaker-a"));
         } finally {
             service.shutdown();
         }

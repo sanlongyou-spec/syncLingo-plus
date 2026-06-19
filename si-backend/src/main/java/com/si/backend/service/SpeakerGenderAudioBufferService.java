@@ -63,6 +63,21 @@ public class SpeakerGenderAudioBufferService {
         return samples;
     }
 
+    /** 当前会话正在说话的 speakerId（无则返回 null），供调用方判断是否需要继续检测。 */
+    public String activeSpeaker(String sessionId) {
+        return sessionId == null ? null : activeSpeakerBySession.get(sessionId);
+    }
+
+    /** 释放某说话人的音频缓冲（性别已判定后不再需要继续缓冲）。 */
+    public void dropSpeakerBuffer(String sessionId, String speakerId) {
+        if (sessionId == null || speakerId == null) {
+            return;
+        }
+        if (speakerBuffers.remove(bufferKey(sessionId, speakerId)) != null) {
+            log.debug("[SpeakerGenderAudioBuffer] buffer dropped, sessionId={}, speakerId={}", sessionId, speakerId);
+        }
+    }
+
     public Optional<SpeakerAudioSample> snapshotActiveIfReady(String sessionId) {
         String speakerId = activeSpeakerBySession.get(sessionId);
         if (isUnknownSpeaker(speakerId)) {
