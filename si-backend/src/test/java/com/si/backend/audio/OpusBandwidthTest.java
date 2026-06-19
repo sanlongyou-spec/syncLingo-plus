@@ -3,7 +3,10 @@ package com.si.backend.audio;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -128,5 +131,27 @@ class OpusBandwidthTest {
 
         // 一颗核心应能实时编码多于 3 路（方案中每会议只需 2~3 个编码器）
         assertTrue(realtimeFactor > 3, "编码实时倍率应 > 3, 实测=" + realtimeFactor);
+    }
+
+    @Test
+    void encoderRecoversAfterFatalFrameEncodeError() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        OpusStreamEncoder enc = new OpusStreamEncoder(() -> (input, inputOffset, frameSize, output, outputOffset, maxBytes) -> {
+            if (calls.getAndIncrement() == 0) {
+                throw new AssertionError("simulated concentus fatal frame");
+            }
+            output[outputOffset] = 0x11;
+            output[outputOffset + 1] = 0x22;
+            output[outputOffset + 2] = 0x33;
+            return 3;
+        });
+
+        byte[] firstFrame = speechLikePcm(24000, 0.03, false);
+        List<byte[]> failedPackets = assertDoesNotThrow(() -> enc.feed(firstFrame, 24000));
+        assertTrue(failedPackets.isEmpty(), "坏帧应被丢弃，不能向调用方抛出异常");
+
+        byte[] nextFrame = speechLikePcm(24000, 0.03, false);
+        List<byte[]> recoveredPackets = assertDoesNotThrow(() -> enc.feed(nextFrame, 24000));
+        assertFalse(recoveredPackets.isEmpty(), "编码器重置后应继续编码后续音频");
     }
 }

@@ -29,7 +29,8 @@ public class OpusStreamEncoder {
     /** DTX/静音帧字节阈值，小于等于此值视为不发送（静音不传） */
     private static final int DTX_MIN_BYTES = 2;
 
-    private final OpusEncoder encoder;
+    private final FrameEncoderFactory encoderFactory;
+    private FrameEncoder encoder;
     private final short[] frameBuffer = new short[FRAME_SAMPLES];
     private int frameFill = 0;
 
@@ -39,11 +40,21 @@ public class OpusStreamEncoder {
     private short resamplePrev = 0;    // 上一块的末样本(作为 index=-1)
 
     public OpusStreamEncoder() throws OpusException {
-        this.encoder = new OpusEncoder(OUTPUT_SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP);
+        this(OpusStreamEncoder::createConcentusEncoder);
+    }
+
+    OpusStreamEncoder(FrameEncoderFactory encoderFactory) throws OpusException {
+        this.encoderFactory = encoderFactory;
+        this.encoder = encoderFactory.create();
+    }
+
+    private static FrameEncoder createConcentusEncoder() throws OpusException {
+        OpusEncoder encoder = new OpusEncoder(OUTPUT_SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP);
         encoder.setBitrate(TARGET_BITRATE);
         encoder.setComplexity(COMPLEXITY);
         encoder.setSignalType(OpusSignal.OPUS_SIGNAL_VOICE);
         encoder.setUseDTX(true);
+        return encoder::encode;
     }
 
     /**
@@ -89,8 +100,28 @@ public class OpusStreamEncoder {
             System.arraycopy(out, 0, packet, 0, len);
             return packet;
         } catch (OpusException e) {
-            log.warn("[OpusStreamEncoder] encode failed: {}", e.getMessage());
+            log.warn("[OpusStreamEncoder] encode failed, reset encoder: {}", e.getMessage());
+            resetEncoder("opus_exception");
             return null;
+        } catch (AssertionError | RuntimeException e) {
+            log.warn("[OpusStreamEncoder] encode fatal, reset encoder, inputRate={}, frameSamples={}, error={}",
+                    resampleRate, FRAME_SAMPLES, e.toString(), e);
+            resetEncoder("fatal_encode_error");
+            return null;
+        }
+    }
+
+    private void resetEncoder(String reason) {
+        frameFill = 0;
+        resampleRate = 0;
+        resamplePos = 0.0;
+        resamplePrev = 0;
+        try {
+            encoder = encoderFactory.create();
+            log.info("[OpusStreamEncoder] encoder reset, reason={}", reason);
+        } catch (OpusException e) {
+            log.error("[OpusStreamEncoder] encoder reset failed, reason={}, error={}",
+                    reason, e.getMessage(), e);
         }
     }
 
@@ -140,5 +171,16 @@ public class OpusStreamEncoder {
         resamplePrev = in[in.length - 1];
         resamplePos -= in.length;   // 把剩余相位带入下一块(变为 [-1,0) 区间，下次用 resamplePrev 衔接)
         return (n == tmp.length) ? tmp : java.util.Arrays.copyOf(tmp, n);
+    }
+
+    @FunctionalInterface
+    interface FrameEncoderFactory {
+        FrameEncoder create() throws OpusException;
+    }
+
+    @FunctionalInterface
+    interface FrameEncoder {
+        int encode(short[] input, int inputOffset, int frameSize, byte[] output, int outputOffset, int maxBytes)
+                throws OpusException;
     }
 }
