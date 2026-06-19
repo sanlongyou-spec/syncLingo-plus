@@ -158,6 +158,10 @@ export default function VoiceCloneView() {
     setError('')
     try {
       const durationSeconds = Math.max(1, Math.round(elapsedMs / SECOND_MS))
+      if (durationSeconds < VOICE_CLONE.MIN_AUDIO_SECONDS) {
+        setError(`请至少录制 ${VOICE_CLONE.MIN_AUDIO_SECONDS} 秒，建议 ${VOICE_CLONE.RECOMMENDED_AUDIO_SECONDS} 秒`)
+        return
+      }
       const result = await cloneUserVoice(recordedBlob, name, language, durationSeconds)
       if (result.code !== RESULT_OK_CODE) {
         throw new Error(result.message || '克隆音色失败')
@@ -255,6 +259,10 @@ export default function VoiceCloneView() {
               {cloning ? '创建中...' : '创建音色'}
             </button>
           </div>
+
+          <p className="voice-helper">
+            建议录制 {VOICE_CLONE.RECOMMENDED_AUDIO_SECONDS} 秒，至少 {VOICE_CLONE.MIN_AUDIO_SECONDS} 秒；保持同一位汇报人、环境安静、语速稳定。
+          </p>
 
           {recordedUrl && (
             <audio className="voice-preview" controls src={recordedUrl} />

@@ -15,7 +15,7 @@ public class MeetingVo {
     private String scheduledTime;
     private String note;
     private String meetingUrl;
-    /** Whether a 应到 (expected participants) list has been saved for this meeting from a 会议安排. */
+    private String notificationResultJson;
     private boolean hasExpectedParticipants;
     private LocalDateTime createTime;
     private List<MeetingFileVo> files;

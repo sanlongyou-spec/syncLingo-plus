@@ -35,6 +35,7 @@ public class MeetingBotIntegration {
     /** 下行签名 keyId,与 BotProxyIntegration 保持一致。 */
     private static final String DOWNSTREAM_KEY_ID = "java-backend";
     private static final String NOTIFICATION_PATH = "/api/meetings/notification";
+    private static final int DELIVERY_FAILURE_STATUS = 502;
 
     @Value("${bot.api.url:http://localhost:3978}")
     private String botApiUrl;
@@ -44,9 +45,17 @@ public class MeetingBotIntegration {
     private final ServiceSignatureProperties signatureProperties;
 
     public SendResult sendNotification(String content, List<String> recipients) {
+        return sendNotification(content, recipients, false);
+    }
+
+    public SendResult sendMeetingNotification(String content, List<String> recipients) {
+        return sendNotification(content, recipients, true);
+    }
+
+    private SendResult sendNotification(String content, List<String> recipients, boolean allowDeliveryFailureReport) {
         long startMs = System.currentTimeMillis();
-        log.info("[MeetingBotIntegration] sendNotification start, recipientCount={}, contentLen={}",
-                recipients.size(), content.length());
+        log.info("[MeetingBotIntegration] sendNotification start, recipientCount={}, contentLen={}, allowDeliveryFailureReport={}",
+                recipients.size(), content.length(), allowDeliveryFailureReport);
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("content", content);
@@ -64,6 +73,14 @@ public class MeetingBotIntegration {
             log.info("[MeetingBotIntegration] sendNotification end, statusCode={}, elapsedMs={}",
                     response.statusCode(), elapsedMs);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                if (allowDeliveryFailureReport
+                        && response.statusCode() == DELIVERY_FAILURE_STATUS
+                        && response.body() != null
+                        && !response.body().isBlank()) {
+                    log.warn("[MeetingBotIntegration] sendNotification delivery failure report, statusCode={}, elapsedMs={}",
+                            response.statusCode(), elapsedMs);
+                    return new SendResult(response.statusCode(), response.body());
+                }
                 throw BizException.of(
                         ErrorCode.INTERNAL_ERROR,
                         "Teams Bot 发送通知失败，状态码：" + response.statusCode()

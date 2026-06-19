@@ -103,6 +103,13 @@
   gap: 10px;
 }
 
+.voice-helper {
+  margin: 12px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .voice-primary-btn,
 .voice-stop-btn,
 .voice-delete-btn {

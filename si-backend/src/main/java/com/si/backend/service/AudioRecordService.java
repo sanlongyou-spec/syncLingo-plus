@@ -1,6 +1,8 @@
 package com.si.backend.service;
 
+import com.si.backend.entity.Meeting;
 import com.si.backend.entity.SessionAudioRecord;
+import com.si.backend.mapper.MeetingMapper;
 import com.si.backend.mapper.SessionAudioRecordMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -41,6 +43,7 @@ public class AudioRecordService {
     private String audioDir;
 
     private final SessionAudioRecordMapper mapper;
+    private final MeetingMapper meetingMapper;
 
     /** sessionId → temp PCM file output stream */
     private final Map<String, RecordingContext> active = new ConcurrentHashMap<>();
@@ -118,7 +121,7 @@ public class AudioRecordService {
             ctx.tmpFile.delete();
 
             long durationMs = durationMs(totalBytes);
-            String defaultName = RAW_RECORD_NAME_PREFIX + LocalDateTime.now().format(NAME_FMT);
+            String defaultName = rawRecordName(ctx.meetingId);
             SessionAudioRecord record = SessionAudioRecord.builder()
                     .sessionId(sessionId)
                     .userId(ctx.userId)
@@ -249,7 +252,7 @@ public class AudioRecordService {
                     .sessionId(combinedSessionId)
                     .userId(userId)
                     .meetingId(meetingId)
-                    .name(MEETING_RECORD_NAME_PREFIX + LocalDateTime.now().format(NAME_FMT))
+                    .name(meetingRecordName(meetingId))
                     .filePath(combinedFile.getAbsolutePath())
                     .fileSizeBytes(combinedFile.length())
                     .durationMs(durationMs(pcmBytes))
@@ -369,6 +372,35 @@ public class AudioRecordService {
 
     private String combinedSessionId(Long meetingId) {
         return MEETING_RECORD_SESSION_PREFIX + meetingId;
+    }
+
+    private String rawRecordName(Long meetingId) {
+        String meetingTitle = meetingTitle(meetingId);
+        if (meetingTitle != null) {
+            return meetingTitle + " - " + RAW_RECORD_NAME_PREFIX + LocalDateTime.now().format(NAME_FMT);
+        }
+        return RAW_RECORD_NAME_PREFIX + LocalDateTime.now().format(NAME_FMT);
+    }
+
+    private String meetingRecordName(Long meetingId) {
+        String meetingTitle = meetingTitle(meetingId);
+        return meetingTitle == null ? MEETING_RECORD_NAME_PREFIX + LocalDateTime.now().format(NAME_FMT) : meetingTitle;
+    }
+
+    private String meetingTitle(Long meetingId) {
+        if (meetingId == null) {
+            return null;
+        }
+        try {
+            Meeting meeting = meetingMapper.findById(meetingId);
+            if (meeting == null || meeting.getTitle() == null || meeting.getTitle().isBlank()) {
+                return null;
+            }
+            return meeting.getTitle().trim();
+        } catch (Exception e) {
+            log.warn("[AudioRecordService] meeting title lookup failed, meetingId={}", meetingId, e);
+            return null;
+        }
     }
 
     private int offset(int page, int size) {

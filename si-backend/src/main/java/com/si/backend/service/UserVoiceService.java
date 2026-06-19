@@ -32,7 +32,7 @@ public class UserVoiceService {
 
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int MAX_VOICE_NAME_CHARS = 50;
-    private static final int MIN_AUDIO_SECONDS = 1;
+    private static final int MIN_AUDIO_SECONDS = 20;
     private static final int DEFAULT_DURATION_SECONDS = 0;
     private static final String DEFAULT_SCOPE = "SELF";
     private static final Set<String> SUPPORTED_LANGUAGES = Set.of(
@@ -81,7 +81,7 @@ public class UserVoiceService {
             throw BizException.of(ErrorCode.VOICE_SAMPLE_INVALID, "请先录制音频样本");
         }
         if (normalizedDuration > 0 && normalizedDuration < MIN_AUDIO_SECONDS) {
-            throw BizException.of(ErrorCode.VOICE_SAMPLE_TOO_SHORT, "音频样本至少需要 1 秒");
+            throw BizException.of(ErrorCode.VOICE_SAMPLE_TOO_SHORT, "音频样本至少需要 20 秒");
         }
         byte[] bytes = audio.getBytes();
         if (bytes.length < Constants.MIN_AUDIO_SAMPLE_BYTES && normalizedDuration == DEFAULT_DURATION_SECONDS) {

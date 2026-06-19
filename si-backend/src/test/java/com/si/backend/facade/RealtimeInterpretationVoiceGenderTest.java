@@ -47,6 +47,18 @@ class RealtimeInterpretationVoiceGenderTest {
     }
 
     @Test
+    void usesGlobalFemaleVoiceWhenSpeakerGenderCacheIsFemale() throws Exception {
+        TestContext context = new TestContext();
+        context.cartesiaProperties.getVoiceGender().setFemaleVoiceId("global-female");
+        when(context.speakerVoiceGenderService.resolveGender("voice-gender-session", "speaker-f"))
+                .thenReturn(VoiceGender.FEMALE);
+
+        String voiceId = context.synthesizeOnce(null, "speaker-f");
+
+        assertEquals("global-female", voiceId);
+    }
+
+    @Test
     void unknownGenderFallsBackToTargetLanguageDefaultWithoutWaiting() throws Exception {
         TestContext context = new TestContext();
         context.cartesiaProperties.setDefaultVoiceIdIndonesian("default-id");

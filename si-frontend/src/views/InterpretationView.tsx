@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-getAsrHotwords,
+  getAsrHotwords,
+  getInterpretationStatus,
   getMeetings,
   getUserLanguagePreference,
   listUserVoices,
@@ -72,6 +73,7 @@ const normalizeVoiceCode = (code?: string | null) => {
 
 const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
+const RUNNING_STATUS = 'running'
 
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
@@ -112,6 +114,12 @@ export default function InterpretationView() {
 
   const speakerNameMapRef = useRef<Record<string, string>>({})
 
+  const refreshVoices = useCallback(() => {
+    listUserVoices()
+      .then(res => setVoices(res.data || []))
+      .catch((err: unknown) => console.warn('[InterpretationView] listUserVoices failed:', err))
+  }, [])
+
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
@@ -136,9 +144,7 @@ export default function InterpretationView() {
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getUserLanguagePreference failed:', err))
 
-    listUserVoices()
-      .then(res => setVoices(res.data || []))
-      .catch((err: unknown) => console.warn('[InterpretationView] listUserVoices failed:', err))
+    refreshVoices()
 
     return () => {
       wsRef.current?.close()
@@ -160,6 +166,7 @@ export default function InterpretationView() {
           )
         })
         .catch((err: unknown) => console.warn('[InterpretationView] getMeetings refresh failed:', err))
+      refreshVoices()
     }
     window.addEventListener('hashchange', refreshMeetings)
     return () => window.removeEventListener('hashchange', refreshMeetings)
@@ -175,7 +182,7 @@ export default function InterpretationView() {
     const displayName = speakerName?.trim()
     if (!speakerId || !displayName || isUnknownSpeakerId(speakerId)) return
     setSpeakerNameMap(prev => prev[speakerId] === displayName ? prev : { ...prev, [speakerId]: displayName })
-  }, [])
+  }, [refreshVoices])
 
   const rememberCurrentSpeaker = useCallback((speakerId?: string) => {
     const normalizedSpeakerId = normalizeVoiceCode(speakerId)
@@ -191,7 +198,7 @@ export default function InterpretationView() {
     }
     setCurrentSpeakerId(normalizedSpeakerId)
     currentSpeakerIdRef.current = normalizedSpeakerId
-  }, [])
+  }, [refreshVoices])
 
   const handleManualVoiceChange = (voiceId: string) => {
     setSelectedVoiceId(voiceId)
@@ -328,7 +335,56 @@ export default function InterpretationView() {
     }
   }, [rememberSpeakerName, resolveSpeakerName])
 
+  const resumeStoredSessionId = async () => {
+    const storedSessionId = localStorage.getItem(STORAGE_KEYS.CURRENT_SESSION_ID)
+    if (!storedSessionId) return null
+    try {
+      const status = await getInterpretationStatus(storedSessionId)
+      if (status.code === 200 && status.data?.status?.toLowerCase() === RUNNING_STATUS) {
+        return storedSessionId
+      }
+    } catch (err) {
+      console.warn('[InterpretationView] resume status check failed:', err)
+    }
+    localStorage.removeItem(STORAGE_KEYS.CURRENT_SESSION_ID)
+    return null
+  }
+
+  const connectSession = async (sid: string) => {
+    setSessionId(sid)
+    sessionIdRef.current = sid
+    localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
+
+    const ws = new AsrWebSocket()
+    wsRef.current = ws
+    await ws.connect(sid)
+    ws.onMessage(handleWsMessage)
+    ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
+
+    const audio = new AudioCapture({
+      sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
+      onData: pcm => ws.sendAudio(sid, pcmToBase64(pcm)),
+    })
+    audioRef.current = audio
+    await audio.start()
+  }
+
   const startSession = async () => {
+    const resumedSessionId = await resumeStoredSessionId()
+    if (resumedSessionId) {
+      setError('')
+      setIsLoading(true)
+      try {
+        await connectSession(resumedSessionId)
+        setShareHint('已接回共享中的同传')
+        window.setTimeout(() => setShareHint(''), 2200)
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : '启动失败')
+      } finally {
+        setIsLoading(false)
+      }
+      return
+    }
     if (!selectedMeetingId) {
       setError('请先在"会议"页面新建会议，并在此选择关联会议')
       return
@@ -352,22 +408,7 @@ export default function InterpretationView() {
         meetingId: selectedMeetingId,
       })
       const sid = res.data
-      setSessionId(sid)
-      sessionIdRef.current = sid
-      localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
-
-      const ws = new AsrWebSocket()
-      wsRef.current = ws
-      await ws.connect(sid)
-      ws.onMessage(handleWsMessage)
-      ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
-
-      const audio = new AudioCapture({
-        sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
-        onData: pcm => ws.sendAudio(sid, pcmToBase64(pcm)),
-      })
-      audioRef.current = audio
-      await audio.start()
+      await connectSession(sid)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '启动失败')
     } finally {

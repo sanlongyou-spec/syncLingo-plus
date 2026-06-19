@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.anyString;
 
 /**
  * Verifies the meeting-notice notification orchestration that backs the meetings page.
@@ -130,7 +131,7 @@ class MeetingNotificationFacadeTest {
                         "季度会议", null, List.of(recipient), List.of(), List.of()));
         when(notificationService.resolveDeliveryRecipients(List.of("liming@jlg.co.id")))
                 .thenReturn(List.of("liming@jlg.co.id"));
-        when(botIntegration.sendNotification("hello", List.of("liming@jlg.co.id")))
+        when(botIntegration.sendMeetingNotification("hello", List.of("liming@jlg.co.id")))
                 .thenReturn(new MeetingBotIntegration.SendResult(200, """
                         {"sent":true,"sentCount":1,"failedCount":1,
                         "recipients":[{"recipient":"liming@jlg.co.id","displayName":"李明"}],
@@ -143,8 +144,87 @@ class MeetingNotificationFacadeTest {
         assertEquals(1, result.getDeliveryRecipientCount());
         assertEquals(1, result.getSentCount());
         assertEquals(1, result.getFailedCount());
-        assertEquals(List.of("liming@jlg.co.id"), result.getSuccessfulRecipients());
-        assertEquals(List.of("wangwu@jlg.co.id：not found"), result.getFailedRecipients());
+        assertEquals(1, result.getSuccessfulRecipients().size());
+        assertEquals(List.of("wangwu@jlg.co.id: not found"), result.getFailedRecipients());
+        verify(meetingService).saveNotificationResult(
+                org.mockito.ArgumentMatchers.eq(ACTOR),
+                org.mockito.ArgumentMatchers.eq(meetingId),
+                anyString());
+    }
+
+    @Test
+    void sendMapsTeamsIdsToNamesAndIncludesFailureReason() {
+        Long meetingId = 14L;
+        MeetingNotificationSendRequest request = new MeetingNotificationSendRequest();
+        request.setContent("hello");
+        request.setRecipients(List.of("liming@jlg.co.id", "wangwu@jlg.co.id"));
+        MeetingNotificationService.Recipient liming = new MeetingNotificationService.Recipient(
+                "Li Ming", "Li Ming", "liming@jlg.co.id", "aad-liming");
+        MeetingNotificationService.Recipient wangwu = new MeetingNotificationService.Recipient(
+                "Wang Wu", "Wang Wu", "wangwu@jlg.co.id", "aad-wangwu");
+        when(meetingService.getMeeting(ACTOR, meetingId)).thenReturn(MeetingVo.builder()
+                .id(meetingId)
+                .title("Quarterly Meeting")
+                .build());
+        when(preMeetingService.expectedParticipantNames(meetingId)).thenReturn(List.of("Li Ming", "Wang Wu"));
+        when(notificationService.buildPlan("Quarterly Meeting", null, List.of("Li Ming", "Wang Wu")))
+                .thenReturn(new MeetingNotificationService.NotificationPlan(
+                        "Quarterly Meeting", null, List.of(liming, wangwu), List.of(), List.of()));
+        when(notificationService.resolveDeliveryRecipients(List.of("liming@jlg.co.id", "wangwu@jlg.co.id")))
+                .thenReturn(List.of("aad-liming", "aad-wangwu"));
+        when(botIntegration.sendMeetingNotification("hello", List.of("aad-liming", "aad-wangwu")))
+                .thenReturn(new MeetingBotIntegration.SendResult(200, """
+                        {"sent":true,"sentCount":1,"failedCount":1,
+                        "recipients":[{"recipient":"aad-liming"}],
+                        "failures":[{"recipient":"aad-wangwu","error":"not found"}]}
+                        """));
+
+        MeetingNotificationSendVo result = facade.send(ACTOR, meetingId, request);
+
+        assertEquals(2, result.getSelectedRecipientCount());
+        assertEquals(2, result.getDeliveryRecipientCount());
+        assertEquals(1, result.getSentCount());
+        assertEquals(1, result.getFailedCount());
+        assertEquals(List.of("Li Ming"), result.getSuccessfulRecipients());
+        assertEquals(List.of("Wang Wu: not found"), result.getFailedRecipients());
+    }
+
+    @Test
+    void sendKeepsDeliveryFailureReportAndMapsFailuresToNames() {
+        Long meetingId = 15L;
+        MeetingNotificationSendRequest request = new MeetingNotificationSendRequest();
+        request.setContent("hello");
+        request.setRecipients(List.of("liming@jlg.co.id", "wangwu@jlg.co.id"));
+        MeetingNotificationService.Recipient liming = new MeetingNotificationService.Recipient(
+                "Li Ming", "Li Ming", "liming@jlg.co.id", "aad-liming");
+        MeetingNotificationService.Recipient wangwu = new MeetingNotificationService.Recipient(
+                "Wang Wu", "Wang Wu", "wangwu@jlg.co.id", "aad-wangwu");
+        when(meetingService.getMeeting(ACTOR, meetingId)).thenReturn(MeetingVo.builder()
+                .id(meetingId)
+                .title("Quarterly Meeting")
+                .build());
+        when(preMeetingService.expectedParticipantNames(meetingId)).thenReturn(List.of("Li Ming", "Wang Wu"));
+        when(notificationService.buildPlan("Quarterly Meeting", null, List.of("Li Ming", "Wang Wu")))
+                .thenReturn(new MeetingNotificationService.NotificationPlan(
+                        "Quarterly Meeting", null, List.of(liming, wangwu), List.of(), List.of()));
+        when(notificationService.resolveDeliveryRecipients(List.of("liming@jlg.co.id", "wangwu@jlg.co.id")))
+                .thenReturn(List.of("aad-liming", "aad-wangwu"));
+        when(botIntegration.sendMeetingNotification("hello", List.of("aad-liming", "aad-wangwu")))
+                .thenReturn(new MeetingBotIntegration.SendResult(502, """
+                        {"sent":false,"sentCount":0,"failedCount":2,
+                        "failures":[
+                          {"recipient":"aad-liming","error":"no conversation"},
+                          {"recipient":"aad-wangwu","error":"blocked"}
+                        ],
+                        "error":"No Teams users received the notification"}
+                        """));
+
+        MeetingNotificationSendVo result = facade.send(ACTOR, meetingId, request);
+
+        assertEquals(0, result.getSentCount());
+        assertEquals(2, result.getFailedCount());
+        assertEquals(List.of("Li Ming: no conversation", "Wang Wu: blocked"), result.getFailedRecipients());
+        assertEquals("No Teams users received the notification", result.getError());
     }
 
     @Test

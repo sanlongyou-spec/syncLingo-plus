@@ -50,6 +50,7 @@ public class MeetingService {
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
         addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
         addFileColumnIfMissing("meeting_url", meetingMapper::addMeetingUrlColumnIfNotExists);
+        addFileColumnIfMissing("notification_result_json", meetingMapper::addNotificationResultColumnIfNotExists);
         log.info("[MeetingService] initTables end");
     }
 
@@ -196,6 +197,14 @@ public class MeetingService {
         log.info("[MeetingService] setMeetingUrl end, meetingId={}", meetingId);
     }
 
+    public void saveNotificationResult(AuthenticatedActor actor, Long meetingId, String notificationResultJson) {
+        log.info("[MeetingService] saveNotificationResult start, meetingId={}, payloadLen={}",
+                meetingId, notificationResultJson == null ? 0 : notificationResultJson.length());
+        requireOwner(actor, meetingId);
+        meetingMapper.updateNotificationResult(meetingId, notificationResultJson);
+        log.info("[MeetingService] saveNotificationResult end, meetingId={}", meetingId);
+    }
+
     public String getMeetingNoticeText(AuthenticatedActor actor, Long meetingId) {
         log.info("[MeetingService] getMeetingNoticeText start, meetingId={}", meetingId);
         requireView(actor, meetingId);
@@ -271,6 +280,7 @@ public class MeetingService {
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
                 .meetingUrl(m.getMeetingUrl())
+                .notificationResultJson(m.getNotificationResultJson())
                 .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
                         && !m.getExpectedParticipantsJson().isBlank())
                 .createTime(m.getCreateTime())

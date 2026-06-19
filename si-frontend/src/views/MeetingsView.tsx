@@ -46,6 +46,16 @@ const stripExtension = (fileName: string) =>
 const recipientKey = (recipient: { teamsAccount?: string | null; email?: string | null }) =>
   recipient.teamsAccount || recipient.email || ''
 
+const parseNotificationSendResult = (json?: string | null): MeetingNotificationSendResult | null => {
+  if (!json?.trim()) return null
+  try {
+    const parsed = JSON.parse(json) as MeetingNotificationSendResult
+    return typeof parsed.sentCount === 'number' && typeof parsed.failedCount === 'number' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
 export default function MeetingsView() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
@@ -96,6 +106,7 @@ export default function MeetingsView() {
     setMeetingFiles(meeting?.files || [])
     setMeetingHasExpected(!!meeting?.hasExpectedParticipants)
     resetNotificationState()
+    setNotificationSendResult(parseNotificationSendResult(meeting?.notificationResultJson))
   }
 
   const loadMeetings = async () => {
@@ -174,8 +185,7 @@ export default function MeetingsView() {
     }
     setNoticePreviewing(true)
     setError('')
-    setNotificationSendResult(null)
-    try {
+      try {
       const preview = await previewMeetingNotification(
         targetMeetingId,
         targetFile?.fileId,
@@ -208,6 +218,13 @@ export default function MeetingsView() {
       setNoticePreviewing(false)
     }
   }
+
+  useEffect(() => {
+    if (!selectedMeetingId || notificationPreview || noticePreviewing || noticeUploading) return
+    if (!meetingUrl.trim() || meetingFiles.length === 0) return
+    void runNotificationPreview(selectedMeetingId, null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMeetingId, meetingUrl, meetingFiles.length])
 
   const handleNoticeUpload = async (file: File) => {
     if (!meetingUrl.trim()) {
@@ -351,6 +368,9 @@ export default function MeetingsView() {
     try {
       const result = await sendMeetingNotification(selectedMeetingId, content, recipients)
       setNotificationSendResult(result)
+      setMeetings(previous => previous.map(item =>
+        item.id === selectedMeetingId ? { ...item, notificationResultJson: JSON.stringify(result) } : item,
+      ))
       flash(`通知发送完成：成功 ${result.sentCount} 个，失败 ${result.failedCount} 个`)
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送会议通知失败')
@@ -478,7 +498,7 @@ export default function MeetingsView() {
               className="meetings-primary-btn meetings-notice-refresh-btn"
               type="button"
               onClick={() => void runNotificationPreview()}
-              disabled={!selectedMeetingId || !noticeFile || !meetingUrl.trim() || noticePreviewing}
+              disabled={!selectedMeetingId || !meetingUrl.trim() || noticePreviewing}
             >
               {noticePreviewing ? '生成中...' : '生成通知内容'}
             </button>

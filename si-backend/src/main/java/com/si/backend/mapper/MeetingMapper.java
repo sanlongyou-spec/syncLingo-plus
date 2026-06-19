@@ -1,7 +1,12 @@
 package com.si.backend.mapper;
 
 import com.si.backend.entity.Meeting;
-import org.apache.ibatis.annotations.*;
+import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -31,7 +36,6 @@ public interface MeetingMapper {
     @Select("SELECT * FROM meeting WHERE id = #{id} AND deleted = 0")
     Meeting findById(Long id);
 
-    /** Count non-deleted meetings of a user with the exact same title (for duplicate-name guard). */
     @Select("SELECT COUNT(*) FROM meeting WHERE user_id = #{userId} AND title = #{title} AND deleted = 0")
     int countByUserIdAndTitle(@Param("userId") Long userId, @Param("title") String title);
 
@@ -41,8 +45,7 @@ public interface MeetingMapper {
     @Update("UPDATE meeting SET deleted = 1 WHERE id = #{id}")
     int softDelete(Long id);
 
-    /** Wipe the meeting's stored 应到名单 / 实到核对 when the meeting is deleted. */
-    @Update("UPDATE meeting SET expected_participants_json = NULL, meeting_url = NULL WHERE id = #{id}")
+    @Update("UPDATE meeting SET expected_participants_json = NULL, meeting_url = NULL, notification_result_json = NULL WHERE id = #{id}")
     int clearAssociatedData(Long id);
 
     @Update("UPDATE meeting SET title = #{title}, scheduled_time = #{scheduledTime}, note = #{note} WHERE id = #{id}")
@@ -59,4 +62,10 @@ public interface MeetingMapper {
 
     @Update("UPDATE meeting SET meeting_url = #{url} WHERE id = #{id}")
     int updateMeetingUrl(@Param("id") Long id, @Param("url") String url);
+
+    @Update("ALTER TABLE meeting ADD COLUMN notification_result_json MEDIUMTEXT DEFAULT NULL")
+    void addNotificationResultColumnIfNotExists();
+
+    @Update("UPDATE meeting SET notification_result_json = #{json} WHERE id = #{id}")
+    int updateNotificationResult(@Param("id") Long id, @Param("json") String json);
 }

@@ -133,6 +133,28 @@ class AsrWebSocketHandlerSecurityTest {
         verify(session).close(CloseStatus.POLICY_VIOLATION);
     }
 
+    @Test
+    void transientControllerDisconnectDoesNotImmediatelyCleanupSharedPlayback() throws Exception {
+        session = session("ws-5", 5L);
+        InterpretationSession owned = new InterpretationSession();
+        owned.setSessionId("s5");
+        owned.setUserId(5L);
+        when(ownershipPolicy.requireOwnedSession(new AuthenticatedActor(5L), "s5")).thenReturn(owned);
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, message(
+                "start",
+                "s5",
+                "\"sourceLang\":\"zh-CN\",\"targetLang\":\"id-ID\""
+        ));
+
+        handler.afterConnectionClosed(session, CloseStatus.GOING_AWAY);
+
+        verify(userWebSocketRegistry).unregister(5L, session);
+        verify(realtimeFacade, never()).cleanupSession("s5");
+        verify(shareAudioWebSocketHandler, never()).closeSession("s5");
+        session = null;
+    }
+
     private WebSocketSession session(String id, Long userId) {
         WebSocketSession webSocketSession = mock(WebSocketSession.class);
         Map<String, Object> attributes = new HashMap<>();

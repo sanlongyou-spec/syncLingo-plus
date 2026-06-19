@@ -22,6 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -53,12 +56,20 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final Map<String, String> bizSessionWebSocketMap = new ConcurrentHashMap<>();
     private final Set<String> stoppedWebSocketSessionIds = ConcurrentHashMap.newKeySet();
     private final Map<String, OutboundMessageSender> outboundSenderMap = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture<?>> pendingTransientCleanupTasks = new ConcurrentHashMap<>();
 
     private static final int TEXT_QUEUE_CAPACITY = 1000;
     private static final int AUDIO_QUEUE_CAPACITY = 400;
+    private static final int TRANSIENT_DISCONNECT_GRACE_SECONDS = 600;
     private static final ExecutorService OUTBOUND_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable);
         thread.setName("asr-ws-outbound-" + thread.getId());
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final ScheduledExecutorService CLEANUP_SCHEDULER = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable);
+        thread.setName("asr-ws-transient-cleanup");
         thread.setDaemon(true);
         return thread;
     });
@@ -231,6 +242,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         stoppedWebSocketSessionIds.add(session.getId());
+        cancelTransientCleanup(sessionId);
         sessionLangMap.remove(sessionId);
         sessionSourceLangMap.remove(sessionId);
         sessionConfiguredSourceLangMap.remove(sessionId);
@@ -286,9 +298,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             sessionConfiguredSourceLangMap.remove(bizSessionId);
             sessionAudioRouteLangMap.remove(bizSessionId);
             if (!stoppedWebSocketSessionIds.remove(session.getId())) {
-                realtimeFacade.cleanupSession(bizSessionId);
+                scheduleTransientCleanup(bizSessionId);
             }
-            shareAudioWebSocketHandler.closeSession(bizSessionId);
         } else {
             log.info("[AsrWebSocketHandler] no business session bound, skip realtime cleanup, wsSessionId={}", session.getId());
         }
@@ -366,8 +377,38 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     "Session already controlled by another connection");
             return false;
         }
+        cancelTransientCleanup(businessSessionId);
         webSocketSessionBizSessionMap.put(session.getId(), businessSessionId);
         return true;
+    }
+
+    private void scheduleTransientCleanup(String businessSessionId) {
+        ScheduledFuture<?> previous = pendingTransientCleanupTasks.remove(businessSessionId);
+        if (previous != null) {
+            previous.cancel(false);
+        }
+        ScheduledFuture<?> task = CLEANUP_SCHEDULER.schedule(() -> {
+            if (bizSessionWebSocketMap.containsKey(businessSessionId)) {
+                log.info("[AsrWebSocketHandler] transient cleanup skipped, session rebound, sessionId={}", businessSessionId);
+                return;
+            }
+            pendingTransientCleanupTasks.remove(businessSessionId);
+            log.info("[AsrWebSocketHandler] transient cleanup firing, sessionId={}, graceSeconds={}",
+                    businessSessionId, TRANSIENT_DISCONNECT_GRACE_SECONDS);
+            realtimeFacade.cleanupSession(businessSessionId);
+            shareAudioWebSocketHandler.closeSession(businessSessionId);
+        }, TRANSIENT_DISCONNECT_GRACE_SECONDS, TimeUnit.SECONDS);
+        pendingTransientCleanupTasks.put(businessSessionId, task);
+        log.info("[AsrWebSocketHandler] transient cleanup scheduled, sessionId={}, graceSeconds={}",
+                businessSessionId, TRANSIENT_DISCONNECT_GRACE_SECONDS);
+    }
+
+    private void cancelTransientCleanup(String businessSessionId) {
+        ScheduledFuture<?> task = pendingTransientCleanupTasks.remove(businessSessionId);
+        if (task != null) {
+            task.cancel(false);
+            log.info("[AsrWebSocketHandler] transient cleanup canceled, sessionId={}", businessSessionId);
+        }
     }
 
     private boolean requireBoundSession(

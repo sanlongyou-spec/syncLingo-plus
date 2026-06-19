@@ -13,8 +13,7 @@ public class Meeting {
     private String note;
     private String meetingUrl;
     private Boolean deleted;
-    /** Parsed 应到 (expected participants) from the uploaded 会议安排, persisted so the attendance
-     *  comparison survives across sessions without re-uploading the schedule. */
     private String expectedParticipantsJson;
+    private String notificationResultJson;
     private LocalDateTime createTime;
 }

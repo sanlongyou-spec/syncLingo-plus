@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
 import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.entity.UserVoice;
 import com.si.backend.integration.CartesiaVoiceCloneIntegration;
 import com.si.backend.mapper.UserVoiceMapper;
@@ -17,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -31,8 +33,8 @@ class UserVoiceServiceTest {
 
     @Test
     void listVoicesReturnsAllUsableVoicesCreatedByActor() {
-        UserVoice first = voice(7L, "voice-1", "张三");
-        UserVoice second = voice(7L, "voice-2", "李四");
+        UserVoice first = voice(7L, "voice-1", "Zhang San");
+        UserVoice second = voice(7L, "voice-2", "Li Si");
         when(mapper.findEnabledByUserId(7L)).thenReturn(List.of(first, second));
 
         List<UserVoiceVo> result = service.listVoices(new AuthenticatedActor(7L));
@@ -45,14 +47,28 @@ class UserVoiceServiceTest {
     void cloneVoiceCallsCartesiaAndPersistsVoiceForActor() throws Exception {
         MockMultipartFile audio = new MockMultipartFile(
                 "file", "sample.webm", "audio/webm", new byte[16_000]);
-        when(integration.cloneVoice(eq("王五"), eq("zh"), any(), eq("sample.webm"), eq("audio/webm")))
+        when(integration.cloneVoice(eq("Wang Wu"), eq("zh"), any(), eq("sample.webm"), eq("audio/webm")))
                 .thenReturn(new CartesiaVoiceCloneIntegration.CloneResult("voice-created", "{}"));
 
-        CloneVoiceResponse response = service.cloneVoice(new AuthenticatedActor(7L), audio, "王五", "zh", 3);
+        CloneVoiceResponse response = service.cloneVoice(new AuthenticatedActor(7L), audio, "Wang Wu", "zh", 45);
 
         assertEquals("voice-created", response.getVoiceId());
-        assertEquals("王五", response.getVoiceName());
+        assertEquals("Wang Wu", response.getVoiceName());
+        assertEquals(45, response.getDurationSeconds());
         verify(mapper).insert(any(UserVoice.class));
+    }
+
+    @Test
+    void cloneVoiceRejectsAudioShorterThanMinimumDuration() throws Exception {
+        MockMultipartFile audio = new MockMultipartFile(
+                "file", "short.webm", "audio/webm", new byte[16_000]);
+
+        BizException error = assertThrows(BizException.class,
+                () -> service.cloneVoice(new AuthenticatedActor(7L), audio, "Short Sample", "zh", 19));
+
+        assertEquals(ErrorCode.VOICE_SAMPLE_TOO_SHORT.getCode(), error.getCode());
+        verify(integration, never()).cloneVoice(any(), any(), any(), any(), any());
+        verify(mapper, never()).insert(any(UserVoice.class));
     }
 
     @Test

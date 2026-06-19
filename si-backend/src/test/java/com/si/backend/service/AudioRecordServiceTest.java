@@ -1,6 +1,8 @@
 package com.si.backend.service;
 
 import com.si.backend.entity.SessionAudioRecord;
+import com.si.backend.entity.Meeting;
+import com.si.backend.mapper.MeetingMapper;
 import com.si.backend.mapper.SessionAudioRecordMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,13 +39,14 @@ class AudioRecordServiceTest {
     Path tempDir;
 
     private final SessionAudioRecordMapper mapper = mock(SessionAudioRecordMapper.class);
+    private final MeetingMapper meetingMapper = mock(MeetingMapper.class);
     private final List<SessionAudioRecord> records = new ArrayList<>();
     private final AtomicLong nextId = new AtomicLong(1L);
     private AudioRecordService service;
 
     @BeforeEach
     void setUp() {
-        service = new AudioRecordService(mapper);
+        service = new AudioRecordService(mapper, meetingMapper);
         ReflectionTestUtils.setField(service, "audioDir", tempDir.toString());
         doAnswer(invocation -> {
             SessionAudioRecord record = invocation.getArgument(0);
@@ -88,6 +91,12 @@ class AudioRecordServiceTest {
             return records.removeIf(record -> Objects.equals(record.getId(), id)
                     && Objects.equals(record.getUserId(), userId)) ? 1 : 0;
         }).when(mapper).deleteById(anyLong(), anyLong());
+        when(meetingMapper.findById(9L)).thenAnswer(invocation -> {
+            Meeting meeting = new Meeting();
+            meeting.setId(9L);
+            meeting.setTitle("班长的战争：物流、贸易、采购（2026年05月26日）");
+            return meeting;
+        });
     }
 
     @Test
@@ -124,6 +133,7 @@ class AudioRecordServiceTest {
                 .findFirst()
                 .orElse(null);
         assertNotNull(combined);
+        assertEquals("班长的战争：物流、贸易、采购（2026年05月26日）", combined.getName());
         assertTrue(new File(combined.getFilePath()).isFile());
         assertArrayEquals(concat(firstSession, secondSession), wavPcm(combined));
     }

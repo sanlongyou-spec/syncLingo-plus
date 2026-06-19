@@ -97,6 +97,7 @@ public class MeetingNotificationFacade {
                 null,
                 preMeetingService.expectedParticipantNames(meetingId)
         );
+        Map<String, String> displayNames = buildRecipientDisplayNames(plan.teamsRecipients());
         Map<String, String> allowed = new LinkedHashMap<>();
         for (MeetingNotificationService.Recipient recipient : plan.teamsRecipients()) {
             allowed.put(recipient.email().toLowerCase(Locale.ROOT), recipient.email());
@@ -114,21 +115,33 @@ public class MeetingNotificationFacade {
         }
         List<String> deliveryRecipients = meetingNotificationService.resolveDeliveryRecipients(selected);
         MeetingBotIntegration.SendResult sendResult =
-                meetingBotIntegration.sendNotification(request.getContent().trim(), deliveryRecipients);
+                meetingBotIntegration.sendMeetingNotification(request.getContent().trim(), deliveryRecipients);
         DeliveryReport report = parseDeliveryReport(sendResult.responseBody(), deliveryRecipients);
+        List<String> successfulRecipients = displaySuccessfulRecipients(report.successfulRecipients(), displayNames);
+        List<String> failedRecipients = displayFailedRecipients(report.failedRecipients(), displayNames);
         log.info("[MeetingNotificationFacade] send end, meetingId={}, selected={}, delivered={}, botStatus={}, sent={}, failed={}",
                 meetingId, selected.size(), deliveryRecipients.size(), sendResult.statusCode(),
                 report.sentCount(), report.failedCount());
-        return MeetingNotificationSendVo.builder()
+        MeetingNotificationSendVo result = MeetingNotificationSendVo.builder()
                 .selectedRecipientCount(selected.size())
                 .deliveryRecipientCount(deliveryRecipients.size())
                 .botStatusCode(sendResult.statusCode())
                 .sentCount(report.sentCount())
                 .failedCount(report.failedCount())
-                .successfulRecipients(report.successfulRecipients())
-                .failedRecipients(report.failedRecipients())
+                .successfulRecipients(successfulRecipients)
+                .failedRecipients(failedRecipients)
                 .error(report.error())
                 .build();
+        persistSendResult(actor, meetingId, result);
+        return result;
+    }
+
+    private void persistSendResult(AuthenticatedActor actor, Long meetingId, MeetingNotificationSendVo result) {
+        try {
+            meetingService.saveNotificationResult(actor, meetingId, objectMapper.writeValueAsString(result));
+        } catch (Exception e) {
+            log.warn("[MeetingNotificationFacade] persist send result failed, meetingId={}", meetingId, e);
+        }
     }
 
     private MeetingNotificationPreviewVo toPreview(
@@ -199,16 +212,95 @@ public class MeetingNotificationFacade {
                 .toList();
     }
 
+    private Map<String, String> buildRecipientDisplayNames(List<MeetingNotificationService.Recipient> recipients) {
+        Map<String, String> displayNames = new LinkedHashMap<>();
+        for (MeetingNotificationService.Recipient recipient : recipients) {
+            String displayName = recipientDisplayName(recipient);
+            registerDisplayName(displayNames, recipient.email(), displayName);
+            registerDisplayName(displayNames, recipient.teamsAccount(), displayName);
+            registerDisplayName(displayNames, recipient.accountName(), displayName);
+            registerDisplayName(displayNames, recipient.scheduleName(), displayName);
+        }
+        return displayNames;
+    }
+
+    private String recipientDisplayName(MeetingNotificationService.Recipient recipient) {
+        String scheduleName = cleanText(recipient.scheduleName());
+        if (scheduleName != null) {
+            return scheduleName;
+        }
+        String accountName = cleanText(recipient.accountName());
+        if (accountName != null) {
+            return accountName;
+        }
+        String email = cleanText(recipient.email());
+        if (email != null) {
+            return email;
+        }
+        return cleanText(recipient.teamsAccount());
+    }
+
+    private void registerDisplayName(Map<String, String> displayNames, String key, String displayName) {
+        String normalizedKey = normalizeLookupKey(key);
+        String normalizedDisplayName = cleanText(displayName);
+        if (normalizedKey != null && normalizedDisplayName != null) {
+            displayNames.putIfAbsent(normalizedKey, normalizedDisplayName);
+        }
+    }
+
+    private List<String> displaySuccessfulRecipients(
+            List<DeliveryRecipient> recipients,
+            Map<String, String> displayNames
+    ) {
+        List<String> values = new ArrayList<>();
+        for (DeliveryRecipient recipient : recipients) {
+            addUnique(values, displayNameFor(recipient.recipient(), recipient.displayName(), displayNames));
+        }
+        return values;
+    }
+
+    private List<String> displayFailedRecipients(
+            List<DeliveryFailure> failures,
+            Map<String, String> displayNames
+    ) {
+        List<String> values = new ArrayList<>();
+        for (DeliveryFailure failure : failures) {
+            String displayName = displayNameFor(failure.recipient(), failure.displayName(), displayNames);
+            String reason = cleanText(failure.error());
+            addUnique(values, reason == null ? displayName : displayName + ": " + reason);
+        }
+        return values;
+    }
+
+    private String displayNameFor(String recipient, String fallbackName, Map<String, String> displayNames) {
+        String key = normalizeLookupKey(recipient);
+        if (key != null && displayNames.containsKey(key)) {
+            return displayNames.get(key);
+        }
+        String displayName = cleanText(fallbackName);
+        if (displayName != null) {
+            return displayName;
+        }
+        String rawRecipient = cleanText(recipient);
+        return rawRecipient == null ? "unknown recipient" : rawRecipient;
+    }
+
+    private void addUnique(List<String> values, String value) {
+        if (value != null && !value.isBlank() && !values.contains(value)) {
+            values.add(value);
+        }
+    }
+
     private DeliveryReport parseDeliveryReport(String responseBody, List<String> fallbackRecipients) {
         if (responseBody == null || responseBody.isBlank()) {
-            return new DeliveryReport(fallbackRecipients.size(), 0, fallbackRecipients, List.of(), null);
+            return new DeliveryReport(fallbackRecipients.size(), 0, fallbackDeliveryRecipients(fallbackRecipients), List.of(), null);
         }
         try {
             JsonNode root = objectMapper.readTree(responseBody);
             int sentCount = root.path("sentCount").asInt(-1);
             int failedCount = root.path("failedCount").asInt(-1);
-            List<String> successful = parseRecipientList(root.path("recipients"));
-            List<String> failed = parseFailureList(root.path("failures"));
+            List<DeliveryRecipient> successful = parseRecipientList(root.path("recipients"));
+            List<DeliveryFailure> failed = parseFailureList(root.path("failures"));
             if (sentCount < 0) {
                 sentCount = successful.isEmpty() ? fallbackRecipients.size() : successful.size();
             }
@@ -216,43 +308,56 @@ public class MeetingNotificationFacade {
                 failedCount = failed.size();
             }
             if (successful.isEmpty() && sentCount > 0) {
-                successful = fallbackRecipients;
+                successful = fallbackDeliveryRecipients(fallbackRecipients);
             }
             String error = root.path("error").isTextual() ? root.path("error").asText() : null;
             return new DeliveryReport(sentCount, failedCount, successful, failed, error);
         } catch (Exception e) {
             log.warn("[MeetingNotificationFacade] parseDeliveryReport failed, bodyLen={}",
                     responseBody.length(), e);
-            return new DeliveryReport(fallbackRecipients.size(), 0, fallbackRecipients, List.of(), null);
+            return new DeliveryReport(fallbackRecipients.size(), 0, fallbackDeliveryRecipients(fallbackRecipients), List.of(), null);
         }
     }
 
-    private List<String> parseRecipientList(JsonNode nodes) {
+    private List<DeliveryRecipient> fallbackDeliveryRecipients(List<String> fallbackRecipients) {
+        return fallbackRecipients.stream()
+                .map(recipient -> new DeliveryRecipient(recipient, null))
+                .toList();
+    }
+
+    private List<DeliveryRecipient> parseRecipientList(JsonNode nodes) {
         if (!nodes.isArray()) {
             return List.of();
         }
-        List<String> recipients = new ArrayList<>();
+        List<DeliveryRecipient> recipients = new ArrayList<>();
         for (JsonNode node : nodes) {
-            String value = node.isTextual() ? node.asText() : firstText(node, "recipient", "email", "aadId", "displayName");
-            if (value != null && !value.isBlank() && !recipients.contains(value)) {
+            String recipient = node.isTextual() ? node.asText() : firstText(node, "recipient", "email", "aadId", "displayName");
+            String displayName = node.isTextual() ? null : firstText(node, "displayName", "name");
+            if (recipient == null || recipient.isBlank()) {
+                recipient = displayName;
+            }
+            DeliveryRecipient value = new DeliveryRecipient(cleanText(recipient), cleanText(displayName));
+            if (value.recipient() != null && !recipients.contains(value)) {
                 recipients.add(value);
             }
         }
         return recipients;
     }
 
-    private List<String> parseFailureList(JsonNode nodes) {
+    private List<DeliveryFailure> parseFailureList(JsonNode nodes) {
         if (!nodes.isArray()) {
             return List.of();
         }
-        List<String> failures = new ArrayList<>();
+        List<DeliveryFailure> failures = new ArrayList<>();
         for (JsonNode node : nodes) {
             String recipient = node.isTextual() ? node.asText() : firstText(node, "recipient", "email", "aadId", "displayName");
+            String displayName = node.isTextual() ? null : firstText(node, "displayName", "name");
             String error = node.isTextual() ? null : firstText(node, "error", "message");
-            String value = recipient == null || recipient.isBlank()
-                    ? error
-                    : (error == null || error.isBlank() ? recipient : recipient + "：" + error);
-            if (value != null && !value.isBlank()) {
+            if (recipient == null || recipient.isBlank()) {
+                recipient = displayName;
+            }
+            DeliveryFailure value = new DeliveryFailure(cleanText(recipient), cleanText(displayName), cleanText(error));
+            if ((value.recipient() != null || value.error() != null) && !failures.contains(value)) {
                 failures.add(value);
             }
         }
@@ -269,11 +374,29 @@ public class MeetingNotificationFacade {
         return null;
     }
 
+    private String normalizeLookupKey(String value) {
+        String cleaned = cleanText(value);
+        return cleaned == null ? null : cleaned.toLowerCase(Locale.ROOT);
+    }
+
+    private String cleanText(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private record DeliveryRecipient(String recipient, String displayName) {
+    }
+
+    private record DeliveryFailure(String recipient, String displayName, String error) {
+    }
+
     private record DeliveryReport(
             int sentCount,
             int failedCount,
-            List<String> successfulRecipients,
-            List<String> failedRecipients,
+            List<DeliveryRecipient> successfulRecipients,
+            List<DeliveryFailure> failedRecipients,
             String error
     ) {
     }
