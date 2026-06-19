@@ -3,6 +3,8 @@ import importlib
 import sys
 import types
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 
@@ -54,6 +56,30 @@ def test_decide_reports_child_dominant():
     gender, *_, reason = _detector()._decide({"male": 0.80, "female": 0.10, "child": 0.90})
     assert gender == "unknown"
     assert reason == "child_dominant"
+
+
+def test_scores_from_array_uses_audeering_female_male_child_order():
+    # audeering 模型 gender 输出顺序为 [female, male, child]，必须按此映射，
+    # 否则会把男声读成女声、把女声读成 child（线上实测过的真实故障）。
+    detector = _detector()
+    detector.labels = ["female", "male", "child"]
+    scores = detector._scores_from_array([0.0025, 0.9974, 0.0001])
+    assert scores["male"] == pytest.approx(0.9974, abs=1e-4)
+    assert scores["female"] == pytest.approx(0.0025, abs=1e-4)
+    assert scores["child"] == pytest.approx(0.0001, abs=1e-4)
+    gender, _conf, _male, _female, _child, reason = detector._decide(scores)
+    assert gender == "male"
+    assert reason == "accepted"
+
+
+def test_scores_from_array_falls_back_to_audeering_order():
+    # labels 数量与输出不一致时的兜底顺序，也必须是 [female, male, child]。
+    detector = _detector()
+    detector.labels = ["wrong"]
+    scores = detector._scores_from_array([0.9845, 0.0081, 0.0074])
+    assert scores["female"] == pytest.approx(0.9845, abs=1e-4)
+    assert scores["male"] == pytest.approx(0.0081, abs=1e-4)
+    assert scores["child"] == pytest.approx(0.0074, abs=1e-4)
 
 
 class FakeDetector:

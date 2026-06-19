@@ -51,7 +51,8 @@ VOICE_GENDER_MIN_SECONDS = float(os.environ.get("VOICE_GENDER_MIN_SECONDS", "6")
 VOICE_GENDER_MAX_SECONDS = float(os.environ.get("VOICE_GENDER_MAX_SECONDS", "8"))
 VOICE_GENDER_CONFIDENCE = float(os.environ.get("VOICE_GENDER_CONFIDENCE", "0.75"))
 VOICE_GENDER_MARGIN = float(os.environ.get("VOICE_GENDER_MARGIN", "0.15"))
-VOICE_GENDER_LABELS = os.environ.get("VOICE_GENDER_LABELS", "child,female,male")
+# audeering/wav2vec2-large-robust-6-ft-age-gender 的 gender 输出顺序固定为 [female, male, child]。
+VOICE_GENDER_LABELS = os.environ.get("VOICE_GENDER_LABELS", "female,male,child")
 VOICE_GENDER_NUM_THREADS = int(os.environ.get("VOICE_GENDER_NUM_THREADS", "1"))
 
 

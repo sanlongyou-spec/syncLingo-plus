@@ -164,7 +164,8 @@ class VoiceGenderDetector:
             array = self._softmax(array)
         labels = self.labels
         if len(labels) != array.size:
-            labels = ["child", "female", "male"] if array.size == 3 else ["female", "male"]
+            # audeering age-gender 模型 gender 输出顺序为 [female, male, child]。
+            labels = ["female", "male", "child"] if array.size == 3 else ["female", "male"]
         return {labels[index]: float(array[index]) for index in range(min(len(labels), array.size))}
 
     def _decide(self, scores: dict[str, float]) -> tuple[str, float, float, float, float, str]:

@@ -6,6 +6,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.VoiceGenderProperties;
 import com.si.backend.service.VoiceGender;
 import lombok.extern.slf4j.Slf4j;
+import okhttp3.ConnectionPool;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -32,11 +33,15 @@ public class VoiceGenderIntegration {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.endpointUrl = normalizeBaseUrl(properties.getUrl()) + "/voice-gender";
+        // 语音性别检测调用间隔较长（每个说话人 6s+），容易命中已被 speaker 端
+        // (uvicorn 默认 5s keep-alive) 关闭的连接而报 Broken pipe。这里把空闲连接
+        // 的保活时间压到 1s 以避免复用陈旧连接，并开启连接失败自动重试。
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(300, TimeUnit.MILLISECONDS)
                 .readTimeout(properties.getTimeoutMs(), TimeUnit.MILLISECONDS)
-                .writeTimeout(500, TimeUnit.MILLISECONDS)
-                .retryOnConnectionFailure(false)
+                .writeTimeout(1000, TimeUnit.MILLISECONDS)
+                .connectionPool(new ConnectionPool(2, 1, TimeUnit.SECONDS))
+                .retryOnConnectionFailure(true)
                 .build();
         log.info("[VoiceGenderIntegration] enabled={}, url={}, timeoutMs={}",
                 properties.isEnabled(), endpointUrl, properties.getTimeoutMs());
