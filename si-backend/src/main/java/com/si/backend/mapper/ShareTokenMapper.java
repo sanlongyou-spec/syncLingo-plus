@@ -48,6 +48,13 @@ public interface ShareTokenMapper {
     @Update("UPDATE share_token SET revoked_at = NOW() WHERE id = #{id} AND revoked_at IS NULL")
     int revoke(@Param("id") Long id);
 
+    /**
+     * 一次性失效"无过期时间"的历史令牌（6 小时有效期策略上线前签发的旧链接）。
+     * 只命中 expires_at 为空且未撤销的旧令牌；新令牌一律带 expires_at，故本操作重启幂等、不会误伤。
+     */
+    @Update("UPDATE share_token SET revoked_at = NOW() WHERE expires_at IS NULL AND revoked_at IS NULL")
+    int revokeLegacyTokensWithoutExpiry();
+
     @Select("SELECT * FROM share_token WHERE owner_user_id = #{ownerUserId} ORDER BY id DESC")
     List<ShareToken> findByOwner(@Param("ownerUserId") Long ownerUserId);
 }

@@ -52,6 +52,19 @@ class ShareTokenServiceTest {
     }
 
     @Test
+    void mint_setsSixHourExpiry() {
+        org.mockito.ArgumentCaptor<ShareToken> captor = org.mockito.ArgumentCaptor.forClass(ShareToken.class);
+        LocalDateTime before = LocalDateTime.now();
+        service.mintChannelToken(OPERATOR);
+        verify(mapper).insert(captor.capture());
+        LocalDateTime expiresAt = captor.getValue().getExpiresAt();
+        org.junit.jupiter.api.Assertions.assertNotNull(expiresAt, "共享令牌必须设置过期时间");
+        // 默认 6 小时有效：过期时间应落在 [now+5h59m, now+6h1m] 区间内
+        org.junit.jupiter.api.Assertions.assertTrue(expiresAt.isAfter(before.plusHours(6).minusMinutes(1)));
+        org.junit.jupiter.api.Assertions.assertTrue(expiresAt.isBefore(before.plusHours(6).plusMinutes(1)));
+    }
+
+    @Test
     void resolveSession_returnsSessionId() {
         ShareToken t = new ShareToken();
         t.setKind("SESSION");

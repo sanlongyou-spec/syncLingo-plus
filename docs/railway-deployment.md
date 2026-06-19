@@ -1,5 +1,9 @@
 # Railway Railpack Deployment Guide
 
+> **状态：备用方案，尚未启用（2026-06-20）。** 生产环境当前仍运行在阿里云 Linux 服务器上，按 `docs/deployment-runbook.md` 部署。本文仅为将来迁移到 Railway 时的预案，正式切换前不要据此作为生产路径。
+>
+> 注意：当前在用代码仓库为 `https://github.com/sanlongyou-spec/syncLingo-plus.git`，分支 `final-version`；下文出现的旧仓库地址以实际在用仓库为准。
+
 This project should be deployed to Railway as a monorepo with multiple Railpack services. Do not deploy it as one service.
 
 Railway services:

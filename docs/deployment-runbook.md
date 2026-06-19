@@ -1,6 +1,11 @@
 # syncLingo Plus 生产部署与运维手册
 
-本文是当前唯一有效的生产部署说明。生产环境运行在 Linux 服务器上，不使用 ngrok。
+本文是当前唯一有效的生产部署说明。生产环境运行在阿里云 Linux 服务器上，不使用 ngrok。
+
+> **当前生产形态（2026-06-20）**
+> - **代码仓库已迁移**：当前在用仓库为 `https://github.com/sanlongyou-spec/syncLingo-plus.git`（git remote `railway-deploy`），分支 `final-version`。旧仓库 `ChrisYou666/simultaneous-interpretation` 已废弃，不要再向其推送/拉取。
+> - **生产仍在阿里云服务器**，部署/运维按本文执行。
+> - **Railway 仅为备用方案，尚未启用**；其配置见 `docs/railway-deployment.md`，在正式切换前不作为生产路径。
 
 ## 1. 架构
 
@@ -368,6 +373,13 @@ docker exec si-mysql mysqldump -usync_lingo -p'<app-password>' si_backend \
 ```
 
 Also back up `speaker-service/embeddings.json` or any production speaker database files.
+
+### 共享链接（分享令牌）策略
+
+- **有效期 6 小时**：所有共享链接自签发起仅 6 小时内有效，过期自动失效（由后端 `expires_at` 控制）。可用 `SHARE_TOKEN_VALIDITY_HOURS` 覆盖（默认 6）。
+- **历史链接已全部失效**：6 小时策略上线后，后端启动时会一次性撤销所有"无过期时间"的旧链接（`ShareTokenSchemaInitializer` → `revokeLegacyTokensWithoutExpiry`）。上线前发出去的旧共享链接一律作废。
+- **收听并发上限**：分享音频最多 `SHARE_MAX_AUDIO_CONNECTIONS`（默认 130）路同时连接，超出的新听众会被拒绝并提示"人数已满"，用于防止公网带宽/内存被打满（曾在 ~167 并发时触发整机 OOM）。
+- 听众超过该规模前，需先提升公网带宽或改用 CDN 分发音频，详见本节"运维注意"。
 
 ## 11. Go-Live Checks
 

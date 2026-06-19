@@ -20,7 +20,9 @@ public class ShareTokenSchemaInitializer {
     public void init() {
         try {
             shareTokenMapper.createTableIfNotExists();
-            log.info("[ShareTokenSchemaInitializer] share_token table ready");
+            // 6 小时有效期策略上线：一次性失效所有"无过期时间"的历史共享链接。
+            int revoked = shareTokenMapper.revokeLegacyTokensWithoutExpiry();
+            log.info("[ShareTokenSchemaInitializer] share_token table ready, revokedLegacyTokens={}", revoked);
         } catch (Exception e) {
             log.warn("[ShareTokenSchemaInitializer] create share_token failed: {}", e.getMessage());
         }
