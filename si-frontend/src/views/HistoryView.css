@@ -679,33 +679,6 @@
   text-align: center;
 }
 
-.history-attendance-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 48px 24px;
-  text-align: center;
-  color: #475569;
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.history-attendance-empty-icon {
-  font-size: 2.5rem;
-  margin-bottom: 4px;
-}
-
-.history-attendance-empty-hint {
-  font-size: 13px;
-  color: #94a3b8;
-  font-weight: 400;
-  max-width: 320px;
-  line-height: 1.6;
-}
-
 /* ─────────────────────────────────────────────────
    Cost tab
 ───────────────────────────────────────────────── */
@@ -983,6 +956,37 @@
   outline: none;
 }
 
+.history-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 20px;
+  border-bottom: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.history-inline-error span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-inline-error button {
+  flex-shrink: 0;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .history-danger {
   min-height: 28px;
   padding: 0 10px;
@@ -1101,6 +1105,13 @@
 .history-file-toggle-btn:hover {
   background: #eff4ff;
   border-color: #93c5fd;
+}
+
+.history-file-toggle-btn:disabled,
+.history-audio-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: #f8fafc;
 }
 
 

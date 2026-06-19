@@ -50,6 +50,55 @@ const resultFromError = <T>(error: unknown): Result<T> | null => {
   return null
 }
 
+const resultFromBlobError = async <T>(error: unknown): Promise<Result<T> | null> => {
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (!(data instanceof Blob) || data.size === 0) return null
+  try {
+    const text = await data.text()
+    if (!text.trim()) return null
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && 'code' in parsed && 'message' in parsed) {
+      return parsed as Result<T>
+    }
+    if (parsed && typeof parsed === 'object' && 'message' in parsed) {
+      return {
+        code: 500,
+        message: String((parsed as { message?: unknown }).message),
+        data: undefined as T,
+        timestamp: new Date().toISOString(),
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+const messageFromError = (error: unknown, fallback: string) => {
+  const result = resultFromError<unknown>(error)
+  if (result?.message) return result.message
+  const data = (error as { response?: { data?: unknown } })?.response?.data
+  if (data && typeof data === 'object') {
+    const maybeMessage = (data as { message?: unknown; error?: unknown }).message
+    const maybeError = (data as { message?: unknown; error?: unknown }).error
+    if (typeof maybeMessage === 'string' && maybeMessage.trim()) return maybeMessage
+    if (typeof maybeError === 'string' && maybeError.trim()) return maybeError
+  }
+  if (typeof data === 'string' && data.trim()) return data
+  return error instanceof Error ? error.message : fallback
+}
+
+const resultOrThrow = <T>(error: unknown, fallback: string): Result<T> => {
+  const result = resultFromError<T>(error)
+  if (result) return result
+  throw new Error(messageFromError(error, fallback))
+}
+
+const throwDownloadError = async (error: unknown, fallback: string): Promise<never> => {
+  const result = await resultFromBlobError<never>(error)
+  throw new Error(result?.message || messageFromError(error, fallback))
+}
+
 export const startInterpretation = (params: StartInterpretationParams): Promise<Result<string>> =>
   client.post<Result<string>>('/api/interpretation/start', params).then(r => r.data)
 
@@ -307,7 +356,9 @@ export const uploadPreMeetingFile = (file: File): Promise<Result<PreMeetingFile[
   form.append('file', file)
   return client.post<Result<PreMeetingFile[]>>('/api/pre-meeting/upload', form, {
     headers: { 'Content-Type': undefined },
-  }).then(r => r.data)
+  })
+    .then(r => r.data)
+    .catch(error => resultOrThrow<PreMeetingFile[]>(error, '上传会议通知失败'))
 }
 
 export const saveExpectedParticipants = (fileId: string, meetingId: number): Promise<Result<number>> =>
@@ -412,8 +463,15 @@ export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Resu
   form.append('file', file)
   return client.post<Result<MeetingFile>>(`/api/meetings/${meetingId}/files`, form, {
     headers: { 'Content-Type': undefined },
-  }).then(r => r.data)
+  })
+    .then(r => r.data)
+    .catch(error => resultOrThrow<MeetingFile>(error, '上传会议文件失败'))
 }
+
+export const downloadMeetingFile = (meetingId: number, fileId: number): Promise<Blob> =>
+  client.get<Blob>(`/api/meetings/${meetingId}/files/${fileId}/download`, { responseType: 'blob' })
+    .then(r => r.data)
+    .catch(error => throwDownloadError(error, '下载会议文件失败'))
 
 export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/meetings/${meetingId}/files/${fileId}`).then(r => r.data)
@@ -562,6 +620,11 @@ export const deleteAudioRecord = (id: number): Promise<Result<void>> =>
 export const getAudioDownloadUrl = (id: number): string =>
   `/api/audio-records/${id}/download`
 
+export const downloadAudioRecord = (id: number): Promise<Blob> =>
+  client.get<Blob>(`/api/audio-records/${id}/download`, { responseType: 'blob' })
+    .then(r => r.data)
+    .catch(error => throwDownloadError(error, '下载录音失败'))
+
 export const listUserVoices = (): Promise<Result<UserVoice[]>> =>
   client.get<Result<UserVoice[]>>('/api/voices').then(r => r.data)
 
@@ -580,6 +643,7 @@ export const cloneUserVoice = (
     headers: { 'Content-Type': undefined },
     timeout: 90_000,
   }).then(r => r.data)
+    .catch(error => resultOrThrow<CloneVoiceResponse>(error, '创建音色失败'))
 }
 
 export const deleteUserVoice = (voiceId: string): Promise<Result<void>> =>

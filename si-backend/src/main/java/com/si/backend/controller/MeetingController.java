@@ -173,14 +173,6 @@ public class MeetingController {
         return Result.ok(interpretationFacade.getSessionsByMeeting(AuthContext.requireActor(), meetingId));
     }
 
-    @PutMapping("/{meetingId}/attendance")
-    public Result<Void> saveAttendance(
-            @PathVariable Long meetingId,
-            @RequestBody Map<String, String> body) {
-        meetingService.saveAttendance(AuthContext.requireActor(), meetingId, body.getOrDefault("attendanceJson", ""));
-        return Result.ok();
-    }
-
     @PutMapping("/{meetingId}/files/{fileId}/summary")
     public Result<Void> saveFileSummary(
             @PathVariable Long meetingId,

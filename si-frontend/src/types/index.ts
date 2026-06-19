@@ -75,29 +75,6 @@ export interface MeetingSummaryVo {
   recordCount: number | null
 }
 
-export interface PreMeetingAttendanceRow {
-  name?: string | null
-  department?: string | null
-  role?: string | null
-  email?: string | null
-  actualName?: string | null
-  actualEmail?: string | null
-  status: 'present' | 'absent' | 'unexpected' | string
-  sourceText?: string | null
-}
-
-export interface PreMeetingAttendanceResult {
-  fileId: string
-  fileName: string
-  meetingTitle?: string | null
-  expectedCount: number
-  actualCount: number
-  presentCount: number
-  absentCount: number
-  unexpectedCount: number
-  rows: PreMeetingAttendanceRow[]
-}
-
 export interface TeamsSummarySendTarget {
   recipient: string
   aadId: string
@@ -117,12 +94,6 @@ export interface TeamsSummarySendResponse {
   recipients: TeamsSummarySendTarget[]
   failures: TeamsSummarySendFailure[]
   error?: string
-}
-
-export interface MeetingParticipant {
-  aadId: string
-  displayName?: string | null
-  email?: string | null
 }
 
 export interface PreMeetingFile {
@@ -294,7 +265,6 @@ export interface Meeting {
   scheduledTime?: string | null
   note?: string | null
   meetingUrl?: string | null
-  attendanceJson?: string | null
   hasExpectedParticipants?: boolean
   createTime?: string
   files?: MeetingFile[]

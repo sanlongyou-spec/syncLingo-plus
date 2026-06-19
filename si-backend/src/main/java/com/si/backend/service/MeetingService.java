@@ -48,7 +48,6 @@ public class MeetingService {
         meetingMapper.createTableIfNotExists();
         fileMapper.createTableIfNotExists();
         addFileColumnIfMissing("file_data", fileMapper::addFileDataColumnIfNotExists);
-        addFileColumnIfMissing("attendance_json", meetingMapper::addAttendanceJsonColumnIfNotExists);
         addFileColumnIfMissing("expected_participants_json", meetingMapper::addExpectedParticipantsColumnIfNotExists);
         addFileColumnIfMissing("meeting_url", meetingMapper::addMeetingUrlColumnIfNotExists);
         log.info("[MeetingService] initTables end");
@@ -188,11 +187,6 @@ public class MeetingService {
         return f;
     }
 
-    public void saveAttendance(AuthenticatedActor actor, Long meetingId, String attendanceJson) {
-        requireOwner(actor, meetingId);
-        meetingMapper.updateAttendanceJson(meetingId, attendanceJson);
-    }
-
     public void setMeetingUrl(AuthenticatedActor actor, Long meetingId, String meetingUrl) {
         log.info("[MeetingService] setMeetingUrl start, meetingId={}, hasUrl={}",
                 meetingId, meetingUrl != null && !meetingUrl.isBlank());
@@ -277,7 +271,6 @@ public class MeetingService {
                 .scheduledTime(m.getScheduledTime() != null ? m.getScheduledTime().format(DT_FMT) : null)
                 .note(m.getNote())
                 .meetingUrl(m.getMeetingUrl())
-                .attendanceJson(m.getAttendanceJson())
                 .hasExpectedParticipants(m.getExpectedParticipantsJson() != null
                         && !m.getExpectedParticipantsJson().isBlank())
                 .createTime(m.getCreateTime())

@@ -20,6 +20,8 @@ import {
   getAudioRecords,
   renameAudioRecord,
   deleteAudioRecord,
+  downloadAudioRecord,
+  downloadMeetingFile,
   getAudioDownloadUrl,
   getSummaryRecipients,
   saveSummaryRecipients,
@@ -32,8 +34,6 @@ import type {
   Meeting,
   MeetingActionItem,
   MeetingFile,
-  MeetingParticipant,
-  PreMeetingAttendanceResult,
   SpeakerSummaryRecord,
   SystemUserInfo,
   TeamsSummarySendResponse,
@@ -56,36 +56,6 @@ type TranscriptGroup = {
 type SearchMatchKind = 'exact' | 'fuzzy'
 type TextSearchMatch = { kind: SearchMatchKind; start: number; end: number }
 type TranscriptSearchMatch = { groupIndex: number; kind: SearchMatchKind }
-
-const mergeParticipants = (participants: MeetingParticipant[]) => {
-  const byAadId = new Map<string, MeetingParticipant>()
-  participants.forEach(participant => {
-    if (!participant.aadId) return
-    const previous = byAadId.get(participant.aadId)
-    byAadId.set(participant.aadId, {
-      aadId: participant.aadId,
-      displayName: participant.displayName || previous?.displayName || null,
-      email: participant.email || previous?.email || null,
-    })
-  })
-  return Array.from(byAadId.values())
-}
-
-const parseSavedAttendance = (json?: string | null) => {
-  if (!json) return { result: null, participants: [] as MeetingParticipant[] }
-  try {
-    const parsed = JSON.parse(json)
-    if (parsed.result && parsed.participants) {
-      return {
-        result: parsed.result as PreMeetingAttendanceResult,
-        participants: mergeParticipants(parsed.participants as MeetingParticipant[]),
-      }
-    }
-    return { result: parsed as PreMeetingAttendanceResult, participants: [] as MeetingParticipant[] }
-  } catch {
-    return { result: null, participants: [] as MeetingParticipant[] }
-  }
-}
 
 const escapeHtml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -255,6 +225,17 @@ const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
   URL.revokeObjectURL(url)
 }
 
+const downloadBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 // 把会议日期格式化为「2026 年 6 月 03日（周三）」用于发言摘要 PDF。
 const formatChineseDate = (src?: string | null): string => {
   const parsed = src ? new Date(src.replace(' ', 'T')) : new Date()
@@ -270,7 +251,7 @@ export default function HistoryView() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [meetingsLoading, setMeetingsLoading] = useState(false)
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<'files' | 'transcript' | 'speakers' | 'summary' | 'attendance' | 'audio'>('files')
+  const [activeTab, setActiveTab] = useState<'files' | 'transcript' | 'speakers' | 'summary' | 'audio'>('files')
 
   // ── Session within meeting ───────────────────────────────
   const [sessions, setSessions] = useState<InterpretationStatus[]>([])
@@ -327,6 +308,9 @@ export default function HistoryView() {
   const [audioKeyword, setAudioKeyword] = useState('')
   const [audioRenameId, setAudioRenameId] = useState<number | null>(null)
   const [audioRenameDraft, setAudioRenameDraft] = useState('')
+  const [downloadingAudioId, setDownloadingAudioId] = useState<number | null>(null)
+  const [downloadingFileKey, setDownloadingFileKey] = useState('')
+  const [downloadError, setDownloadError] = useState('')
 
   // ── Speaker rename (transcript tab) ──────────────────────────
   const [speakerMappings, setSpeakerMappings] = useState<Record<string, string>>({})
@@ -591,6 +575,19 @@ export default function HistoryView() {
       setAudioRecords(prev => prev.map(r => r.id === id ? { ...r, name } : r))
     } catch { /* ignore */ }
     finally { setAudioRenameId(null) }
+  }
+
+  const handleAudioDownload = async (record: AudioRecord) => {
+    setDownloadingAudioId(record.id)
+    setDownloadError('')
+    try {
+      const blob = await downloadAudioRecord(record.id)
+      downloadBlob(blob, `${sanitizeFilename(record.name)}.wav`)
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : '下载录音失败')
+    } finally {
+      setDownloadingAudioId(null)
+    }
   }
 
   const handleSpeakerRename = async (speakerId: string) => {
@@ -939,11 +936,18 @@ export default function HistoryView() {
     }
   }
 
-  const downloadOriginalFile = (meetingId: number, fileId: number, fileName: string) => {
-    const a = document.createElement('a')
-    a.href = `/api/meetings/${meetingId}/files/${fileId}/download`
-    a.download = fileName
-    a.click()
+  const downloadOriginalFile = async (meetingId: number, fileId: number, fileName: string) => {
+    const fileKey = `${meetingId}:${fileId}`
+    setDownloadingFileKey(fileKey)
+    setDownloadError('')
+    try {
+      const blob = await downloadMeetingFile(meetingId, fileId)
+      downloadBlob(blob, fileName)
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : '下载原文件失败')
+    } finally {
+      setDownloadingFileKey('')
+    }
   }
 
   // ── Renders ──────────────────────────────────────────────
@@ -951,62 +955,25 @@ export default function HistoryView() {
     if (files.length === 0) return (
       <div className="si-tri-empty">暂无上传文件</div>
     )
-    return files.map(f => (
-      <div key={f.id} className="history-meeting-file-card">
-        <div className="history-meeting-file-header">
-          <span className="history-meeting-file-name">{f.fileName}</span>
-          {f.fileType && <span className="history-meeting-file-type">{f.fileType.toUpperCase()}</span>}
-          {f.createTime && <span className="history-meeting-file-time">{f.createTime}</span>}
-          <button
-            className="history-file-toggle-btn"
-            onClick={() => downloadOriginalFile(meetingId, f.id, f.fileName)}
-            title="下载原始文件"
-          >下载原文件</button>
+    return files.map(f => {
+      const fileKey = `${meetingId}:${f.id}`
+      const isDownloading = downloadingFileKey === fileKey
+      return (
+        <div key={f.id} className="history-meeting-file-card">
+          <div className="history-meeting-file-header">
+            <span className="history-meeting-file-name">{f.fileName}</span>
+            {f.fileType && <span className="history-meeting-file-type">{f.fileType.toUpperCase()}</span>}
+            {f.createTime && <span className="history-meeting-file-time">{f.createTime}</span>}
+            <button
+              className="history-file-toggle-btn"
+              onClick={() => void downloadOriginalFile(meetingId, f.id, f.fileName)}
+              title="下载原始文件"
+              disabled={isDownloading}
+            >{isDownloading ? '下载中...' : '下载原文件'}</button>
+          </div>
         </div>
-      </div>
-    ))
-  }
-
-  const renderAttendance = (attendanceJson?: string | null) => {
-    const { result: att } = parseSavedAttendance(attendanceJson)
-    if (!att) return (
-      <div className="history-attendance-empty">
-        <div className="history-attendance-empty-icon">📋</div>
-        <div>暂无参会情况</div>
-        <div className="history-attendance-empty-hint">当前会议尚未保存参会情况</div>
-      </div>
-    )
-    const statusText = (s: string) => s === 'present' ? '已到' : s === 'absent' ? '未到' : s === 'unexpected' ? '未在安排中' : s
-    const statusCls = (s: string) => s === 'present' ? 'tb-attendance-status--present' : s === 'absent' ? 'tb-attendance-status--absent' : s === 'unexpected' ? 'tb-attendance-status--unexpected' : ''
-    const rows = att.rows ?? []
-    return (
-      <>
-        {att.fileName && <div style={{ fontSize: '0.82rem', color: '#64748b', marginBottom: '0.5rem' }}>会议安排文件：{att.fileName}</div>}
-        <div className="tb-attendance-stats">
-          <div className="tb-attendance-stat"><span>应到</span><strong>{att.expectedCount}</strong></div>
-          <div className="tb-attendance-stat"><span>Teams 实到</span><strong>{att.actualCount}</strong></div>
-          <div className="tb-attendance-stat"><span>安排内实到</span><strong>{att.presentCount}</strong></div>
-          <div className="tb-attendance-stat"><span>未到</span><strong>{att.absentCount}</strong></div>
-          <div className="tb-attendance-stat"><span>未在安排中</span><strong>{att.unexpectedCount}</strong></div>
-        </div>
-        <div className="tb-attendance-table-wrap" style={{ marginTop: '0.75rem' }}>
-          <table className="tb-attendance-table">
-            <thead><tr><th>状态</th><th>安排姓名</th><th>分组</th><th>Teams 实到</th><th>邮箱</th></tr></thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  <td><span className={`tb-attendance-status ${statusCls(row.status)}`}>{statusText(row.status)}</span></td>
-                  <td>{row.status === 'unexpected' ? '-' : row.name || '-'}</td>
-                  <td>{row.department || '-'}</td>
-                  <td>{row.actualName || (row.status === 'unexpected' ? row.name : '-')}</td>
-                  <td>{row.actualEmail || row.email || '-'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </>
-    )
+      )
+    })
   }
 
   return (
@@ -1124,12 +1091,16 @@ export default function HistoryView() {
                 </div>
               )}
 
+              {downloadError && (
+                <div className="history-inline-error">
+                  <span>{downloadError}</span>
+                  <button type="button" onClick={() => setDownloadError('')}>关闭</button>
+                </div>
+              )}
+
               {/* Tab 导航 */}
               <div className="history-tab-nav">
                 <button className={`history-tab-btn${activeTab === 'files' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('files')}>文件总结</button>
-                <button className={`history-tab-btn${activeTab === 'attendance' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('attendance')}>
-                  参会情况{selectedMeeting.attendanceJson ? ' ✓' : ''}
-                </button>
                 <button className={`history-tab-btn${activeTab === 'transcript' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('transcript')}>文本记录</button>
                 <button className={`history-tab-btn${activeTab === 'speakers' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('speakers')}>发言摘要</button>
                 <button className={`history-tab-btn${activeTab === 'summary' ? ' history-tab-btn--active' : ''}`} onClick={() => setActiveTab('summary')}>会议总结</button>
@@ -1140,13 +1111,6 @@ export default function HistoryView() {
               {activeTab === 'files' && (
                 <div className="history-tab-content">
                   {renderFiles(selectedMeeting.files ?? [], selectedMeeting.id)}
-                </div>
-              )}
-
-              {/* ── 参会情况 Tab ── */}
-              {activeTab === 'attendance' && (
-                <div className="history-tab-content">
-                  {renderAttendance(selectedMeeting.attendanceJson)}
                 </div>
               )}
 
@@ -1516,11 +1480,11 @@ export default function HistoryView() {
                             src={getAudioDownloadUrl(rec.id)}
                           />
                           <div className="history-audio-actions">
-                            <a
+                            <button
                               className="history-audio-btn"
-                              href={getAudioDownloadUrl(rec.id)}
-                              download={`${rec.name}.wav`}
-                            >下载</a>
+                              onClick={() => void handleAudioDownload(rec)}
+                              disabled={downloadingAudioId === rec.id}
+                            >{downloadingAudioId === rec.id ? '下载中...' : '下载'}</button>
                             <button
                               className="history-audio-btn"
                               onClick={() => { setAudioRenameId(rec.id); setAudioRenameDraft(rec.name) }}

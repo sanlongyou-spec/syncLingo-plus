@@ -42,17 +42,11 @@ public interface MeetingMapper {
     int softDelete(Long id);
 
     /** Wipe the meeting's stored 应到名单 / 实到核对 when the meeting is deleted. */
-    @Update("UPDATE meeting SET expected_participants_json = NULL, attendance_json = NULL, meeting_url = NULL WHERE id = #{id}")
+    @Update("UPDATE meeting SET expected_participants_json = NULL, meeting_url = NULL WHERE id = #{id}")
     int clearAssociatedData(Long id);
 
     @Update("UPDATE meeting SET title = #{title}, scheduled_time = #{scheduledTime}, note = #{note} WHERE id = #{id}")
     int update(Meeting meeting);
-
-    @Update("ALTER TABLE meeting ADD COLUMN attendance_json MEDIUMTEXT DEFAULT NULL")
-    void addAttendanceJsonColumnIfNotExists();
-
-    @Update("UPDATE meeting SET attendance_json = #{json} WHERE id = #{id}")
-    int updateAttendanceJson(@Param("id") Long id, @Param("json") String json);
 
     @Update("ALTER TABLE meeting ADD COLUMN expected_participants_json MEDIUMTEXT DEFAULT NULL")
     void addExpectedParticipantsColumnIfNotExists();
