@@ -595,7 +595,7 @@ public class RealtimeInterpretationFacade {
                     sessionId, speakerId, targetLang, voiceId);
             return voiceId;
         }
-        String genderVoiceId = resolveVoiceIdByGender(sessionId, speakerId);
+        String genderVoiceId = resolveVoiceIdByGender(targetLang, sessionId, speakerId);
         if (genderVoiceId != null) {
             log.info("[RealtimeInterpretationFacade] resolveVoiceId, sessionId={}, speakerId={}, targetLang={}, reason=gender, voiceId={}",
                     sessionId, speakerId, targetLang, genderVoiceId);
@@ -625,28 +625,30 @@ public class RealtimeInterpretationFacade {
         return resolved;
     }
 
-    private String resolveVoiceIdByGender(String sessionId, String speakerId) {
+    private String resolveVoiceIdByGender(String targetLang, String sessionId, String speakerId) {
         CartesiaProperties.VoiceGenderTtsProperties voiceGenderProperties = cartesiaProperties.getVoiceGender();
         if (voiceGenderProperties == null || !voiceGenderProperties.isEnabled()) {
             log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender skipped, sessionId={}, speakerId={}, reason=disabled",
                     sessionId, speakerId);
             return null;
         }
+        // 按目标语种选用对应语种的男/女音色：中文译文用中文音色，避免跨语种发音不自然。
+        String lang = cartesiaLanguage(targetLang);
         VoiceGender gender = speakerVoiceGenderService.resolveGender(sessionId, speakerId);
-        log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender, sessionId={}, speakerId={}, gender={}, fallback={}",
-                sessionId, speakerId, gender, voiceGenderProperties.getUnknownFallback());
+        log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender, sessionId={}, speakerId={}, targetLang={}, lang={}, gender={}, fallback={}",
+                sessionId, speakerId, targetLang, lang, gender, voiceGenderProperties.getUnknownFallback());
         if (gender == VoiceGender.MALE) {
-            return normalizedGenderVoiceId(voiceGenderProperties.getMaleVoiceId(), "male", sessionId, speakerId);
+            return normalizedGenderVoiceId(voiceGenderProperties.maleVoiceIdForLanguage(lang), "male", sessionId, speakerId);
         }
         if (gender == VoiceGender.FEMALE) {
-            return normalizedGenderVoiceId(voiceGenderProperties.getFemaleVoiceId(), "female", sessionId, speakerId);
+            return normalizedGenderVoiceId(voiceGenderProperties.femaleVoiceIdForLanguage(lang), "female", sessionId, speakerId);
         }
         String fallback = voiceGenderProperties.getUnknownFallback();
         if ("male".equalsIgnoreCase(fallback)) {
-            return normalizedGenderVoiceId(voiceGenderProperties.getMaleVoiceId(), "unknown-male-fallback", sessionId, speakerId);
+            return normalizedGenderVoiceId(voiceGenderProperties.maleVoiceIdForLanguage(lang), "unknown-male-fallback", sessionId, speakerId);
         }
         if ("female".equalsIgnoreCase(fallback)) {
-            return normalizedGenderVoiceId(voiceGenderProperties.getFemaleVoiceId(), "unknown-female-fallback", sessionId, speakerId);
+            return normalizedGenderVoiceId(voiceGenderProperties.femaleVoiceIdForLanguage(lang), "unknown-female-fallback", sessionId, speakerId);
         }
         log.info("[RealtimeInterpretationFacade] resolveVoiceIdByGender no match, sessionId={}, speakerId={}, gender={}, fallback={}",
                 sessionId, speakerId, gender, fallback);

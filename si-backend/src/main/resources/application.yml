@@ -204,6 +204,13 @@ cartesia:
     enabled: ${TTS_VOICE_GENDER_ENABLED:true}
     male-voice-id: ${CARTESIA_GLOBAL_MALE_VOICE_ID:}
     female-voice-id: ${CARTESIA_GLOBAL_FEMALE_VOICE_ID:}
+    # 语种专属男/女音色（留空则回退到上面的全局音色）。中文务必配中文母语音色。
+    zh-male-voice-id: ${CARTESIA_ZH_MALE_VOICE_ID:}
+    zh-female-voice-id: ${CARTESIA_ZH_FEMALE_VOICE_ID:}
+    en-male-voice-id: ${CARTESIA_EN_MALE_VOICE_ID:}
+    en-female-voice-id: ${CARTESIA_EN_FEMALE_VOICE_ID:}
+    id-male-voice-id: ${CARTESIA_ID_MALE_VOICE_ID:}
+    id-female-voice-id: ${CARTESIA_ID_FEMALE_VOICE_ID:}
     unknown-fallback: ${TTS_UNKNOWN_GENDER_FALLBACK:target-default}
   tts:
     model: sonic
