@@ -115,6 +115,9 @@ function BarChart({ days }: { days: { label: string; asr: number; trans: number;
   const barW = Math.max(4, Math.min(28, (chartW / days.length) * 0.72))
   const gap  = chartW / days.length
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ v: maxVal * f, y: padT + chartH * (1 - f) }))
+  // 每个 "MM-DD" 标签约 40px 宽，按图表宽度限制可显示的标签数量，避免日期挤在一起。
+  const labelMaxCount = Math.max(1, Math.floor(chartW / 40))
+  const labelStep = Math.max(1, Math.ceil(days.length / labelMaxCount))
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="ca-bar-svg">
@@ -147,8 +150,8 @@ function BarChart({ days }: { days: { label: string; asr: number; trans: number;
                   fill={seg.color} opacity={0.85} rx={si === segments.length - 1 || segments.slice(si + 1).every(s => s.v === 0) ? 2 : 0} />
               ) : null
             })}
-            {/* X 轴标签 */}
-            {(days.length <= 31 || i % Math.ceil(days.length / 20) === 0) && (
+            {/* X 轴标签：按步长抽稀，并始终保留最后一天，避免日期重叠 */}
+            {(i % labelStep === 0 || i === days.length - 1) && (
               <text x={x + barW / 2} y={H - 6} textAnchor="middle" className="ca-axis-label">
                 {d.label.slice(5)}
               </text>
@@ -285,8 +288,8 @@ export default function CostAnalysisView() {
   }
 
   return (
-    <div className="si-root">
-      <header className="si-topbar">
+    <div className="si-root ca-root">
+      <header className="si-topbar ca-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">成本分析</h1>
         </div>

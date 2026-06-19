@@ -75,7 +75,7 @@ chmod 600 /opt/syncLingo/backend.env /opt/syncLingo/bot/CallingBotSample/appsett
 ```bash
 VOICE_GENDER_SERVICE_ENABLED=true
 VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
-VOICE_GENDER_TIMEOUT_MS=3000
+VOICE_GENDER_TIMEOUT_MS=5000
 TTS_VOICE_GENDER_ENABLED=true
 CARTESIA_GLOBAL_MALE_VOICE_ID=<real-cartesia-male-voice-id>
 CARTESIA_GLOBAL_FEMALE_VOICE_ID=<real-cartesia-female-voice-id>
@@ -340,6 +340,24 @@ gender voiceId selected, reason=female ... voiceId=<real-cartesia-female-voice-i
 
 If `gender voiceId blank` appears, the backend is detecting gender but the
 global male/female voice IDs are missing or still placeholders in `backend.env`.
+
+If live testing shows `resolveGender ... gender=UNKNOWN` followed by
+`schedule skipped ... reason=maxRetries`, collect the raw detection result before
+changing thresholds:
+
+```bash
+docker logs --since "10 minutes ago" si-backend 2>&1 \
+  | grep -E 'VoiceGenderIntegration|detect end|accepted=|timeout|gender voiceId selected|resolveVoiceIdByGender|schedule skipped' \
+  | tail -n 260
+```
+
+Use the result to distinguish timeout from confidence rejection:
+
+- `timeout ... budgetMs=5000`: the local model response is still too slow.
+- `detect end ... rawGender=FEMALE ... accepted=UNKNOWN`: the model returned a
+  female score, but the configured confidence/margin thresholds rejected it.
+- `gender voiceId selected, reason=female`: the backend selected the global
+  female Cartesia voice ID and TTS should use the female voice.
 
 Backups:
 

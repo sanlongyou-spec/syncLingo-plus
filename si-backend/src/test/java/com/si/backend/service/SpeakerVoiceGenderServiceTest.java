@@ -25,7 +25,7 @@ class SpeakerVoiceGenderServiceTest {
         VoiceGenderIntegration integration = mock(VoiceGenderIntegration.class);
         when(integration.detect(any(), eq("speaker-a")))
                 .thenReturn(new VoiceGenderDetectionResult(
-                        VoiceGender.MALE, 0.91D, 0.91D, 0.06D, 0.03D, 120L, true));
+                        VoiceGender.MALE, 0.91D, 0.91D, 0.06D, 0.03D, 120L, true, "accepted"));
         SpeakerVoiceGenderService service = service(properties, integration);
         try {
             service.observeSpeaker("session-1", "speaker-a");
@@ -61,7 +61,7 @@ class SpeakerVoiceGenderServiceTest {
         VoiceGenderIntegration integration = mock(VoiceGenderIntegration.class);
         when(integration.detect(any(), eq("speaker-a")))
                 .thenReturn(new VoiceGenderDetectionResult(
-                        VoiceGender.MALE, 0.56D, 0.56D, 0.44D, 0D, 120L, true));
+                        VoiceGender.MALE, 0.56D, 0.56D, 0.44D, 0D, 120L, true, "low_confidence"));
         SpeakerVoiceGenderService service = service(properties, integration);
         try {
             service.observeSpeaker("session-3", "speaker-a");

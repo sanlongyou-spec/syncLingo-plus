@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
+  <!-- 业务日志级别可用环境变量覆盖：排查问题时把 SI_LOG_LEVEL 设为 DEBUG
+       获取最细粒度日志，排查完成后改回 INFO（或删除该变量）。 -->
+  <property name="SI_LOG_LEVEL" value="${SI_LOG_LEVEL:-INFO}"/>
+
   <!-- 所有日志写到 System.err，Docker 容器里 stderr 是行缓冲，立即可见 -->
   <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
     <target>System.err</target>
@@ -28,7 +32,7 @@
     <appender-ref ref="FILE"/>
   </root>
 
-  <logger name="com.si.backend" level="INFO" additivity="false">
+  <logger name="com.si.backend" level="${SI_LOG_LEVEL}" additivity="false">
     <appender-ref ref="STDERR"/>
     <appender-ref ref="FILE"/>
   </logger>
@@ -38,9 +42,9 @@
     <appender-ref ref="FILE"/>
   </logger>
 
-  <!-- integration 默认 INFO；Cartesia chunk/flush 等高频 DEBUG 已关闭 -->
-  <!-- 排查特定问题时可临时把某个类改回 DEBUG，例如 AzureAsrIntegration -->
-  <logger name="com.si.backend.integration" level="INFO" additivity="false">
+  <!-- integration 跟随 SI_LOG_LEVEL；设为 DEBUG 时可看到语音性别请求体、
+       Cartesia chunk/flush 等最细粒度日志。 -->
+  <logger name="com.si.backend.integration" level="${SI_LOG_LEVEL}" additivity="false">
     <appender-ref ref="STDERR"/>
     <appender-ref ref="FILE"/>
   </logger>

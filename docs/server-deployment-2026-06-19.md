@@ -289,6 +289,58 @@ detect end ... accepted=FEMALE
 gender voiceId selected, reason=female ... voiceId=<global-female-voice-id>
 ```
 
+### Voice Gender Live-Test Follow-Up
+
+The first downloaded long-test archive named
+`longtest-20260619_113918 (1).tar.gz` was identical to the earlier pre-fix
+archive. Its SHA256 matched the original file and its backend logs still showed
+`timeoutMs=1500`, so it was not valid evidence for the post-fix deployment.
+
+After deploying the backend timeout change, a live test still showed the speaker
+gender cache resolving to `UNKNOWN` and then stopping retries:
+
+```text
+[SpeakerVoiceGenderService] resolveGender, sessionId=..., speakerId=Guest-2, gender=UNKNOWN
+[SpeakerVoiceGenderService] schedule skipped, sessionId=..., speakerId=Guest-2, reason=maxRetries, attempts=3, durationMs=8000
+```
+
+To leave more room for local `audeering/wav2vec2-large-robust-6-ft-age-gender`
+inference, production `/opt/syncLingo/backend.env` was updated from
+`VOICE_GENDER_TIMEOUT_MS=3000` to:
+
+```bash
+VOICE_GENDER_TIMEOUT_MS=5000
+```
+
+The backend container was restarted and the current startup verification is:
+
+```text
+{"code":200,"message":"success","data":{"service":"si-backend","status":"UP"}}
+[VoiceGenderIntegration] enabled=true, url=http://127.0.0.1:7000/voice-gender, timeoutMs=5000
+[SpeakerVoiceGenderService] enabled=true, minAudioSeconds=6, maxAudioSeconds=8, queueCapacity=32
+Started SiBackendApplication
+```
+
+Current status: the `5000ms` runtime setting is confirmed active, but female
+voice acceptance is still pending a fresh interpretation session test. The next
+required evidence is the raw `detect end` line after a female speaker talks for
+at least 6 seconds under the same `speakerId`:
+
+```bash
+docker logs --since "10 minutes ago" si-backend 2>&1 \
+  | grep -E 'VoiceGenderIntegration|detect end|accepted=|timeout|gender voiceId selected|resolveVoiceIdByGender|schedule skipped' \
+  | tail -n 260
+```
+
+Interpretation:
+
+- `timeout ... budgetMs=5000`: model inference is still exceeding the backend
+  budget.
+- `detect end ... rawGender=FEMALE ... accepted=UNKNOWN`: confidence or margin
+  thresholds are rejecting the model result.
+- `gender voiceId selected, reason=female`: global female TTS voice selection is
+  working.
+
 ## Verification Evidence
 
 Code version:

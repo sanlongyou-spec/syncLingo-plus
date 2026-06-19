@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import {
   getAsrHotwords,
   getInterpretationStatus,
@@ -14,8 +15,10 @@ import {
 } from '../api'
 import { AUDIO_DEFAULTS } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
+import FontSizeControl from '../components/FontSizeControl'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
+import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
 import { LANGUAGE_OPTIONS } from '../types'
 import type { Meeting, UserVoice, WsMessage } from '../types'
@@ -111,6 +114,7 @@ export default function InterpretationView() {
     isPaused: isTranscriptAutoScrollPaused,
     scrollToBottom: scrollTranscriptToBottom,
   } = useSmartAutoScroll<HTMLDivElement>([transcripts, currentSource])
+  const { scale: transcriptFontScale, setScale: setTranscriptFontScale } = useTranscriptFontScale()
 
   const speakerNameMapRef = useRef<Record<string, string>>({})
 
@@ -554,13 +558,18 @@ export default function InterpretationView() {
 
       <main className="si-main">
         <div className="si-workspace si-workspace--running">
-          <div className="si-trilingual">
+          <div
+            className="si-trilingual"
+            style={{ '--si-tri-font-scale': transcriptFontScale } as CSSProperties}
+          >
             <div className="si-tri-host-layout">
               <div className="si-tri-toolbar">
                 <span className={`si-live-indicator ${isRunning ? 'is-running' : ''}`} />
                 {voiceCodeForDisplay(currentSpeakerId) ? (
                   <span className="si-current-voice-code">{voiceCodeForDisplay(currentSpeakerId)}</span>
                 ) : null}
+                <div className="si-tri-toolbar-spacer" />
+                <FontSizeControl scale={transcriptFontScale} onChange={setTranscriptFontScale} />
               </div>
 
               {error && (

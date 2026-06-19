@@ -439,17 +439,6 @@ export default function MeetingsView() {
               {creating ? '新建中...' : '新建会议'}
             </button>
           </div>
-        </section>
-
-        <section className="meetings-section">
-          <div className="meetings-section-header">
-            <h2>会议通知</h2>
-            {selectedMeeting && (
-              <span className="meetings-muted">
-                {meetingHasExpected ? '已保存应到名单' : selectedMeeting.title}
-              </span>
-            )}
-          </div>
 
           <div className="meetings-notice-grid">
             <label className="meetings-link-field">
@@ -466,43 +455,60 @@ export default function MeetingsView() {
               />
             </label>
 
-            <div
-              className={`meetings-upload meetings-notice-upload${noticeUploading ? ' is-uploading' : ''}`}
-              onClick={() => !noticeUploading && noticeInputRef.current?.click()}
-              onDragOver={event => event.preventDefault()}
-              onDrop={event => {
-                event.preventDefault()
-                const file = event.dataTransfer.files[0]
-                if (file) void handleNoticeUpload(file)
-              }}
-            >
-              <input
-                ref={noticeInputRef}
-                type="file"
-                accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                hidden
-                onChange={event => {
-                  const file = event.target.files?.[0]
-                  event.target.value = ''
+            <div className="meetings-notice-field">
+              <span>会议通知</span>
+              <div
+                className={`meetings-upload meetings-notice-upload${noticeUploading ? ' is-uploading' : ''}`}
+                onClick={() => !noticeUploading && noticeInputRef.current?.click()}
+                onDragOver={event => event.preventDefault()}
+                onDrop={event => {
+                  event.preventDefault()
+                  const file = event.dataTransfer.files[0]
                   if (file) void handleNoticeUpload(file)
                 }}
-              />
-              <div className="meetings-upload-icon">DOC</div>
-              <div>
-                <strong>{noticeUploading ? '上传中...' : '上传会议通知'}</strong>
-                <span>PDF、Word（.doc/.docx）</span>
+              >
+                <input
+                  ref={noticeInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  hidden
+                  onChange={event => {
+                    const file = event.target.files?.[0]
+                    event.target.value = ''
+                    if (file) void handleNoticeUpload(file)
+                  }}
+                />
+                <div className="meetings-upload-icon">DOC</div>
+                <div className="meetings-upload-text">
+                  <strong>
+                    {noticeUploading
+                      ? '上传中...'
+                      : noticePreviewing
+                        ? '解析中...'
+                        : '上传会议通知'}
+                  </strong>
+                  <span>PDF、Word（.doc/.docx），上传后自动生成通知</span>
+                </div>
               </div>
             </div>
-
-            <button
-              className="meetings-primary-btn meetings-notice-refresh-btn"
-              type="button"
-              onClick={() => void runNotificationPreview()}
-              disabled={!selectedMeetingId || !meetingUrl.trim() || noticePreviewing}
-            >
-              {noticePreviewing ? '生成中...' : '生成通知内容'}
-            </button>
           </div>
+        </section>
+
+        <section className="meetings-section">
+          <div className="meetings-section-header">
+            <h2>会议通知</h2>
+            {selectedMeeting && (
+              <span className="meetings-muted">
+                {meetingHasExpected ? '已保存应到名单' : selectedMeeting.title}
+              </span>
+            )}
+          </div>
+
+          {!notificationPreview && (
+            <div className="meetings-empty">
+              填写会议链接并上传会议通知后，将自动生成通知名单与内容
+            </div>
+          )}
 
           {notificationPreview && (
             <div className="meetings-notification-preview">

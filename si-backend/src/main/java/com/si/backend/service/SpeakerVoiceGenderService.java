@@ -157,10 +157,12 @@ public class SpeakerVoiceGenderService {
             VoiceGenderDetectionResult result = voiceGenderIntegration.detect(sample.pcmData(), sample.speakerId());
             VoiceGender acceptedGender = result.acceptedGender(
                     properties.getMinConfidence(), properties.getMinMargin());
+            String acceptanceReason = result.acceptanceReason(
+                    properties.getMinConfidence(), properties.getMinMargin());
             genderCache.put(key, acceptedGender);
-            log.info("[SpeakerVoiceGenderService] detect end, sessionId={}, speakerId={}, accepted={}, rawGender={}, confidence={}, minConfidence={}, minMargin={}, male={}, female={}, child={}, modelAvailable={}",
-                    sample.sessionId(), sample.speakerId(), acceptedGender, result.gender(),
-                    result.confidence(), properties.getMinConfidence(), properties.getMinMargin(),
+            log.info("[SpeakerVoiceGenderService] detect end, sessionId={}, speakerId={}, accepted={}, reason={}, serviceReason={}, rawGender={}, confidence={}, minConfidence={}, minMargin={}, male={}, female={}, child={}, modelAvailable={}",
+                    sample.sessionId(), sample.speakerId(), acceptedGender, acceptanceReason, result.serviceReason(),
+                    result.gender(), result.confidence(), properties.getMinConfidence(), properties.getMinMargin(),
                     result.maleScore(), result.femaleScore(), result.childScore(), result.modelAvailable());
         } catch (Exception e) {
             genderCache.put(key, VoiceGender.UNKNOWN);

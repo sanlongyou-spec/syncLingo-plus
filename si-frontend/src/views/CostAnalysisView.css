@@ -1,10 +1,30 @@
 /* ─────────────────────────────────────────────────
    Main layout
+
+   The cost page is hosted inside `.route-overlay`, which is the scroll
+   owner (overflow-y: auto). The shared `.si-root` normally locks itself to
+   `height: 100vh; overflow: hidden`, which clips the page and prevents the
+   overlay from scrolling. Scope an override to `.ca-root` so the page grows
+   with its content and the overlay scrolls — without affecting the other
+   overlay views (History / Terminology) that also use `.si-root`.
 ───────────────────────────────────────────────── */
+.ca-root {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+/* Keep the page header visible while the overlay scrolls. */
+.ca-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #f6f8fb;
+}
+
 .ca-main {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
   padding: 1rem 1.25rem 2rem;
   display: flex;
   flex-direction: column;

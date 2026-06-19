@@ -285,6 +285,11 @@ body {
   background: #fafafa;
 }
 
+.si-tri-toolbar-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
 .si-live-indicator {
   width: 0.65rem;
   height: 0.65rem;
@@ -488,7 +493,7 @@ body {
 
 .si-tri-partial-live-text {
   color: #1e293b;
-  font-size: 1.2rem;
+  font-size: calc(1.2rem * var(--si-tri-font-scale, 1));
   line-height: 1.6;
   word-break: break-word;
 }
@@ -505,7 +510,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
-  font-size: 1.05rem;
+  font-size: calc(1.05rem * var(--si-tri-font-scale, 1));
   line-height: 1.6;
   color: #1e293b;
   word-break: break-word;
@@ -570,7 +575,7 @@ body {
 
 .si-tri-seg-pending {
   color: #aaa;
-  font-size: 0.95rem;
+  font-size: calc(0.95rem * var(--si-tri-font-scale, 1));
   font-style: italic;
 }
 
@@ -585,7 +590,7 @@ body {
 
 .si-tri-share-line {
   color: #1d2939;
-  font-size: 15px;
+  font-size: calc(15px * var(--si-tri-font-scale, 1));
   line-height: 1.65;
   word-break: break-word;
 }

@@ -81,11 +81,12 @@ public class VoiceGenderIntegration {
                 double childScore = node.path("child_score").asDouble(0D);
                 boolean modelAvailable = node.path("model_available").asBoolean(false);
                 long serviceLatencyMs = Math.round(node.path("latency_ms").asDouble(costMs));
-                log.info("[VoiceGenderIntegration] detected speakerId={}, audioBytes={}, gender={}, confidence={}, male={}, female={}, child={}, costMs={}, serviceMs={}, modelAvailable={}, responseLen={}",
-                        speakerId, pcmData.length, gender, confidence, maleScore, femaleScore, childScore,
+                String serviceReason = node.path("reason").asText("unknown");
+                log.info("[VoiceGenderIntegration] detected speakerId={}, audioBytes={}, gender={}, serviceReason={}, confidence={}, male={}, female={}, child={}, costMs={}, serviceMs={}, modelAvailable={}, responseLen={}",
+                        speakerId, pcmData.length, gender, serviceReason, confidence, maleScore, femaleScore, childScore,
                         costMs, serviceLatencyMs, modelAvailable, responseBody.length());
                 return new VoiceGenderDetectionResult(
-                        gender, confidence, maleScore, femaleScore, childScore, serviceLatencyMs, modelAvailable);
+                        gender, confidence, maleScore, femaleScore, childScore, serviceLatencyMs, modelAvailable, serviceReason);
             }
         } catch (java.io.InterruptedIOException e) {
             long costMs = System.currentTimeMillis() - startMs;

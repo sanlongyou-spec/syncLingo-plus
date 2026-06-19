@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import type { CSSProperties } from 'react'
 import { useParams } from 'react-router-dom'
 import { getPublicInterpretationResults, getPublicSessionInfo, mintShareWsTicket, reportPublicLatency, resolveShareToken } from '../api'
 import { WS_DEFAULTS } from '../api/constants'
+import FontSizeControl from '../components/FontSizeControl'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
+import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import type { InterpretationResultItem, WsMessage } from '../types'
 import './InterpretationView.css'
 
@@ -97,6 +100,7 @@ export default function UserShareView() {
     isPaused: isTranscriptAutoScrollPaused,
     scrollToBottom: scrollTranscriptToBottom,
   } = useSmartAutoScroll<HTMLDivElement>([items, currentRecognizing])
+  const { scale: transcriptFontScale, setScale: setTranscriptFontScale } = useTranscriptFontScale()
   const wsRef = useRef<WebSocket | null>(null)
   const liveIdRef = useRef(-1)
   const activeSessionIdRef = useRef<string | null>(null)
@@ -565,7 +569,10 @@ export default function UserShareView() {
       </header>
 
       <main className="si-main">
-        <div className="si-trilingual">
+        <div
+          className="si-trilingual"
+          style={{ '--si-tri-font-scale': transcriptFontScale } as CSSProperties}
+        >
           <div className="si-tri-host-layout">
             <div className="si-tri-toolbar">
               <span className={`si-live-indicator ${isWaiting ? '' : 'is-running'}`} />
@@ -593,6 +600,8 @@ export default function UserShareView() {
                   )}
                 </div>
               )}
+              <div className="si-tri-toolbar-spacer" />
+              <FontSizeControl scale={transcriptFontScale} onChange={setTranscriptFontScale} />
             </div>
 
             <div className="si-tri-transcript-dock">

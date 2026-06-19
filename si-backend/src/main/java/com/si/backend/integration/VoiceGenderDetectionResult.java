@@ -9,27 +9,41 @@ public record VoiceGenderDetectionResult(
         double femaleScore,
         double childScore,
         long latencyMs,
-        boolean modelAvailable
+        boolean modelAvailable,
+        String serviceReason
 ) {
+
+    /** Reason marker returned by acceptedGender/acceptanceReason when the result passes all gates. */
+    public static final String REASON_ACCEPTED = "accepted";
 
     public static VoiceGenderDetectionResult unavailable(long latencyMs) {
         return new VoiceGenderDetectionResult(
-                VoiceGender.UNKNOWN, 0D, 0D, 0D, 0D, latencyMs, false);
+                VoiceGender.UNKNOWN, 0D, 0D, 0D, 0D, latencyMs, false, "service_unavailable");
     }
 
     public VoiceGender acceptedGender(double minConfidence, double minMargin) {
+        return REASON_ACCEPTED.equals(acceptanceReason(minConfidence, minMargin))
+                ? gender
+                : VoiceGender.UNKNOWN;
+    }
+
+    /**
+     * Explains why {@link #acceptedGender} kept or rejected the detected gender, so logs can
+     * show exactly which backend gate dropped a male/female result to UNKNOWN.
+     */
+    public String acceptanceReason(double minConfidence, double minMargin) {
         if (!modelAvailable) {
-            return VoiceGender.UNKNOWN;
+            return "modelUnavailable";
         }
         if (gender != VoiceGender.MALE && gender != VoiceGender.FEMALE) {
-            return VoiceGender.UNKNOWN;
+            return "serviceGenderUnknown";
         }
         if (confidence < minConfidence) {
-            return VoiceGender.UNKNOWN;
+            return "belowMinConfidence";
         }
         if (Math.abs(maleScore - femaleScore) < minMargin) {
-            return VoiceGender.UNKNOWN;
+            return "belowMinMargin";
         }
-        return gender;
+        return REASON_ACCEPTED;
     }
 }

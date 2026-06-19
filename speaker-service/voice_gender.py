@@ -87,9 +87,12 @@ class VoiceGenderDetector:
         signal = self._pcm16le_to_float32(pcm_data)
         duration_seconds = len(signal) / float(sample_rate) if sample_rate else 0.0
         if duration_seconds < self.min_seconds:
-            result = self._unknown(started, model_available=True)
-            result["reason"] = "too_short"
-            return result
+            log.info(
+                "[voice-gender] decision reason=too_short durationSeconds=%.3f minSeconds=%.3f",
+                duration_seconds,
+                self.min_seconds,
+            )
+            return self._unknown(started, model_available=True, reason="too_short")
         max_samples = int(sample_rate * self.max_seconds)
         if max_samples > 0 and len(signal) > max_samples:
             signal = signal[-max_samples:]
@@ -98,8 +101,20 @@ class VoiceGenderDetector:
             with self._lock:
                 outputs = self._infer(signal, sample_rate)
             scores = self._extract_scores(outputs)
-            gender, confidence, male_score, female_score, child_score = self._decide(scores)
+            gender, confidence, male_score, female_score, child_score, reason = self._decide(scores)
             latency_ms = round((time.time() - started) * 1000, 2)
+            log.info(
+                "[voice-gender] decision gender=%s reason=%s confidence=%.4f male=%.4f female=%.4f child=%.4f minConfidence=%.4f minMargin=%.4f durationSeconds=%.3f",
+                gender,
+                reason,
+                confidence,
+                male_score,
+                female_score,
+                child_score,
+                self.confidence,
+                self.margin,
+                duration_seconds,
+            )
             return {
                 "gender": gender,
                 "confidence": confidence,
@@ -108,10 +123,11 @@ class VoiceGenderDetector:
                 "child_score": child_score,
                 "latency_ms": latency_ms,
                 "model_available": True,
+                "reason": reason,
             }
         except Exception as exc:
             log.warning("[voice-gender] inference failed: %s", exc)
-            return self._unknown(started, model_available=False)
+            return self._unknown(started, model_available=False, reason="inference_failed")
 
     def _infer(self, signal: np.ndarray, sample_rate: int) -> Any:
         if self._model is not None:
@@ -151,19 +167,29 @@ class VoiceGenderDetector:
             labels = ["child", "female", "male"] if array.size == 3 else ["female", "male"]
         return {labels[index]: float(array[index]) for index in range(min(len(labels), array.size))}
 
-    def _decide(self, scores: dict[str, float]) -> tuple[str, float, float, float, float]:
+    def _decide(self, scores: dict[str, float]) -> tuple[str, float, float, float, float, str]:
         male_score = float(scores.get("male", 0.0))
         female_score = float(scores.get("female", 0.0))
         child_score = float(scores.get("child", 0.0))
+        if not scores:
+            return "unknown", 0.0, 0.0, 0.0, 0.0, "no_scores"
         if male_score >= female_score:
             gender = "male"
             confidence = male_score
         else:
             gender = "female"
             confidence = female_score
-        if confidence < self.confidence or abs(male_score - female_score) < self.margin or child_score > confidence:
+        reason = "accepted"
+        if confidence < self.confidence:
             gender = "unknown"
-        return gender, round(confidence, 4), round(male_score, 4), round(female_score, 4), round(child_score, 4)
+            reason = "low_confidence"
+        elif abs(male_score - female_score) < self.margin:
+            gender = "unknown"
+            reason = "low_margin"
+        elif child_score > confidence:
+            gender = "unknown"
+            reason = "child_dominant"
+        return gender, round(confidence, 4), round(male_score, 4), round(female_score, 4), round(child_score, 4), reason
 
     @staticmethod
     def _pcm16le_to_float32(pcm_data: bytes) -> np.ndarray:
@@ -180,7 +206,7 @@ class VoiceGenderDetector:
         return exp / np.sum(exp)
 
     @staticmethod
-    def _unknown(started: float, model_available: bool) -> dict[str, Any]:
+    def _unknown(started: float, model_available: bool, reason: str = "unavailable") -> dict[str, Any]:
         return {
             "gender": "unknown",
             "confidence": 0.0,
@@ -189,4 +215,5 @@ class VoiceGenderDetector:
             "child_score": 0.0,
             "latency_ms": round((time.time() - started) * 1000, 2),
             "model_available": model_available,
+            "reason": reason,
         }
