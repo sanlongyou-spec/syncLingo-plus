@@ -46,11 +46,15 @@ public class SegmentationServiceIntegration {
                 + "/segment-boundary";
         this.timeoutMs = Integer.parseInt(
                 env.getProperty("segmentation.service.timeout-ms", "100"));
+        // 分句调用频繁，复用 keep-alive 连接易命中被 speaker(uvicorn 默认 5s keep-alive)
+        // 关闭的陈旧连接而报 "unexpected end of stream"，导致分句失败、文本被切成碎片、
+        // TTS 变成断续小片段。把空闲连接保活压到 1s 并开启失败自动重试以消除该问题。
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(1, TimeUnit.SECONDS)
                 .readTimeout(timeoutMs + 10L, TimeUnit.MILLISECONDS)
                 .writeTimeout(200, TimeUnit.MILLISECONDS)
-                .retryOnConnectionFailure(false)
+                .connectionPool(new okhttp3.ConnectionPool(4, 1, TimeUnit.SECONDS))
+                .retryOnConnectionFailure(true)
                 .build();
         log.info("[SegmentationService] enabled={}, url={}, timeoutMs={}", enabled, url, timeoutMs);
     }
