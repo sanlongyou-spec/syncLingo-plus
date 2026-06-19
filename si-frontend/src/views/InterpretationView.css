@@ -1065,6 +1065,32 @@ body {
   font-weight: 600;
 }
 
+.si-share-invalid {
+  max-width: 420px;
+  margin: 12vh auto 0;
+  padding: 0 24px;
+  text-align: center;
+}
+
+.si-share-invalid-icon {
+  font-size: 44px;
+  margin-bottom: 12px;
+}
+
+.si-share-invalid-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1d2939;
+  margin: 0 0 8px;
+}
+
+.si-share-invalid-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #667085;
+  margin: 0;
+}
+
 .si-share-audio-btn {
   padding: 5px 14px;
   border: 1px solid #d0d0e0;

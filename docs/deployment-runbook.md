@@ -121,14 +121,18 @@ ls -lh si-backend/target/si-backend-1.0.0.jar
 cd /opt/syncLingo/si-backend
 docker build -t si-backend:latest .
 docker rm -f si-backend 2>/dev/null || true
+mkdir -p /opt/syncLingo/audio-records
 docker run -d --name si-backend --restart=always --network host \
   --env-file /opt/syncLingo/backend.env \
-  -e JAVA_OPTS="-Xms512m -Xmx3g" \
+  -e JAVA_OPTS="-Xms512m -Xmx2g" \
+  -v /opt/syncLingo/audio-records:/app/audio-records \
   si-backend:latest
 
 curl -sf http://127.0.0.1:8080/api/health
 docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|VoiceGenderIntegration|SpeakerVoiceGenderService|ERROR|Exception'
 ```
+
+> **必须固定带上 `-v /opt/syncLingo/audio-records:/app/audio-records`**：录音写在容器内 `/app/audio-records`，不挂卷则每次 `docker rm`/重建都会丢失，合并会议录音时会出现 `source recording skipped`。`-Xmx2g`（而非 3g）给 8G 机器留内存余量，避免 OOM。
 
 ## 6. Speaker Service
 
@@ -259,9 +263,11 @@ ls -lh si-backend/target/si-backend-1.0.0.jar
 cd /opt/syncLingo/si-backend
 docker build -t si-backend:$NEW_TAG -t si-backend:latest .
 docker rm -f si-backend
+mkdir -p /opt/syncLingo/audio-records
 docker run -d --name si-backend --restart=always --network host \
   --env-file /opt/syncLingo/backend.env \
-  -e JAVA_OPTS="-Xms512m -Xmx3g" \
+  -e JAVA_OPTS="-Xms512m -Xmx2g" \
+  -v /opt/syncLingo/audio-records:/app/audio-records \
   si-backend:latest
 
 cd /opt/syncLingo/speaker-service
@@ -305,6 +311,19 @@ location /bot-api/ { proxy_pass http://127.0.0.1:8080; }
 
 Do not proxy browser `/bot-api/**` directly to `127.0.0.1:3978`; the Java
 backend must enforce authorization and sign the downstream Bot request.
+
+**所有反代到 8080 的 location（`/api/`、`/ws/`、`/bot-api/`）必须转发 `X-Forwarded-Proto`**，否则后端 `request.getScheme()` 取到内网 `http`，HTTPS 下刷新 token 的 origin 校验会误判为 403（`refresh origin rejected, expected=http://...`）。仓库模板 `deploy/linux/nginx/synclingo.conf` 已含该头；**以模板为准，手改 `si.conf` 时不要漏掉**：
+
+```text
+location /api/ {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+后端需配合 `server.forward-headers-strategy=framework`（已在 `application.yml`）。
 
 Do not keep backup files under `/etc/nginx/sites-enabled`; nginx loads them as
 active server blocks.

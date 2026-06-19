@@ -101,6 +101,7 @@ export default function UserShareView() {
   const [currentLanguage, setCurrentLanguage] = useState('')
   const [isWaiting, setIsWaiting] = useState(true)
   const [roomFull, setRoomFull] = useState(false)
+  const [tokenInvalid, setTokenInvalid] = useState(false)
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -491,8 +492,10 @@ export default function UserShareView() {
     if (!token) return
     let pollStopped = false
     let resultTimer: ReturnType<typeof setInterval> | null = null
+    let pollTimer: ReturnType<typeof setInterval> | null = null
 
     const poll = async () => {
+      if (pollStopped) return
       try {
         const res = await resolveShareToken(token)
         if (pollStopped) return
@@ -556,15 +559,28 @@ export default function UserShareView() {
             resultTimer = window.setInterval(load, 3000)
           }
         }
-      } catch { /* ignore poll error */ }
+      } catch (err) {
+        if (pollStopped) return
+        const status = (err as { response?: { status?: number } })?.response?.status
+        if (status === 401) {
+          // 令牌无效/已过期/已撤销：明确提示链接失效并停止轮询，不再显示分享空壳
+          pollStopped = true
+          if (pollTimer) window.clearInterval(pollTimer)
+          if (resultTimer) window.clearInterval(resultTimer)
+          disconnectWs()
+          stopAudio()
+          setTokenInvalid(true)
+        }
+        // 其它错误（网络抖动等）忽略，下个周期重试
+      }
     }
 
     void poll()
-    const pollTimer = window.setInterval(poll, 5000)
+    pollTimer = window.setInterval(poll, 5000)
 
     return () => {
       pollStopped = true
-      window.clearInterval(pollTimer)
+      if (pollTimer) window.clearInterval(pollTimer)
       if (resultTimer) window.clearInterval(resultTimer)
       disconnectWs()
       stopAudio()
@@ -572,6 +588,26 @@ export default function UserShareView() {
   }, [token, connectWs, disconnectWs, clearSessionState, stopAudio])
 
   const notice = noticeLang ? MUTE_NOTICE[noticeLang] : null
+
+  if (tokenInvalid) {
+    return (
+      <div className="si-root">
+        <header className="si-topbar">
+          <div className="si-topbar-left">
+            <h1 className="si-brand">聚龙同传</h1>
+            <span className="si-brand-sub">实时文本分享</span>
+          </div>
+        </header>
+        <main className="si-main">
+          <div className="si-share-invalid">
+            <div className="si-share-invalid-icon">🔗</div>
+            <p className="si-share-invalid-title">分享链接已失效</p>
+            <p className="si-share-invalid-text">该链接已过期或被停用（链接自生成起 6 小时内有效）。请向会议组织者索取新的分享链接。</p>
+          </div>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="si-root">

@@ -58,7 +58,9 @@ client.interceptors.response.use(
     const config = error?.config as RetriableRequestConfig | undefined
     const url = String(config?.url || '')
 
-    if (status !== 401 || !config || config._refreshRetried || url.includes('/api/auth/refresh')) {
+    // 公开/匿名接口（分享页等）不做登录刷新重试，401 直接抛出，由调用方判定"链接失效"。
+    if (status !== 401 || !config || config._refreshRetried
+        || url.includes('/api/auth/refresh') || url.includes('/public/')) {
       throw error
     }
 
