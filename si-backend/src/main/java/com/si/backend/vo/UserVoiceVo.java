@@ -6,6 +6,8 @@ import lombok.Data;
 @Data
 @Builder
 public class UserVoiceVo {
+    private Long id;
+    private Long userId;
     private String voiceId;
     private String voiceName;
     private Integer durationSeconds;

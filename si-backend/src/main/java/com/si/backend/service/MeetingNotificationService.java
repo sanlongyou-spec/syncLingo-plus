@@ -17,6 +17,8 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class MeetingNotificationService {
 
+    private static final int MAX_NOTIFICATION_CONTENT_CHARS = 6000;
+
     /** A matched Teams recipient: 会议安排原始名 / 系统账号名 / 邮箱. */
     public record Recipient(String scheduleName, String accountName, String email, String teamsAccount) {}
 
@@ -81,6 +83,28 @@ public class MeetingNotificationService {
         lines.add("");
         lines.add("请各位领导及同事提前安排时间准时参会，谢谢 🙏🏻");
         return String.join("\n", lines);
+    }
+
+    public String buildNotificationContentFromNotice(String noticeText) {
+        log.info("[MeetingNotificationService] buildNotificationContentFromNotice start, textLen={}",
+                noticeText == null ? 0 : noticeText.length());
+        if (noticeText == null || noticeText.isBlank()) {
+            return "";
+        }
+        String normalized = noticeText
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .replaceAll("[\\t ]+", " ")
+                .replaceAll("\\n{3,}", "\n\n")
+                .trim();
+        if (normalized.length() > MAX_NOTIFICATION_CONTENT_CHARS) {
+            normalized = normalized.substring(0, MAX_NOTIFICATION_CONTENT_CHARS).trim()
+                    + "\n\n（会议通知内容较长，已自动截取前 "
+                    + MAX_NOTIFICATION_CONTENT_CHARS + " 个字符发送。）";
+        }
+        log.info("[MeetingNotificationService] buildNotificationContentFromNotice end, contentLen={}",
+                normalized.length());
+        return normalized;
     }
 
     public List<String> resolveDeliveryRecipients(List<String> selectedRecipients) {

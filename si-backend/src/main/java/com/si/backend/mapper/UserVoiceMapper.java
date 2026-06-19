@@ -9,6 +9,25 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 public interface UserVoiceMapper {
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS user_voice (
+                id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+                user_id          BIGINT       NOT NULL,
+                voice_id         VARCHAR(128) NOT NULL,
+                voice_name       VARCHAR(128) NOT NULL,
+                duration_seconds INT          DEFAULT NULL,
+                sample_url       VARCHAR(512) DEFAULT NULL,
+                authorized       TINYINT      DEFAULT 1,
+                scope            VARCHAR(64)  DEFAULT 'SELF',
+                disabled         TINYINT      DEFAULT 0,
+                create_time      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                update_time      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_user_id (user_id),
+                INDEX idx_voice_id (voice_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """)
+    void createTableIfNotExists();
+
     @Update("ALTER TABLE user_voice ADD COLUMN authorized TINYINT DEFAULT 1")
     void addAuthorizedColumnIfNotExists();
 
@@ -23,8 +42,17 @@ public interface UserVoiceMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(UserVoice userVoice);
 
+    @Select("SELECT * FROM user_voice WHERE user_id = #{userId} AND COALESCE(disabled, 0) = 0 ORDER BY create_time DESC")
+    java.util.List<UserVoice> findEnabledByUserId(Long userId);
+
+    @Select("SELECT * FROM user_voice WHERE user_id = #{userId} ORDER BY create_time DESC")
+    java.util.List<UserVoice> findAllByUserId(Long userId);
+
     @Select("SELECT * FROM user_voice WHERE user_id = #{userId} ORDER BY create_time DESC LIMIT 1")
     UserVoice findByUserId(Long userId);
+
+    @Select("SELECT * FROM user_voice WHERE user_id = #{userId} AND voice_id = #{voiceId}")
+    UserVoice findByUserIdAndVoiceId(@Param("userId") Long userId, @Param("voiceId") String voiceId);
 
     @Select("SELECT * FROM user_voice WHERE voice_id = #{voiceId}")
     UserVoice findByVoiceId(String voiceId);
@@ -37,4 +65,7 @@ public interface UserVoiceMapper {
 
     @Delete("DELETE FROM user_voice WHERE user_id = #{userId}")
     int deleteByUserId(Long userId);
+
+    @Delete("DELETE FROM user_voice WHERE user_id = #{userId} AND voice_id = #{voiceId}")
+    int deleteByUserIdAndVoiceId(@Param("userId") Long userId, @Param("voiceId") String voiceId);
 }

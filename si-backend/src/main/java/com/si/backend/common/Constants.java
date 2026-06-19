@@ -100,6 +100,7 @@ public final class Constants {
     public static final String WS_MSG_TYPE_ERROR = "error";
     public static final String WS_MSG_TYPE_TRANSLATE_TEXT = "translate_text";
     public static final String WS_MSG_TYPE_TTS_AUDIO = "tts_audio";
+    public static final String WS_MSG_TYPE_SET_VOICE = "set_voice";
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 错误码

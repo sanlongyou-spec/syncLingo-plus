@@ -38,6 +38,7 @@ public final class RolePermissions {
             PermissionCode.INTERPRETATION_OPERATE,
             PermissionCode.TERMINOLOGY_MANAGE,
             PermissionCode.HOTWORD_MANAGE,
+            PermissionCode.VOICE_MANAGE,
             PermissionCode.AUDIO_MANAGE,
             PermissionCode.SUMMARY_MANAGE,
             PermissionCode.PRE_MEETING_MANAGE,

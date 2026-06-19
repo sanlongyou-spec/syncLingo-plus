@@ -181,7 +181,11 @@ export interface UserVoice {
   voiceId: string
   voiceName: string
   durationSeconds: number
+  authorized?: boolean
+  scope?: string
+  disabled?: boolean
   createTime: string
+  updateTime?: string
 }
 
 export interface SpeakerIdentity {
@@ -353,7 +357,7 @@ export interface MeetingNotificationPreview {
   venue?: string | null
   meetingCode?: string | null
   passcode?: string | null
-  meetingUrl: string
+  meetingUrl?: string | null
   notificationContent: string
   participantNames: string[]
   teamsRecipients: MeetingNotificationRecipient[]

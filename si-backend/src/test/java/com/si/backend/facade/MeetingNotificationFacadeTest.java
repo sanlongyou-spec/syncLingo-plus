@@ -22,6 +22,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 /**
@@ -46,7 +47,7 @@ class MeetingNotificationFacadeTest {
     private static final AuthenticatedActor ACTOR = new AuthenticatedActor(7L);
 
     @Test
-    void previewParsesMeetingUrlFromNoticeAndPersistsIt() {
+    void previewUsesNoticeContentWithoutRequiringMeetingUrl() {
         Long meetingId = 11L;
         MeetingNotificationPreviewRequest request = new MeetingNotificationPreviewRequest();
         request.setFileId("notice-1");
@@ -71,14 +72,15 @@ class MeetingNotificationFacadeTest {
                         List.of(),
                         List.of("李明(UNMATCHED)")
                 ));
-        when(notificationService.buildNotificationContent(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
-                .thenReturn("draft");
+        when(notificationService.buildNotificationContentFromNotice(org.mockito.ArgumentMatchers.contains("TBM（未成熟）专项会议")))
+                .thenReturn("notice draft");
 
         MeetingNotificationPreviewVo preview = facade.preview(ACTOR, meetingId, request);
 
-        assertEquals("https://teams.microsoft.com/l/meetup-join/example?context=test", preview.getMeetingUrl());
+        assertEquals(null, preview.getMeetingUrl());
+        assertEquals("notice draft", preview.getNotificationContent());
         assertEquals(List.of("李明"), preview.getParticipantNames());
-        verify(meetingService).setMeetingUrl(ACTOR, meetingId, "https://teams.microsoft.com/l/meetup-join/example?context=test");
+        verify(meetingService, never()).setMeetingUrl(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test

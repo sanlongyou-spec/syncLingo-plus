@@ -3,6 +3,7 @@ import {
 getAsrHotwords,
   getMeetings,
   getUserLanguagePreference,
+  listUserVoices,
   logout,
   saveUserLanguagePreference,
   saveInterpretationResult,
@@ -16,7 +17,7 @@ import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { AsrWebSocket } from '../lib/websocket'
 import { LANGUAGE_OPTIONS } from '../types'
-import type { Meeting, WsMessage } from '../types'
+import type { Meeting, UserVoice, WsMessage } from '../types'
 import './InterpretationView.css'
 
 interface TranscriptTranslation {
@@ -83,7 +84,8 @@ export default function InterpretationView() {
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
   const [currentSource, setCurrentSource] = useState('')
   const [currentTranslated, setCurrentTranslated] = useState('')
-  const [voiceId] = useState<string | null>(null)
+  const [voices, setVoices] = useState<UserVoice[]>([])
+  const [selectedVoiceId, setSelectedVoiceId] = useState('')
   const [error, setError] = useState('')
   const [shareHint, setShareHint] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
@@ -101,6 +103,7 @@ export default function InterpretationView() {
   const sessionIdRef = useRef<string | null>(null)
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
+  const selectedVoiceIdRef = useRef('')
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -112,6 +115,7 @@ export default function InterpretationView() {
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
+  useEffect(() => { selectedVoiceIdRef.current = selectedVoiceId }, [selectedVoiceId])
   useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
   useEffect(() => {
     getMeetings()
@@ -131,6 +135,10 @@ export default function InterpretationView() {
         setEnabledLanguages(Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...(res.data?.enabledLanguages ?? [])])))
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getUserLanguagePreference failed:', err))
+
+    listUserVoices()
+      .then(res => setVoices(res.data || []))
+      .catch((err: unknown) => console.warn('[InterpretationView] listUserVoices failed:', err))
 
     return () => {
       wsRef.current?.close()
@@ -169,6 +177,34 @@ export default function InterpretationView() {
     setSpeakerNameMap(prev => prev[speakerId] === displayName ? prev : { ...prev, [speakerId]: displayName })
   }, [])
 
+  const rememberCurrentSpeaker = useCallback((speakerId?: string) => {
+    const normalizedSpeakerId = normalizeVoiceCode(speakerId)
+    if (!normalizedSpeakerId || isUnknownSpeakerId(normalizedSpeakerId)) return
+    const previousSpeakerId = currentSpeakerIdRef.current
+    if (previousSpeakerId && previousSpeakerId !== normalizedSpeakerId && selectedVoiceIdRef.current) {
+      setSelectedVoiceId('')
+      selectedVoiceIdRef.current = ''
+      const sid = sessionIdRef.current
+      if (sid) {
+        wsRef.current?.setVoice(sid, normalizedSpeakerId, '')
+      }
+    }
+    setCurrentSpeakerId(normalizedSpeakerId)
+    currentSpeakerIdRef.current = normalizedSpeakerId
+  }, [])
+
+  const handleManualVoiceChange = (voiceId: string) => {
+    setSelectedVoiceId(voiceId)
+    selectedVoiceIdRef.current = voiceId
+    const sid = sessionIdRef.current
+    const speakerId = currentSpeakerIdRef.current
+    if (!sid || !speakerId) {
+      if (voiceId) setError('请先等待系统识别到当前汇报人')
+      return
+    }
+    wsRef.current?.setVoice(sid, speakerId, voiceId)
+  }
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     const messageSpeakerId =
       normalizeVoiceCode(msg.speakerId) ||
@@ -180,8 +216,7 @@ export default function InterpretationView() {
       case 'recognizing':
         setCurrentSource(msg.text || '')
         if (messageSpeakerId) {
-          setCurrentSpeakerId(messageSpeakerId)
-          currentSpeakerIdRef.current = messageSpeakerId
+          rememberCurrentSpeaker(messageSpeakerId)
         }
         rememberSpeakerName(messageSpeakerId, messageSpeakerName)
         if (msg.language) {
@@ -191,6 +226,7 @@ export default function InterpretationView() {
         break
       case 'recognized':
         if (msg.text) {
+          rememberCurrentSpeaker(messageSpeakerId)
           rememberSpeakerName(messageSpeakerId, messageSpeakerName)
           setTranscripts(prev => [
             ...prev,
@@ -275,9 +311,11 @@ export default function InterpretationView() {
         setIsRunning(true)
         setError('')
         setCurrentSpeakerId('')
+        setSelectedVoiceId('')
         setSpeakerNameMap({})
         setDetectedLang(msg.language || '')
         currentSpeakerIdRef.current = ''
+        selectedVoiceIdRef.current = ''
         speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''
         break
@@ -309,7 +347,6 @@ export default function InterpretationView() {
         sourceLang: LANGUAGE.AUTO,
         targetLang: LANGUAGE.AUTO,
         title: sessionTitle,
-        voiceId: voiceId || undefined,
         hotwordIds: selectedHotwordIds,
         enabledLanguages,
         meetingId: selectedMeetingId,
@@ -323,7 +360,7 @@ export default function InterpretationView() {
       wsRef.current = ws
       await ws.connect(sid)
       ws.onMessage(handleWsMessage)
-      ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO, voiceId: voiceId || undefined })
+      ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
 
       const audio = new AudioCapture({
         sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
@@ -362,7 +399,9 @@ export default function InterpretationView() {
     setCurrentTranslated('')
     setDetectedLang('')
     setCurrentSpeakerId('')
+    setSelectedVoiceId('')
     currentSpeakerIdRef.current = ''
+    selectedVoiceIdRef.current = ''
   }
 
   const voiceCodeForDisplay = (speakerId?: string) => {
@@ -433,6 +472,10 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">$</span>
             <span>成本分析</span>
           </button>
+          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.VOICES }}>
+            <span className="si-side-action-icon">V</span>
+            <span>音色</span>
+          </button>
           <button className="si-side-action" onClick={copyShareLink}>
             <span className="si-side-action-icon">S</span>
             <span>{shareHint || '分享链接'}</span>
@@ -449,6 +492,19 @@ export default function InterpretationView() {
           <h1 className="si-brand">聚龙同传</h1>
         </div>
         <div className="si-topbar-right">
+          <label className="si-manual-voice-select">
+            <span>音色</span>
+            <select
+              value={selectedVoiceId}
+              onChange={event => handleManualVoiceChange(event.target.value)}
+              disabled={!isRunning || !currentSpeakerId || voices.length === 0}
+            >
+              <option value="">默认音色</option>
+              {voices.map(voice => (
+                <option key={voice.voiceId} value={voice.voiceId}>{voice.voiceName}</option>
+              ))}
+            </select>
+          </label>
           <button className="si-logout-btn" type="button" onClick={handleLogout} disabled={logoutBusy}>
             {logoutBusy ? '退出中...' : '退出登录'}
           </button>

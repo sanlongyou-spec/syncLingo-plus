@@ -8,6 +8,7 @@ import LoginView from './views/LoginView'
 import UserShareView from './views/UserShareView'
 import HistoryView from './views/HistoryView'
 import TerminologyView from './views/TerminologyView'
+import VoiceCloneView from './views/VoiceCloneView'
 import MeetingsView from './views/MeetingsView'
 import CostAnalysisView from './views/CostAnalysisView'
 import AdminConsoleView from './views/AdminConsoleView'
@@ -121,6 +122,11 @@ function AuthenticatedWorkspace() {
       {location.pathname === '/terminology' && (
         <div className="route-overlay" role="dialog" aria-modal="true">
           <TerminologyView />
+        </div>
+      )}
+      {location.pathname === '/voices' && (
+        <div className="route-overlay" role="dialog" aria-modal="true">
+          <VoiceCloneView />
         </div>
       )}
       {location.pathname === '/meetings' && (

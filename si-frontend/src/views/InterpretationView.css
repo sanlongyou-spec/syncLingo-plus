@@ -156,6 +156,44 @@ body {
   gap: 0.45rem;
 }
 
+.si-manual-voice-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.si-manual-voice-select span {
+  color: #636366;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.si-manual-voice-select select {
+  width: 11.5rem;
+  max-width: 28vw;
+  height: 2rem;
+  border: 1px solid #d1d1d6;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  padding: 0 0.5rem;
+}
+
+.si-manual-voice-select select:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.si-manual-voice-select select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .si-pill-btn {
   display: inline-flex;
   align-items: center;

@@ -52,7 +52,6 @@ export default function MeetingsView() {
   const [meetingName, setMeetingName] = useState('')
   const [meetingFiles, setMeetingFiles] = useState<MeetingFile[]>([])
   const [meetingHasExpected, setMeetingHasExpected] = useState(false)
-  const [meetingUrl, setMeetingUrl] = useState('')
   const [noticeFile, setNoticeFile] = useState<PreMeetingFile | null>(null)
   const [notificationPreview, setNotificationPreview] = useState<MeetingNotificationPreview | null>(null)
   const [notificationContent, setNotificationContent] = useState('')
@@ -61,7 +60,7 @@ export default function MeetingsView() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [noticeUploading, setNoticeUploading] = useState(false)
-  const [linkSaving, setLinkSaving] = useState(false)
+  const [noticePreviewing, setNoticePreviewing] = useState(false)
   const [notificationSending, setNotificationSending] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [deletingFileId, setDeletingFileId] = useState<number | null>(null)
@@ -94,7 +93,6 @@ export default function MeetingsView() {
     setMeetingName(meeting?.title || '')
     setMeetingFiles(meeting?.files || [])
     setMeetingHasExpected(!!meeting?.hasExpectedParticipants)
-    setMeetingUrl(meeting?.meetingUrl || '')
     resetNotificationState()
   }
 
@@ -167,18 +165,16 @@ export default function MeetingsView() {
       setError('请先选择或新建会议')
       return null
     }
-    setLinkSaving(true)
+    setNoticePreviewing(true)
     setError('')
     setNotificationSendResult(null)
     try {
       const preview = await previewMeetingNotification(
         targetMeetingId,
-        meetingUrl.trim() || undefined,
         targetFile?.fileId,
       )
       setNotificationPreview(preview)
       setNotificationContent(preview.notificationContent || '')
-      setMeetingUrl(preview.meetingUrl || '')
       setSelectedNotificationRecipients(new Set(
         (preview.teamsRecipients || [])
           .map(recipientKey)
@@ -186,7 +182,7 @@ export default function MeetingsView() {
       ))
       setMeetings(previous => previous.map(item =>
         item.id === targetMeetingId
-          ? { ...item, meetingUrl: preview.meetingUrl, hasExpectedParticipants: preview.participantNames.length > 0 }
+          ? { ...item, hasExpectedParticipants: preview.participantNames.length > 0 }
           : item,
       ))
       setMeetingHasExpected(preview.participantNames.length > 0)
@@ -196,7 +192,7 @@ export default function MeetingsView() {
       setError(err instanceof Error ? err.message : '解析会议通知失败')
       return null
     } finally {
-      setLinkSaving(false)
+      setNoticePreviewing(false)
     }
   }
 
@@ -447,25 +443,14 @@ export default function MeetingsView() {
               </div>
             </div>
 
-            <div className="meetings-link-tools">
-              <label className="meetings-link-field">
-                <span>会议链接</span>
-                <input
-                  value={meetingUrl}
-                  onChange={event => setMeetingUrl(event.target.value)}
-                  placeholder="Teams 会议链接"
-                  disabled={!selectedMeetingId || linkSaving}
-                />
-              </label>
-              <button
-                className="meetings-primary-btn"
-                type="button"
-                onClick={() => void runNotificationPreview()}
-                disabled={!selectedMeetingId || linkSaving}
-              >
-                {linkSaving ? '解析中...' : '解析通知'}
-              </button>
-            </div>
+            <button
+              className="meetings-primary-btn meetings-notice-refresh-btn"
+              type="button"
+              onClick={() => void runNotificationPreview()}
+              disabled={!selectedMeetingId || noticePreviewing}
+            >
+              {noticePreviewing ? '生成中...' : '生成通知内容'}
+            </button>
           </div>
 
           {notificationPreview && (

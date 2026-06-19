@@ -85,6 +85,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             switch (type) {
                 case Constants.WS_MSG_TYPE_START -> handleStart(session, msg);
                 case Constants.WS_MSG_TYPE_AUDIO -> handleAudio(session, msg);
+                case Constants.WS_MSG_TYPE_SET_VOICE -> handleSetVoice(session, msg);
                 case Constants.WS_MSG_TYPE_STOP -> handleStop(session, msg);
                 case Constants.WS_MSG_TYPE_TRANSLATE_TEXT -> handleTranslate(session, msg);
                 default -> sendError(session, msg.getSessionId(), Constants.WS_ERROR_UNKNOWN_MESSAGE_TYPE,
@@ -181,6 +182,22 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         reply.setSessionId(sessionId);
         sendMessage(session, reply);
         shareWebSocketHandler.broadcast(sessionId, reply);
+    }
+
+    private void handleSetVoice(WebSocketSession session, WsMessage msg) {
+        String sessionId = msg.getSessionId();
+        if (!requireBoundSession(session, sessionId, true)) {
+            return;
+        }
+        log.info("[AsrWebSocketHandler] handleSetVoice, sessionId={}, speakerId={}, hasVoice={}",
+                sessionId, msg.getSpeakerId(), msg.getVoiceId() != null && !msg.getVoiceId().isBlank());
+        try {
+            realtimeFacade.setManualVoice(sessionId, msg.getSpeakerId(), msg.getVoiceId());
+        } catch (Exception e) {
+            log.warn("[AsrWebSocketHandler] handleSetVoice failed, sessionId={}, speakerId={}",
+                    sessionId, msg.getSpeakerId(), e);
+            sendError(session, sessionId, Constants.WS_ERROR_INVALID_STATE, e.getMessage());
+        }
     }
 
     private void handleAudio(WebSocketSession session, WsMessage msg) {

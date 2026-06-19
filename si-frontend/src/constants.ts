@@ -16,6 +16,7 @@ export const ROUTES = {
   LOGIN: '#/login',
   HOME: '#/',
   HISTORY: '#/history',
+  VOICES: '#/voices',
   TERMINOLOGY: '#/terminology',
   MEETINGS: '#/meetings',
   COST_ANALYSIS: '#/cost-analysis',

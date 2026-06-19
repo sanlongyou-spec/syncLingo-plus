@@ -89,6 +89,10 @@ export class AsrWebSocket {
     this.send({ type: 'stop', sessionId })
   }
 
+  setVoice(sessionId: string, speakerId: string, voiceId?: string): void {
+    this.send({ type: 'set_voice', sessionId, speakerId, voiceId: voiceId || '' })
+  }
+
   close(): void {
     this.destroyed = true
     this.socket?.close()

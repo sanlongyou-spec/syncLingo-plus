@@ -54,12 +54,10 @@ public class MeetingNotificationFacade {
                 ? preMeetingService.getDocText(fileId)
                 : meetingService.getMeetingNoticeText(actor, meetingId);
         MeetingNoticeParser.MeetingNoticeDetails details = meetingNoticeParser.parse(noticeText, meeting.getTitle());
-        String meetingUrl = resolveMeetingUrl(request, details, meeting);
-        meetingService.setMeetingUrl(actor, meetingId, meetingUrl);
         List<String> participantNames = resolveParticipantNames(meetingId, fileId);
         MeetingNotificationService.NotificationPlan plan =
                 meetingNotificationService.buildPlan(meeting.getTitle(), details.dateText(), participantNames);
-        MeetingNotificationPreviewVo preview = toPreview(details, meetingUrl, participantNames, plan);
+        MeetingNotificationPreviewVo preview = toPreview(details, participantNames, plan, noticeText);
         log.info("[MeetingNotificationFacade] preview end, meetingId={}, participants={}, matched={}, unmatched={}",
                 meetingId, participantNames.size(), preview.getTeamsRecipients().size(), preview.getUnmatched().size());
         return preview;
@@ -131,29 +129,11 @@ public class MeetingNotificationFacade {
                 .build();
     }
 
-    private String resolveMeetingUrl(
-            MeetingNotificationPreviewRequest request,
-            MeetingNoticeParser.MeetingNoticeDetails details,
-            MeetingVo meeting
-    ) {
-        String requested = request == null ? null : request.getMeetingUrl();
-        if (requested != null && !requested.isBlank()) {
-            return requested.trim();
-        }
-        if (details.meetingUrl() != null && !details.meetingUrl().isBlank()) {
-            return details.meetingUrl().trim();
-        }
-        if (meeting.getMeetingUrl() != null && !meeting.getMeetingUrl().isBlank()) {
-            return meeting.getMeetingUrl().trim();
-        }
-        throw BizException.of(ErrorCode.BAD_REQUEST, "未能从会议通知中识别会议链接，请手动填写会议链接");
-    }
-
     private MeetingNotificationPreviewVo toPreview(
             MeetingNoticeParser.MeetingNoticeDetails details,
-            String meetingUrl,
             List<String> participantNames,
-            MeetingNotificationService.NotificationPlan plan
+            MeetingNotificationService.NotificationPlan plan,
+            String noticeText
     ) {
         return MeetingNotificationPreviewVo.builder()
                 .meetingName(details.meetingName())
@@ -162,8 +142,8 @@ public class MeetingNotificationFacade {
                 .venue(details.venue())
                 .meetingCode(details.meetingCode())
                 .passcode(details.passcode())
-                .meetingUrl(meetingUrl)
-                .notificationContent(meetingNotificationService.buildNotificationContent(details, meetingUrl))
+                .meetingUrl(null)
+                .notificationContent(meetingNotificationService.buildNotificationContentFromNotice(noticeText))
                 .participantNames(participantNames)
                 .teamsRecipients(mapRecipients(plan.teamsRecipients()))
                 .nonTeamsSkipped(plan.nonTeamsSkipped())

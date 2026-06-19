@@ -11,6 +11,7 @@ import com.si.backend.service.SpeakerVoiceGenderService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
+import com.si.backend.service.UserVoiceService;
 import com.si.backend.service.VoiceGender;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,7 @@ public class RealtimeInterpretationFacade {
     private final AudioRecordService audioRecordService;
     private final SpeakerTurnService speakerTurnService;
     private final SpeakerVoiceGenderService speakerVoiceGenderService;
+    private final UserVoiceService userVoiceService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -74,6 +76,8 @@ public class RealtimeInterpretationFacade {
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsQueueSize = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsSequence = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionUtteranceStartMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> sessionCurrentSpeakerId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ManualVoiceBinding> sessionManualVoiceBindings = new ConcurrentHashMap<>();
 
     // ---------- WebSocket session lifecycle ----------
 
@@ -90,6 +94,8 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionUtteranceStartMs.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
+        sessionCurrentSpeakerId.remove(sessionId);
+        sessionManualVoiceBindings.remove(sessionId);
         Long audioUserId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(null);
         Long audioMeetingId = sessionService.getSession(sessionId).map(InterpretationSession::getMeetingId).orElse(null);
         audioRecordService.startRecording(sessionId, audioUserId, audioMeetingId);
@@ -117,6 +123,33 @@ public class RealtimeInterpretationFacade {
                 },
                 errorMessage -> onError.accept(errorMessage));
         log.info("[RealtimeInterpretationFacade] startInterpretation done, sessionId={}", sessionId);
+    }
+
+    public void setManualVoice(String sessionId, String speakerId, String voiceId) {
+        log.info("[RealtimeInterpretationFacade] setManualVoice start, sessionId={}, speakerId={}, hasVoice={}",
+                sessionId, speakerId, voiceId != null && !voiceId.isBlank());
+        if (!sessionService.isSessionActive(sessionId)) {
+            log.warn("[RealtimeInterpretationFacade] setManualVoice ignored inactive session, sessionId={}", sessionId);
+            return;
+        }
+        if (voiceId == null || voiceId.isBlank()) {
+            sessionManualVoiceBindings.remove(sessionId);
+            log.info("[RealtimeInterpretationFacade] setManualVoice cleared, sessionId={}", sessionId);
+            return;
+        }
+        String normalizedSpeakerId = normalizeSpeakerId(speakerId);
+        if (normalizedSpeakerId == null) {
+            log.warn("[RealtimeInterpretationFacade] setManualVoice rejected blank speaker, sessionId={}", sessionId);
+            return;
+        }
+        Long userId = sessionService.getSession(sessionId)
+                .map(InterpretationSession::getUserId)
+                .orElseThrow(() -> com.si.backend.common.BizException.of(com.si.backend.common.ErrorCode.SESSION_NOT_FOUND));
+        String resolvedVoiceId = userVoiceService.requireUsableVoice(userId, voiceId);
+        sessionCurrentSpeakerId.put(sessionId, normalizedSpeakerId);
+        sessionManualVoiceBindings.put(sessionId, new ManualVoiceBinding(normalizedSpeakerId, resolvedVoiceId));
+        log.info("[RealtimeInterpretationFacade] setManualVoice end, sessionId={}, speakerId={}, voiceId={}",
+                sessionId, normalizedSpeakerId, resolvedVoiceId);
     }
 
     public void pushAudio(String sessionId, byte[] pcmFrame) {
@@ -147,6 +180,8 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
+        sessionCurrentSpeakerId.remove(sessionId);
+        sessionManualVoiceBindings.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
@@ -187,6 +222,7 @@ public class RealtimeInterpretationFacade {
 
         // 根据 speakerId 跟踪说话人切换，切换确认后触发异步发言摘要
         speakerTurnService.processRecognized(sessionId, speakerId, text);
+        observeSpeakerChange(sessionId, speakerId);
 
         String sourceLang = normalizeAsrLang(detectedLang);
         List<String> targetLangs = resolveTargetLangs(sessionId, sourceLang);
@@ -198,11 +234,7 @@ public class RealtimeInterpretationFacade {
             log.info("[RealtimeInterpretationFacade] lang switch {}->{}, sessionId={}", prevLang, sourceLang, sessionId);
         }
 
-        String resolvedVoiceId = voiceId;
-        if (resolvedVoiceId == null || resolvedVoiceId.isBlank()) {
-            resolvedVoiceId = sessionService.getSession(sessionId).map(InterpretationSession::getVoiceId).orElse(null);
-        }
-        final String finalVoiceId = resolvedVoiceId;
+        final String finalVoiceId = resolveManualVoiceId(sessionId, speakerId);
 
         targetLangs.forEach(targetLang -> {
             if (!isPipelineActive(sessionId, "before_target_translate")) return;
@@ -642,6 +674,46 @@ public class RealtimeInterpretationFacade {
         return null;
     }
 
+    private void observeSpeakerChange(String sessionId, String speakerId) {
+        String normalizedSpeakerId = normalizeSpeakerId(speakerId);
+        if (normalizedSpeakerId == null) {
+            return;
+        }
+        String previous = sessionCurrentSpeakerId.put(sessionId, normalizedSpeakerId);
+        if (previous != null && !previous.equals(normalizedSpeakerId)) {
+            sessionManualVoiceBindings.remove(sessionId);
+            log.info("[RealtimeInterpretationFacade] speaker changed, manual voice reset, sessionId={}, previousSpeakerId={}, currentSpeakerId={}",
+                    sessionId, previous, normalizedSpeakerId);
+        }
+    }
+
+    private String resolveManualVoiceId(String sessionId, String speakerId) {
+        ManualVoiceBinding binding = sessionManualVoiceBindings.get(sessionId);
+        if (binding == null) {
+            return null;
+        }
+        String normalizedSpeakerId = normalizeSpeakerId(speakerId);
+        if (normalizedSpeakerId != null && normalizedSpeakerId.equals(binding.speakerId())) {
+            log.info("[RealtimeInterpretationFacade] manual voice selected, sessionId={}, speakerId={}, voiceId={}",
+                    sessionId, normalizedSpeakerId, binding.voiceId());
+            return binding.voiceId();
+        }
+        log.info("[RealtimeInterpretationFacade] manual voice skipped, sessionId={}, currentSpeakerId={}, boundSpeakerId={}, reason=speaker-mismatch",
+                sessionId, normalizedSpeakerId, binding.speakerId());
+        return null;
+    }
+
+    private String normalizeSpeakerId(String speakerId) {
+        String normalized = speakerId == null ? "" : speakerId.trim();
+        if (normalized.isBlank() || Constants.SPEAKER_ID_UNKNOWN.equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private record ManualVoiceBinding(String speakerId, String voiceId) {
+    }
+
     // ---------- Cleanup ----------
 
     public void cleanupSession(String sessionId) {
@@ -663,6 +735,8 @@ public class RealtimeInterpretationFacade {
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
+        sessionCurrentSpeakerId.remove(sessionId);
+        sessionManualVoiceBindings.remove(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);

@@ -36,6 +36,8 @@ import type {
   CostRates,
   MonthlyCostSummary,
   AudioRecord,
+  CloneVoiceResponse,
+  UserVoice,
 } from '../types'
 
 const RESULT_OK_CODE = 200
@@ -418,11 +420,9 @@ export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Re
 
 export const previewMeetingNotification = (
   meetingId: number,
-  meetingUrl?: string,
   fileId?: string,
 ): Promise<MeetingNotificationPreview> =>
   client.post<Result<MeetingNotificationPreview>>(`/api/meetings/${meetingId}/notification-preview`, {
-    ...(meetingUrl ? { meetingUrl } : {}),
     ...(fileId ? { fileId } : {}),
   }).then(r => {
     if (r.data?.code !== RESULT_OK_CODE) {
@@ -559,6 +559,29 @@ export const deleteAudioRecord = (id: number): Promise<Result<void>> =>
 
 export const getAudioDownloadUrl = (id: number): string =>
   `/api/audio-records/${id}/download`
+
+export const listUserVoices = (): Promise<Result<UserVoice[]>> =>
+  client.get<Result<UserVoice[]>>('/api/voices').then(r => r.data)
+
+export const cloneUserVoice = (
+  file: Blob,
+  voiceName: string,
+  language: string,
+  durationSeconds: number,
+): Promise<Result<CloneVoiceResponse>> => {
+  const form = new FormData()
+  form.append('file', file, `voice-${Date.now()}.webm`)
+  form.append('voiceName', voiceName)
+  form.append('language', language)
+  form.append('durationSeconds', String(Math.max(0, Math.round(durationSeconds))))
+  return client.post<Result<CloneVoiceResponse>>('/api/voices/clone', form, {
+    headers: { 'Content-Type': undefined },
+    timeout: 90_000,
+  }).then(r => r.data)
+}
+
+export const deleteUserVoice = (voiceId: string): Promise<Result<void>> =>
+  client.delete<Result<void>>(`/api/voices/${encodeURIComponent(voiceId)}`).then(r => r.data)
 
 export const getSummaryRecipients = (): Promise<Result<string[]>> =>
   client.get<Result<string[]>>('/api/user/preference/summary-recipients').then(r => r.data)

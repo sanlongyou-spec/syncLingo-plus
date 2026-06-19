@@ -27,6 +27,7 @@ class RolePermissionsTest {
         assertTrue(RolePermissions.grants(Role.OPERATOR, PermissionCode.MEETING_MANAGE));
         assertTrue(RolePermissions.grants(Role.OPERATOR, PermissionCode.INTERPRETATION_OPERATE));
         assertTrue(RolePermissions.grants(Role.OPERATOR, PermissionCode.BOT_OPERATE));
+        assertTrue(RolePermissions.grants(Role.OPERATOR, PermissionCode.VOICE_MANAGE));
         assertFalse(RolePermissions.grants(Role.OPERATOR, PermissionCode.OPS_EXECUTE), "OPERATOR 不应有运维权");
     }
 
@@ -36,6 +37,7 @@ class RolePermissionsTest {
         assertTrue(RolePermissions.grants(Role.VIEWER, PermissionCode.LANGUAGE_PREFERENCE_MANAGE));
         assertFalse(RolePermissions.grants(Role.VIEWER, PermissionCode.MEETING_MANAGE), "VIEWER 不能管理会议");
         assertFalse(RolePermissions.grants(Role.VIEWER, PermissionCode.INTERPRETATION_OPERATE), "VIEWER 不能操作同传");
+        assertFalse(RolePermissions.grants(Role.VIEWER, PermissionCode.VOICE_MANAGE), "VIEWER 不能克隆音色");
         assertFalse(RolePermissions.grants(Role.VIEWER, PermissionCode.OPS_EXECUTE));
     }
 

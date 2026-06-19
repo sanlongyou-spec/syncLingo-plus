@@ -10,6 +10,7 @@ import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.SpeakerVoiceGenderService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
+import com.si.backend.service.UserVoiceService;
 import com.si.backend.service.VoiceGender;
 import org.junit.jupiter.api.Test;
 
@@ -69,12 +70,30 @@ class RealtimeInterpretationVoiceGenderTest {
         assertEquals("explicit-voice", voiceId);
     }
 
+    @Test
+    void manualVoiceResetsWhenSpeakerChanges() throws Exception {
+        TestContext context = new TestContext();
+        context.cartesiaProperties.setDefaultVoiceIdIndonesian("default-id");
+        when(context.userVoiceService.requireUsableVoice(1L, "manual-voice"))
+                .thenReturn("manual-voice");
+        when(context.speakerVoiceGenderService.resolveGender("voice-gender-session", "speaker-2"))
+                .thenReturn(VoiceGender.UNKNOWN);
+        context.facade.setManualVoice("voice-gender-session", "speaker-1", "manual-voice");
+
+        String firstVoice = context.processFinalOnce("first", "speaker-1");
+        String secondVoice = context.processFinalOnce("second", "speaker-2");
+
+        assertEquals("manual-voice", firstVoice);
+        assertEquals("default-id", secondVoice);
+    }
+
     private static class TestContext {
         private final TtsService ttsService = mock(TtsService.class);
         private final TranslationService translationService = mock(TranslationService.class);
         private final InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
         private final CartesiaProperties cartesiaProperties = new CartesiaProperties();
         private final SpeakerVoiceGenderService speakerVoiceGenderService = mock(SpeakerVoiceGenderService.class);
+        private final UserVoiceService userVoiceService = mock(UserVoiceService.class);
         private final RealtimeInterpretationFacade facade;
 
         private TestContext() throws Exception {
@@ -101,7 +120,8 @@ class RealtimeInterpretationVoiceGenderTest {
                     recordService,
                     audioRecordService,
                     speakerTurnService,
-                    speakerVoiceGenderService
+                    speakerVoiceGenderService,
+                    userVoiceService
             );
         }
 
@@ -132,6 +152,35 @@ class RealtimeInterpretationVoiceGenderTest {
                     "hello", "zh-CN", "id", requestedVoiceId,
                     "voice-gender-session", speakerId, speakerId, System.currentTimeMillis()
             );
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            return voiceIdRef.get();
+        }
+
+        private String processFinalOnce(String text, String speakerId) throws Exception {
+            AtomicReference<String> voiceIdRef = new AtomicReference<>();
+            CountDownLatch latch = new CountDownLatch(1);
+            doAnswer(invocation -> {
+                voiceIdRef.set(invocation.getArgument(0));
+                @SuppressWarnings("unchecked")
+                Consumer<byte[]> onChunk = invocation.getArgument(5);
+                Runnable onComplete = invocation.getArgument(6);
+                onChunk.accept(new byte[]{1});
+                onComplete.run();
+                latch.countDown();
+                return null;
+            }).when(ttsService).synthesizeStream(
+                    anyString(),
+                    anyString(),
+                    anyInt(),
+                    anyDouble(),
+                    anyString(),
+                    any(),
+                    any(),
+                    any()
+            );
+
+            facade.processFinalRecognition(text, "zh-CN", speakerId, "voice-gender-session", null);
 
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             return voiceIdRef.get();
