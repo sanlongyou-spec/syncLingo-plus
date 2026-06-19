@@ -52,6 +52,7 @@ export default function MeetingsView() {
   const [meetingName, setMeetingName] = useState('')
   const [meetingFiles, setMeetingFiles] = useState<MeetingFile[]>([])
   const [meetingHasExpected, setMeetingHasExpected] = useState(false)
+  const [meetingUrl, setMeetingUrl] = useState('')
   const [noticeFile, setNoticeFile] = useState<PreMeetingFile | null>(null)
   const [notificationPreview, setNotificationPreview] = useState<MeetingNotificationPreview | null>(null)
   const [notificationContent, setNotificationContent] = useState('')
@@ -91,6 +92,7 @@ export default function MeetingsView() {
     }
     const meeting = id ? source.find(item => item.id === id) : null
     setMeetingName(meeting?.title || '')
+    setMeetingUrl(meeting?.meetingUrl || '')
     setMeetingFiles(meeting?.files || [])
     setMeetingHasExpected(!!meeting?.hasExpectedParticipants)
     resetNotificationState()
@@ -165,6 +167,11 @@ export default function MeetingsView() {
       setError('请先选择或新建会议')
       return null
     }
+    const normalizedMeetingUrl = meetingUrl.trim()
+    if (!normalizedMeetingUrl) {
+      setError('请先填写会议链接')
+      return null
+    }
     setNoticePreviewing(true)
     setError('')
     setNotificationSendResult(null)
@@ -172,6 +179,7 @@ export default function MeetingsView() {
       const preview = await previewMeetingNotification(
         targetMeetingId,
         targetFile?.fileId,
+        normalizedMeetingUrl,
       )
       setNotificationPreview(preview)
       setNotificationContent(preview.notificationContent || '')
@@ -182,9 +190,14 @@ export default function MeetingsView() {
       ))
       setMeetings(previous => previous.map(item =>
         item.id === targetMeetingId
-          ? { ...item, hasExpectedParticipants: preview.participantNames.length > 0 }
+          ? {
+              ...item,
+              meetingUrl: preview.meetingUrl || normalizedMeetingUrl,
+              hasExpectedParticipants: preview.participantNames.length > 0,
+            }
           : item,
       ))
+      setMeetingUrl(preview.meetingUrl || normalizedMeetingUrl)
       setMeetingHasExpected(preview.participantNames.length > 0)
       flash('会议通知已解析')
       return preview
@@ -197,6 +210,10 @@ export default function MeetingsView() {
   }
 
   const handleNoticeUpload = async (file: File) => {
+    if (!meetingUrl.trim()) {
+      setError('请先填写会议链接')
+      return
+    }
     if (!isAcceptedReportFile(file)) {
       setError('会议通知仅支持 PDF 或 Word（.doc/.docx）')
       return
@@ -415,6 +432,20 @@ export default function MeetingsView() {
           </div>
 
           <div className="meetings-notice-grid">
+            <label className="meetings-link-field">
+              <span>会议链接</span>
+              <input
+                value={meetingUrl}
+                onChange={event => {
+                  setMeetingUrl(event.target.value)
+                  setNotificationPreview(null)
+                  setNotificationContent('')
+                  setNotificationSendResult(null)
+                }}
+                placeholder="https://teams.microsoft.com/l/meetup-join/..."
+              />
+            </label>
+
             <div
               className={`meetings-upload meetings-notice-upload${noticeUploading ? ' is-uploading' : ''}`}
               onClick={() => !noticeUploading && noticeInputRef.current?.click()}
@@ -447,7 +478,7 @@ export default function MeetingsView() {
               className="meetings-primary-btn meetings-notice-refresh-btn"
               type="button"
               onClick={() => void runNotificationPreview()}
-              disabled={!selectedMeetingId || noticePreviewing}
+              disabled={!selectedMeetingId || !noticeFile || !meetingUrl.trim() || noticePreviewing}
             >
               {noticePreviewing ? '生成中...' : '生成通知内容'}
             </button>

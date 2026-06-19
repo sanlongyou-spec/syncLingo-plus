@@ -8,4 +8,5 @@ import lombok.Data;
 @Data
 public class MeetingNotificationPreviewRequest {
     private String fileId;
+    private String meetingUrl;
 }

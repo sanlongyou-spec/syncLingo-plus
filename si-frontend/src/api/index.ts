@@ -421,9 +421,11 @@ export const deleteMeetingFile = (meetingId: number, fileId: number): Promise<Re
 export const previewMeetingNotification = (
   meetingId: number,
   fileId?: string,
+  meetingUrl?: string,
 ): Promise<MeetingNotificationPreview> =>
   client.post<Result<MeetingNotificationPreview>>(`/api/meetings/${meetingId}/notification-preview`, {
     ...(fileId ? { fileId } : {}),
+    ...(meetingUrl ? { meetingUrl } : {}),
   }).then(r => {
     if (r.data?.code !== RESULT_OK_CODE) {
       throw new Error(r.data?.message || '解析会议通知失败')

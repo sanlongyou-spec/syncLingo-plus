@@ -20,6 +20,7 @@ public class MeetingNoticeParser {
             "(20\\d{2})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日\\s*[（(](周[一二三四五六日天])[）)]");
     private static final Pattern SPECIFIC_MEETING_TITLE_PATTERN = Pattern.compile(
             "([A-Za-z0-9]{1,20}\\s*[（(][^）)]{1,30}[）)]\\s*(?:专项会议|专题会议))");
+    private static final Pattern BRACKET_MEETING_TITLE_PATTERN = Pattern.compile("【\\s*(.{2,120}?)\\s*】");
     private static final Pattern TIME_ZONE_PATTERN = Pattern.compile(
             "(西五区|东七区|东八区)\\s*(?:UTC\\s*[+-]\\s*\\d{1,2})?\\s*时间\\s*"
                     + "(上午|下午|晚上|早上)?\\s*(\\d{1,2}:\\d{2})\\s*[-–—~至]\\s*(\\d{1,2}:\\d{2})",
@@ -28,7 +29,7 @@ public class MeetingNoticeParser {
             "会议地点\\s*[：:]\\s*(.+?)(?=\\s+(?:ID\\s*Teams\\s*)?会议号码\\s*[：:])",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern MEETING_CODE_PATTERN = Pattern.compile(
-            "(?:ID\\s*Teams\\s*)?会议号码\\s*[：:]\\s*([0-9][0-9\\s]{7,30}[0-9])",
+            "(?:ID\\s*Teams\\s*)?(?:会议号码|会议\\s*ID)\\s*[：:]\\s*([0-9][0-9\\s]{7,30}[0-9])",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern PASSCODE_PATTERN = Pattern.compile(
             "(?:Password\\s*)?密码\\s*[：:]\\s*([A-Za-z0-9]+)",
@@ -108,6 +109,9 @@ public class MeetingNoticeParser {
 
     private String parseVenue(String text) {
         String venue = findGroup(text, VENUE_PATTERN);
+        if (venue.isBlank() && text.toLowerCase(Locale.ROOT).contains("teams")) {
+            return "TEAMS 会议";
+        }
         if (venue.toLowerCase(Locale.ROOT).contains("teams")) {
             return "TEAMS 会议";
         }
@@ -127,6 +131,10 @@ public class MeetingNoticeParser {
     }
 
     private String parseMeetingName(String text, String fallbackMeetingName) {
+        Matcher bracketMatcher = BRACKET_MEETING_TITLE_PATTERN.matcher(text);
+        if (bracketMatcher.find()) {
+            return bracketMatcher.group(1).replaceAll("\\s+", " ").trim();
+        }
         Matcher matcher = SPECIFIC_MEETING_TITLE_PATTERN.matcher(text);
         if (matcher.find()) {
             return matcher.group(1).replaceAll("\\s+", "").trim();

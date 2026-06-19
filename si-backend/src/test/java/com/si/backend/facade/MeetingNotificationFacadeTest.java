@@ -15,6 +15,7 @@ import com.si.backend.vo.MeetingNotificationSendVo;
 import com.si.backend.vo.MeetingVo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
@@ -47,10 +48,12 @@ class MeetingNotificationFacadeTest {
     private static final AuthenticatedActor ACTOR = new AuthenticatedActor(7L);
 
     @Test
-    void previewUsesNoticeContentWithoutRequiringMeetingUrl() {
+    void previewBuildsCleanDraftWithSubmittedMeetingUrl() {
         Long meetingId = 11L;
+        String submittedMeetingUrl = "https://teams.microsoft.com/l/meetup-join/manual-link";
         MeetingNotificationPreviewRequest request = new MeetingNotificationPreviewRequest();
         request.setFileId("notice-1");
+        request.setMeetingUrl(submittedMeetingUrl);
         when(meetingService.getMeeting(ACTOR, meetingId)).thenReturn(MeetingVo.builder()
                 .id(meetingId)
                 .title("TBM（未成熟）专项会议")
@@ -72,15 +75,41 @@ class MeetingNotificationFacadeTest {
                         List.of(),
                         List.of("李明(UNMATCHED)")
                 ));
-        when(notificationService.buildNotificationContentFromNotice(org.mockito.ArgumentMatchers.contains("TBM（未成熟）专项会议")))
+        when(notificationService.buildNotificationContent(
+                org.mockito.ArgumentMatchers.any(MeetingNoticeParser.MeetingNoticeDetails.class),
+                org.mockito.ArgumentMatchers.eq(submittedMeetingUrl)))
                 .thenReturn("notice draft");
 
         MeetingNotificationPreviewVo preview = facade.preview(ACTOR, meetingId, request);
 
-        assertEquals(null, preview.getMeetingUrl());
+        assertEquals(submittedMeetingUrl, preview.getMeetingUrl());
         assertEquals("notice draft", preview.getNotificationContent());
         assertEquals(List.of("李明"), preview.getParticipantNames());
-        verify(meetingService, never()).setMeetingUrl(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(meetingService).setMeetingUrl(ACTOR, meetingId, submittedMeetingUrl);
+        ArgumentCaptor<MeetingNoticeParser.MeetingNoticeDetails> detailsCaptor =
+                ArgumentCaptor.forClass(MeetingNoticeParser.MeetingNoticeDetails.class);
+        verify(notificationService).buildNotificationContent(detailsCaptor.capture(), org.mockito.ArgumentMatchers.eq(submittedMeetingUrl));
+        assertEquals("435 961 345 123 2", detailsCaptor.getValue().meetingCode());
+        assertEquals("dk9c5g5C", detailsCaptor.getValue().passcode());
+    }
+
+    @Test
+    void previewRejectsMissingSubmittedMeetingUrl() {
+        Long meetingId = 11L;
+        MeetingNotificationPreviewRequest request = new MeetingNotificationPreviewRequest();
+        request.setFileId("notice-1");
+        when(meetingService.getMeeting(ACTOR, meetingId)).thenReturn(MeetingVo.builder()
+                .id(meetingId)
+                .title("季度会议")
+                .build());
+        when(preMeetingService.getDocText("notice-1")).thenReturn("季度会议");
+
+        assertThrows(BizException.class, () -> facade.preview(ACTOR, meetingId, request));
+        verify(meetingService, never()).setMeetingUrl(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
     }
 
     @Test

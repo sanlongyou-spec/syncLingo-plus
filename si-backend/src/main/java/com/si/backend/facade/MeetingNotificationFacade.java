@@ -54,10 +54,12 @@ public class MeetingNotificationFacade {
                 ? preMeetingService.getDocText(fileId)
                 : meetingService.getMeetingNoticeText(actor, meetingId);
         MeetingNoticeParser.MeetingNoticeDetails details = meetingNoticeParser.parse(noticeText, meeting.getTitle());
+        String meetingUrl = requireMeetingUrl(request == null ? null : request.getMeetingUrl());
+        meetingService.setMeetingUrl(actor, meetingId, meetingUrl);
         List<String> participantNames = resolveParticipantNames(meetingId, fileId);
         MeetingNotificationService.NotificationPlan plan =
                 meetingNotificationService.buildPlan(meeting.getTitle(), details.dateText(), participantNames);
-        MeetingNotificationPreviewVo preview = toPreview(details, participantNames, plan, noticeText);
+        MeetingNotificationPreviewVo preview = toPreview(details, participantNames, plan, meetingUrl);
         log.info("[MeetingNotificationFacade] preview end, meetingId={}, participants={}, matched={}, unmatched={}",
                 meetingId, participantNames.size(), preview.getTeamsRecipients().size(), preview.getUnmatched().size());
         return preview;
@@ -133,7 +135,7 @@ public class MeetingNotificationFacade {
             MeetingNoticeParser.MeetingNoticeDetails details,
             List<String> participantNames,
             MeetingNotificationService.NotificationPlan plan,
-            String noticeText
+            String meetingUrl
     ) {
         return MeetingNotificationPreviewVo.builder()
                 .meetingName(details.meetingName())
@@ -142,13 +144,25 @@ public class MeetingNotificationFacade {
                 .venue(details.venue())
                 .meetingCode(details.meetingCode())
                 .passcode(details.passcode())
-                .meetingUrl(null)
-                .notificationContent(meetingNotificationService.buildNotificationContentFromNotice(noticeText))
+                .meetingUrl(meetingUrl)
+                .notificationContent(meetingNotificationService.buildNotificationContent(details, meetingUrl))
                 .participantNames(participantNames)
                 .teamsRecipients(mapRecipients(plan.teamsRecipients()))
                 .nonTeamsSkipped(plan.nonTeamsSkipped())
                 .unmatched(plan.unmatched())
                 .build();
+    }
+
+    private String requireMeetingUrl(String meetingUrl) {
+        String normalized = meetingUrl == null ? "" : meetingUrl.trim();
+        if (normalized.isBlank()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "会议链接不能为空");
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "会议链接必须以 http:// 或 https:// 开头");
+        }
+        return normalized;
     }
 
     private List<String> resolveParticipantNames(Long meetingId, String fileId) {
