@@ -21,6 +21,9 @@ const AUDIO_SAMPLE_RATE = 48000
 const CATCHUP_START_SEC = 1.0   // 积压超过此值开始加速
 const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
 const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 1.35x 排空更快, 压客户端积压)
+// 积压硬上限: 变速仍追不上、积压超过此值时, 丢弃已排队的旧音频并跳回接近实时,
+// 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。文本不受影响。
+const DROP_BACKLOG_SEC = 8.0
 const catchupRate = (backlogSec: number): number => {
   if (backlogSec <= CATCHUP_START_SEC) return 1.0
   if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
@@ -245,7 +248,16 @@ export default function UserShareView() {
         const source = ctx.createBufferSource()
         source.buffer = buffer
         source.connect(ctx.destination)
-        const backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
+        let backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
+        // 积压过高: 丢弃已排队的旧音频, 跳回接近实时(只丢音频, 文本完整保留)
+        if (backlogSec > DROP_BACKLOG_SEC) {
+          pendingSourcesRef.current.forEach(queued => { try { queued.stop() } catch { /* already ended */ } })
+          pendingSourcesRef.current.clear()
+          scheduleRef.current = ctx.currentTime
+          // eslint-disable-next-line no-console
+          console.warn(`[share-audio] backlog ${backlogSec.toFixed(1)}s > ${DROP_BACKLOG_SEC}s, dropped queued audio to resync`)
+          backlogSec = 0
+        }
         const rate = catchupRate(backlogSec)
         source.playbackRate.value = rate
         maxRateRef.current = Math.max(maxRateRef.current, rate)   // 句中峰值倍速
