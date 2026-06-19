@@ -1,6 +1,9 @@
 server:
   port: ${APP_PORT:8080}
   address: ${APP_HOST:0.0.0.0}
+  # 后端在 nginx 反代之后，必须信任 X-Forwarded-* 头，否则 request.getScheme()
+  # 取到内网的 http，导致 HTTPS 下刷新 token 的 origin 校验误判为 403。
+  forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:framework}
   tomcat:
     websocket:
       max-text-message-size: 10485760
