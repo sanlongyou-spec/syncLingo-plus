@@ -4,6 +4,7 @@ import com.si.backend.common.Result;
 import com.si.backend.dto.CreateMeetingRequest;
 import com.si.backend.dto.MeetingNotificationPreviewRequest;
 import com.si.backend.dto.MeetingNotificationSendRequest;
+import com.si.backend.dto.PersistPreMeetingFileRequest;
 import com.si.backend.dto.SpeakerSummaryRequest;
 import com.si.backend.dto.UpdateSpeakerSummaryRequest;
 import com.si.backend.entity.MeetingActionItem;
@@ -121,6 +122,16 @@ public class MeetingController {
             @RequestParam("file") MultipartFile file) throws IOException {
         log.info("[MeetingController] uploadFile, meetingId={}, fileName={}", meetingId, file.getOriginalFilename());
         return Result.ok(meetingService.uploadFile(AuthContext.requireActor(), meetingId, file));
+    }
+
+    @PostMapping("/{meetingId}/files/from-pre-meeting")
+    public Result<MeetingFileVo> savePreMeetingFile(
+            @PathVariable Long meetingId,
+            @Valid @RequestBody PersistPreMeetingFileRequest request) {
+        log.info("[MeetingController] savePreMeetingFile, meetingId={}, fileId={}",
+                meetingId, request.getFileId());
+        return Result.ok(meetingService.savePreMeetingFile(
+                AuthContext.requireActor(), meetingId, request.getFileId()));
     }
 
     @GetMapping("/{meetingId}/files")

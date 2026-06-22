@@ -468,6 +468,11 @@ export const uploadFileToMeeting = (meetingId: number, file: File): Promise<Resu
     .catch(error => resultOrThrow<MeetingFile>(error, '上传会议文件失败'))
 }
 
+export const savePreMeetingFileToMeeting = (meetingId: number, fileId: string): Promise<Result<MeetingFile>> =>
+  client.post<Result<MeetingFile>>(`/api/meetings/${meetingId}/files/from-pre-meeting`, { fileId })
+    .then(r => r.data)
+    .catch(error => resultOrThrow<MeetingFile>(error, '保存会议通知失败'))
+
 export const downloadMeetingFile = (meetingId: number, fileId: number): Promise<Blob> =>
   client.get<Blob>(`/api/meetings/${meetingId}/files/${fileId}/download`, { responseType: 'blob' })
     .then(r => r.data)
@@ -489,6 +494,8 @@ export const previewMeetingNotification = (
       throw new Error(r.data?.message || '解析会议通知失败')
     }
     return r.data.data
+  }).catch(error => {
+    throw new Error(messageFromError(error, '解析会议通知失败'))
   })
 
 export const getMeetingNotificationRecipients = (meetingId: number): Promise<MeetingNotificationRecipient[]> =>

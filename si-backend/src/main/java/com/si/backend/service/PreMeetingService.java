@@ -70,8 +70,16 @@ public class PreMeetingService {
     private static final Pattern EMAIL_PATTERN = Pattern.compile(
             "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", Pattern.CASE_INSENSITIVE);
     private static final Pattern HAN_PATTERN = Pattern.compile("\\p{IsHan}");
-    private static final Pattern DATE_PATTERN = Pattern.compile(
-            "\\d{4}年\\d{1,2}月\\d{1,2}日|\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}月\\d{1,2}日");
+    private static final String FULL_DATE_REGEX =
+            "(20\\d{2})\\s*(?:年|[-/.])\\s*(\\d{1,2})\\s*(?:月|[-/.])\\s*(\\d{1,2})\\s*日?";
+    private static final String SHORT_DATE_REGEX = "(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日";
+    private static final Pattern FULL_DATE_PATTERN = Pattern.compile(FULL_DATE_REGEX);
+    private static final Pattern SHORT_DATE_PATTERN = Pattern.compile(SHORT_DATE_REGEX);
+    private static final Pattern BRACKET_TITLE_PATTERN = Pattern.compile("[【\\[]\\s*(.{2,120}?)\\s*[】\\]]");
+    private static final Pattern NOTICE_SUFFIX_PATTERN = Pattern.compile(
+            "\\s*(?:[【\\[（(]\\s*(?:会议通知|会议安排|通知|安排)\\s*[】\\]）)]|会议通知|会议安排)\\s*$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TITLE_EDGE_SEPARATOR_PATTERN = Pattern.compile("^[\\s_\\-—–:：]+|[\\s_\\-—–:：]+$");
     private static final Pattern GROUP_COUNT_PATTERN = Pattern.compile("^(.*?)[（(]\\d+[）)]\\s*[:：]\\s*(.*)$");
     private static final Pattern GROUP_LINE_REWRITE_PATTERN = Pattern.compile("^(.*?[（(])\\d+([）)]\\s*[:：]\\s*)(.*)$");
     private static final Pattern PARTICIPANT_TOTAL_LINE_PATTERN = Pattern.compile(
@@ -126,6 +134,8 @@ public class PreMeetingService {
     private int retrievalWindowPad;
 
     private record PreMeetingDoc(String fileName, String ext, String text, byte[] originalBytes) {}
+    public record StoredPreMeetingFile(String fileName, String fileType, String text, byte[] originalBytes) {}
+    private record MeetingTitleCandidate(String title, String dateText) {}
     private record ExpectedParticipant(String name, String department, String email, String sourceText) {}
     private record ActualParticipant(String displayName, String email, String normalizedName, String chineseName) {}
     private record AttendanceBlock(int startIndex, int endIndex) {}
@@ -194,6 +204,15 @@ public class PreMeetingService {
     public String getDocText(String fileId) {
         PreMeetingDoc doc = store.get(fileId);
         return doc != null ? doc.text() : "";
+    }
+
+    public StoredPreMeetingFile requireStoredFile(String fileId) {
+        PreMeetingDoc doc = store.get(fileId);
+        if (doc == null) {
+            throw BizException.of(ErrorCode.NOT_FOUND, "文件不存在或已过期，请重新上传");
+        }
+        byte[] originalBytes = doc.originalBytes() == null ? new byte[0] : doc.originalBytes().clone();
+        return new StoredPreMeetingFile(doc.fileName(), doc.ext(), doc.text(), originalBytes);
     }
 
     /** Expected participant names + meeting venue parsed from an uploaded meeting agenda. */
@@ -315,7 +334,10 @@ public class PreMeetingService {
         }
         List<ExpectedParticipant> expected = parseExpectedParticipants(doc.text());
         if (expected.isEmpty()) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "未能从会议安排中识别参会人员，请检查文件中的参会人员格式");
+            meetingMapper.updateExpectedParticipants(meetingId, null);
+            log.info("[PreMeetingService] saveExpectedParticipants done, meetingId={}, count=0, reason=noParticipants",
+                    meetingId);
+            return 0;
         }
         try {
             String json = objectMapper.writeValueAsString(expected);
@@ -1393,7 +1415,7 @@ public class PreMeetingService {
         return ATTENDANCE_STOP_KEYWORDS.stream().anyMatch(line::contains);
     }
 
-    private String normalizeLine(String line) {
+    private static String normalizeLine(String line) {
         return safeString(line)
                 .replace('\u00A0', ' ')
                 .replace('\t', ' ')
@@ -1453,41 +1475,198 @@ public class PreMeetingService {
     }
 
     private String deriveMeetingTitle(PreMeetingDoc doc) {
+        return deriveMeetingTitle(doc.fileName(), doc.text());
+    }
+
+    static String deriveMeetingTitle(String fileName, String text) {
+        MeetingTitleCandidate textCandidate = deriveMeetingTitleFromText(text);
+        MeetingTitleCandidate fileCandidate = deriveMeetingTitleFromFileName(fileName);
+        String title = chooseMeetingTitle(textCandidate.title(), fileCandidate.title());
+        if (title == null || title.isBlank()) {
+            title = cleanMeetingTitle(stripExtension(fileName));
+        }
+        String dateText = chooseDateText(textCandidate.dateText(), fileCandidate.dateText());
+        return appendDateToTitle(title, dateText);
+    }
+
+    private static MeetingTitleCandidate deriveMeetingTitleFromText(String text) {
         String title = null;
-        String date = null;
-        for (String rawLine : doc.text().split("\\R")) {
+        String dateText = null;
+        for (String rawLine : safeString(text).split("\\R")) {
             String line = normalizeLine(rawLine);
-            if (line.length() >= 4
-                    && line.length() <= 80
-                    && (line.contains("专项会议") || line.contains("专题会议"))
-                    && !line.contains("会议通知")) {
-                title = line.replaceAll("^[【\\[]|[】\\]]$", "");
+            if (line.isBlank()) {
+                continue;
+            }
+            if (dateText == null) {
+                dateText = parseDateText(line);
+            }
+            String cleaned = cleanMeetingTitle(line);
+            if (title == null && isStrongMeetingTitle(cleaned)) {
+                title = cleaned;
+            }
+            if (title != null && dateText != null) {
                 break;
             }
         }
-        for (String rawLine : doc.text().split("\\R")) {
-            String line = normalizeLine(rawLine);
-            if (title == null
-                    && line.length() >= 4
-                    && line.length() <= 80
-                    && containsHan(line)
-                    && !line.contains("会议通知")
-                    && !line.contains("会议时间")
-                    && !line.contains("会议地点")) {
-                title = line.replaceAll("^[【\\[]|[】\\]]$", "");
+        if (title == null) {
+            for (String rawLine : safeString(text).split("\\R")) {
+                String cleaned = cleanMeetingTitle(rawLine);
+                if (isLooseMeetingTitle(cleaned)) {
+                    title = cleaned;
+                    break;
+                }
             }
-            if (date == null) {
-                Matcher m = DATE_PATTERN.matcher(line);
-                if (m.find()) date = m.group();
-            }
-            if (title != null && date != null) break;
         }
-        if (title == null) title = stripExtension(doc.fileName());
-        if (date != null && !title.contains(date)) return title + "（" + date + "）";
-        return title;
+        return new MeetingTitleCandidate(title, dateText);
     }
 
-    private boolean containsHan(String value) {
+    private static MeetingTitleCandidate deriveMeetingTitleFromFileName(String fileName) {
+        String baseName = stripExtension(safeString(fileName));
+        String dateText = null;
+        String titleSource = baseName;
+        Matcher matcher = FULL_DATE_PATTERN.matcher(baseName);
+        if (matcher.find()) {
+            dateText = formatFullDate(matcher);
+            titleSource = matcher.start() == 0
+                    ? baseName.substring(matcher.end())
+                    : baseName.substring(0, matcher.start()) + " " + baseName.substring(matcher.end());
+        }
+        String title = cleanMeetingTitle(trimTitleSeparators(titleSource));
+        return new MeetingTitleCandidate(title, dateText);
+    }
+
+    private static String chooseMeetingTitle(String textTitle, String fileTitle) {
+        if (isBlank(textTitle)) {
+            return fileTitle;
+        }
+        if (isBlank(fileTitle)) {
+            return textTitle;
+        }
+        if (isStrongMeetingTitle(fileTitle) && !isStrongMeetingTitle(textTitle)) {
+            return fileTitle;
+        }
+        return textTitle;
+    }
+
+    private static String chooseDateText(String textDate, String fileDate) {
+        if (hasFullDate(fileDate) && !hasFullDate(textDate)) {
+            return fileDate;
+        }
+        return !isBlank(textDate) ? textDate : fileDate;
+    }
+
+    private static String cleanMeetingTitle(String value) {
+        String cleaned = normalizeLine(value);
+        Matcher bracketMatcher = BRACKET_TITLE_PATTERN.matcher(cleaned);
+        if (bracketMatcher.find()) {
+            String bracketTitle = normalizeLine(bracketMatcher.group(1));
+            if (!isNoticeLabel(bracketTitle)) {
+                cleaned = bracketTitle;
+            }
+        }
+        cleaned = NOTICE_SUFFIX_PATTERN.matcher(cleaned).replaceAll("");
+        cleaned = cleaned.replaceAll("^[【\\[]\\s*|\\s*[】\\]]$", "");
+        return trimTitleSeparators(cleaned);
+    }
+
+    private static String trimTitleSeparators(String value) {
+        return TITLE_EDGE_SEPARATOR_PATTERN.matcher(safeString(value)).replaceAll("").trim();
+    }
+
+    private static boolean isStrongMeetingTitle(String title) {
+        String value = safeString(title);
+        return value.length() >= 4
+                && value.length() <= 120
+                && containsHan(value)
+                && !isNoticeLabel(value)
+                && (value.contains("专项") || value.contains("专题") || value.contains("会议"));
+    }
+
+    private static boolean isLooseMeetingTitle(String title) {
+        String value = safeString(title);
+        return value.length() >= 4
+                && value.length() <= 80
+                && containsHan(value)
+                && !isNoticeLabel(value)
+                && !value.contains("会议时间")
+                && !value.contains("会议地点")
+                && !value.contains("会议链接")
+                && !value.contains("会议号码")
+                && !value.contains("密码")
+                && !value.contains("请各位")
+                && !value.contains("现将")
+                && !value.contains("如下");
+    }
+
+    private static boolean isNoticeLabel(String value) {
+        String cleaned = safeString(value);
+        return cleaned.equals("会议通知")
+                || cleaned.equals("会议安排")
+                || cleaned.equals("通知")
+                || cleaned.equals("安排")
+                || cleaned.endsWith("会议通知")
+                || cleaned.endsWith("会议安排");
+    }
+
+    private static String parseDateText(String value) {
+        Matcher fullMatcher = FULL_DATE_PATTERN.matcher(safeString(value));
+        if (fullMatcher.find()) {
+            return formatFullDate(fullMatcher);
+        }
+        Matcher shortMatcher = SHORT_DATE_PATTERN.matcher(safeString(value));
+        if (shortMatcher.find()) {
+            return "%d月%d日".formatted(
+                    Integer.parseInt(shortMatcher.group(1)),
+                    Integer.parseInt(shortMatcher.group(2)));
+        }
+        return null;
+    }
+
+    private static boolean hasFullDate(String value) {
+        return FULL_DATE_PATTERN.matcher(safeString(value)).find();
+    }
+
+    private static String formatFullDate(Matcher matcher) {
+        return "%s年%d月%d日".formatted(
+                matcher.group(1),
+                Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3)));
+    }
+
+    private static String appendDateToTitle(String title, String dateText) {
+        String cleanedTitle = safeString(title);
+        if (isBlank(dateText) || titleContainsDate(cleanedTitle, dateText)) {
+            return cleanedTitle;
+        }
+        return cleanedTitle + "（" + dateText + "）";
+    }
+
+    private static boolean titleContainsDate(String title, String dateText) {
+        String dateKey = dateKey(dateText);
+        if (dateKey.isBlank()) {
+            return false;
+        }
+        return dateKey(title).contains(dateKey);
+    }
+
+    private static String dateKey(String value) {
+        Matcher fullMatcher = FULL_DATE_PATTERN.matcher(safeString(value));
+        if (fullMatcher.find()) {
+            return "%s%02d%02d".formatted(
+                    fullMatcher.group(1),
+                    Integer.parseInt(fullMatcher.group(2)),
+                    Integer.parseInt(fullMatcher.group(3)));
+        }
+        Matcher shortMatcher = SHORT_DATE_PATTERN.matcher(safeString(value));
+        if (shortMatcher.find()) {
+            return "%02d%02d".formatted(
+                    Integer.parseInt(shortMatcher.group(1)),
+                    Integer.parseInt(shortMatcher.group(2)));
+        }
+        return safeString(value).replaceAll("\\D", "");
+    }
+
+    private static boolean containsHan(String value) {
         return HAN_PATTERN.matcher(safeString(value)).find();
     }
 
@@ -1507,12 +1686,16 @@ public class PreMeetingService {
                 .replaceAll("[^a-z0-9]", "");
     }
 
-    private String stripExtension(String fileName) {
+    private static String stripExtension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
-    private String safeString(String value) {
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static String safeString(String value) {
         return value == null ? "" : value.trim();
     }
 

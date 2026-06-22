@@ -5,6 +5,7 @@ import {
   getMeetings,
   previewMeetingNotification,
   saveExpectedParticipants,
+  savePreMeetingFileToMeeting,
   sendMeetingNotification,
   uploadFileToMeeting,
   uploadPreMeetingFile,
@@ -56,10 +57,14 @@ const parseNotificationSendResult = (json?: string | null): MeetingNotificationS
   }
 }
 
+interface NotificationPreviewOptions {
+  showError?: boolean
+  showSuccess?: boolean
+}
+
 export default function MeetingsView() {
   const [meetings, setMeetings] = useState<Meeting[]>([])
   const [selectedMeetingId, setSelectedMeetingId] = useState<number | null>(null)
-  const [meetingName, setMeetingName] = useState('')
   const [meetingFiles, setMeetingFiles] = useState<MeetingFile[]>([])
   const [meetingHasExpected, setMeetingHasExpected] = useState(false)
   const [meetingUrl, setMeetingUrl] = useState('')
@@ -69,7 +74,6 @@ export default function MeetingsView() {
   const [selectedNotificationRecipients, setSelectedNotificationRecipients] = useState<Set<string>>(new Set())
   const [notificationSendResult, setNotificationSendResult] = useState<MeetingNotificationSendResult | null>(null)
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
   const [noticeUploading, setNoticeUploading] = useState(false)
   const [noticePreviewing, setNoticePreviewing] = useState(false)
   const [notificationSending, setNotificationSending] = useState(false)
@@ -101,7 +105,6 @@ export default function MeetingsView() {
       localStorage.removeItem(MEETINGS_STORAGE_KEYS.LAST_SELECTED_MEETING_ID)
     }
     const meeting = id ? source.find(item => item.id === id) : null
-    setMeetingName(meeting?.title || '')
     setMeetingUrl(meeting?.meetingUrl || '')
     setMeetingFiles(meeting?.files || [])
     setMeetingHasExpected(!!meeting?.hasExpectedParticipants)
@@ -141,30 +144,17 @@ export default function MeetingsView() {
     applyMeetingSelection(value ? Number(value) : null)
   }
 
-  const handleCreateMeeting = async () => {
-    const title = meetingName.trim()
-    if (!title) {
-      setError('请先输入会议名称')
-      return
+  const resolveMeetingForNotice = async (file: File, parsedFile: PreMeetingFile) => {
+    const parsedTitle = parsedFile.meetingTitle?.trim()
+    if (!parsedTitle && selectedMeeting) {
+      return selectedMeeting
     }
-    setCreating(true)
-    setError('')
-    try {
-      const result = await createMeeting({ title })
-      const created = result.data
-      const nextMeetings = [created, ...meetings.filter(item => item.id !== created.id)]
-      setMeetings(nextMeetings)
-      applyMeetingSelection(created.id, nextMeetings)
-      flash('会议已创建')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '新建会议失败')
-    } finally {
-      setCreating(false)
+    const title = parsedTitle || stripExtension(file.name) || '会议'
+    const existing = meetings.find(item => item.title === title)
+    if (existing) {
+      applyMeetingSelection(existing.id, meetings)
+      return existing
     }
-  }
-
-  const createMeetingForNotice = async (file: File, parsedFile: PreMeetingFile) => {
-    const title = parsedFile.meetingTitle || stripExtension(file.name) || '会议'
     const result = await createMeeting({ title })
     const created = result.data
     const nextMeetings = [created, ...meetings.filter(item => item.id !== created.id)]
@@ -173,19 +163,25 @@ export default function MeetingsView() {
     return created
   }
 
-  const runNotificationPreview = async (targetMeetingId = selectedMeetingId, targetFile = noticeFile) => {
+  const runNotificationPreview = async (
+    targetMeetingId = selectedMeetingId,
+    targetFile = noticeFile,
+    options: NotificationPreviewOptions = {},
+  ) => {
+    const showError = options.showError ?? true
+    const showSuccess = options.showSuccess ?? true
     if (!targetMeetingId) {
-      setError('请先选择或新建会议')
+      if (showError) setError('请先选择会议，或上传会议通知自动生成会议')
       return null
     }
     const normalizedMeetingUrl = meetingUrl.trim()
     if (!normalizedMeetingUrl) {
-      setError('请先填写会议链接')
+      if (showError) setError('请先填写会议链接')
       return null
     }
     setNoticePreviewing(true)
-    setError('')
-      try {
+    if (showError) setError('')
+    try {
       const preview = await previewMeetingNotification(
         targetMeetingId,
         targetFile?.fileId,
@@ -209,10 +205,12 @@ export default function MeetingsView() {
       ))
       setMeetingUrl(preview.meetingUrl || normalizedMeetingUrl)
       setMeetingHasExpected(preview.participantNames.length > 0)
-      flash('会议通知已解析')
+      if (showSuccess) flash('会议通知已解析')
       return preview
     } catch (err) {
-      setError(err instanceof Error ? err.message : '解析会议通知失败')
+      if (showError) {
+        setError(err instanceof Error ? err.message : '解析会议通知失败')
+      }
       return null
     } finally {
       setNoticePreviewing(false)
@@ -222,7 +220,7 @@ export default function MeetingsView() {
   useEffect(() => {
     if (!selectedMeetingId || notificationPreview || noticePreviewing || noticeUploading) return
     if (!meetingUrl.trim() || meetingFiles.length === 0) return
-    void runNotificationPreview(selectedMeetingId, null)
+    void runNotificationPreview(selectedMeetingId, null, { showError: false, showSuccess: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMeetingId, meetingUrl, meetingFiles.length])
 
@@ -248,9 +246,9 @@ export default function MeetingsView() {
         throw new Error('未解析到可用的会议通知文件')
       }
       const parsedFile = parsedFiles[0]
-      const targetMeeting = selectedMeeting || await createMeetingForNotice(file, parsedFile)
+      const targetMeeting = await resolveMeetingForNotice(file, parsedFile)
       const targetMeetingId = targetMeeting.id
-      const savedFileResult = await uploadFileToMeeting(targetMeetingId, file)
+      const savedFileResult = await savePreMeetingFileToMeeting(targetMeetingId, parsedFile.fileId)
       if (savedFileResult.code !== RESULT_OK_CODE) {
         throw new Error(savedFileResult.message || '保存会议通知失败')
       }
@@ -260,7 +258,7 @@ export default function MeetingsView() {
         throw new Error(expectedResult.message || '保存应到名单失败')
       }
       setNoticeFile(parsedFile)
-      setMeetingFiles(previous => [...previous, savedFile])
+      setMeetingFiles([...(targetMeeting.files || []), savedFile])
       setMeetingHasExpected((expectedResult.data || 0) > 0)
       setMeetings(previous => previous.map(item =>
         item.id === targetMeetingId
@@ -282,7 +280,7 @@ export default function MeetingsView() {
 
   const handleUploadFile = async (file: File) => {
     if (!selectedMeetingId) {
-      setError('请先选择或新建会议')
+      setError('请先选择会议，或上传会议通知自动生成会议')
       return
     }
     if (!isAcceptedReportFile(file)) {
@@ -350,7 +348,7 @@ export default function MeetingsView() {
 
   const handleSendNotification = async () => {
     if (!selectedMeetingId) {
-      setError('请先选择或新建会议')
+      setError('请先选择会议，或上传会议通知自动生成会议')
       return
     }
     const content = notificationContent.trim()
@@ -421,23 +419,6 @@ export default function MeetingsView() {
                 ))}
               </select>
             </label>
-          </div>
-
-          <div className="meetings-create-row">
-            <input
-              value={meetingName}
-              onChange={event => setMeetingName(event.target.value)}
-              placeholder="输入会议名称新建会议"
-              maxLength={120}
-            />
-            <button
-              className="meetings-primary-btn"
-              type="button"
-              onClick={handleCreateMeeting}
-              disabled={creating || !meetingName.trim()}
-            >
-              {creating ? '新建中...' : '新建会议'}
-            </button>
           </div>
 
           <div className="meetings-notice-grid">
@@ -612,7 +593,7 @@ export default function MeetingsView() {
           </div>
 
           {!selectedMeetingId ? (
-            <div className="meetings-empty">请先选择或新建会议</div>
+            <div className="meetings-empty">请先选择会议，或上传会议通知自动生成会议</div>
           ) : (
             <>
               <div

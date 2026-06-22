@@ -105,24 +105,50 @@ public class MeetingService {
     }
 
     public MeetingFileVo uploadFile(AuthenticatedActor actor, Long meetingId, MultipartFile file) throws IOException {
-        log.info("[MeetingService] uploadFile start, meetingId={}, fileName={}", meetingId, file.getOriginalFilename());
+        log.info("[MeetingService] uploadFile start, meetingId={}, fileName={}",
+                meetingId, file != null ? file.getOriginalFilename() : null);
         requireOwner(actor, meetingId);
+        if (file == null || file.isEmpty()) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请选择要上传的会议文件");
+        }
         String originalName = file.getOriginalFilename();
         if (originalName == null || originalName.isBlank()) originalName = "unnamed";
         String ext = extension(originalName).toLowerCase();
-        if (!REPORT_FILE_EXTENSIONS.contains(ext)) {
-            log.warn("[MeetingService] uploadFile rejected, meetingId={}, fileName={}, ext={}", meetingId, originalName, ext);
-            throw BizException.of(ErrorCode.BAD_REQUEST, REPORT_FILE_TYPE_MESSAGE);
-        }
+        validateReportFileType(meetingId, originalName, ext);
         byte[] rawBytes = file.getBytes();
         String text = preMeetingService.extractFileText(rawBytes, ext, originalName);
+        return persistFile(meetingId, originalName, ext, text, rawBytes);
+    }
+
+    public MeetingFileVo savePreMeetingFile(AuthenticatedActor actor, Long meetingId, String fileId) {
+        log.info("[MeetingService] savePreMeetingFile start, meetingId={}, fileId={}", meetingId, fileId);
+        requireOwner(actor, meetingId);
+        PreMeetingService.StoredPreMeetingFile storedFile = preMeetingService.requireStoredFile(fileId);
+        String originalName = storedFile.fileName();
+        if (originalName == null || originalName.isBlank()) originalName = "unnamed";
+        String ext = storedFile.fileType() == null || storedFile.fileType().isBlank()
+                ? extension(originalName).toLowerCase()
+                : storedFile.fileType().toLowerCase();
+        validateReportFileType(meetingId, originalName, ext);
+        MeetingFileVo saved = persistFile(
+                meetingId,
+                originalName,
+                ext,
+                storedFile.text(),
+                storedFile.originalBytes());
+        log.info("[MeetingService] savePreMeetingFile done, meetingId={}, fileId={}, savedFileId={}",
+                meetingId, fileId, saved.getId());
+        return saved;
+    }
+
+    private MeetingFileVo persistFile(Long meetingId, String originalName, String ext, String text, byte[] rawBytes) {
         String normalizedText = text == null ? "" : text;
         PersistentPreMeetingFile entity = new PersistentPreMeetingFile();
         entity.setMeetingId(meetingId);
         entity.setFileName(originalName);
         entity.setFileType(ext);
         entity.setFileContent(normalizedText);
-        entity.setFileData(rawBytes);
+        entity.setFileData(rawBytes == null ? new byte[0] : rawBytes);
         fileMapper.insert(entity);
         log.info("[MeetingService] uploadFile done, meetingId={}, fileName={}, textLen={}",
                 meetingId, originalName, normalizedText.length());
@@ -130,6 +156,14 @@ public class MeetingService {
             contentEmbeddingService.asyncEmbedFileContent(entity.getId(), meetingId, originalName, normalizedText);
         }
         return toFileVo(entity);
+    }
+
+    private void validateReportFileType(Long meetingId, String originalName, String ext) {
+        if (!REPORT_FILE_EXTENSIONS.contains(ext)) {
+            log.warn("[MeetingService] uploadFile rejected, meetingId={}, fileName={}, ext={}",
+                    meetingId, originalName, ext);
+            throw BizException.of(ErrorCode.BAD_REQUEST, REPORT_FILE_TYPE_MESSAGE);
+        }
     }
 
     public List<MeetingFileVo> getFiles(AuthenticatedActor actor, Long meetingId) {
@@ -306,9 +340,12 @@ public class MeetingService {
 
     private PersistentPreMeetingFile selectMeetingNotice(List<PersistentPreMeetingFile> files) {
         return files.stream()
-                .filter(file -> isNoticeLike(file.getFileName()))
+                .filter(file -> isNoticeLike(file.getFileName()) && hasFileContent(file))
                 .findFirst()
-                .orElse(files.get(0));
+                .orElseGet(() -> files.stream()
+                        .filter(this::hasFileContent)
+                        .findFirst()
+                        .orElse(files.get(0)));
     }
 
     private boolean isNoticeLike(String fileName) {
@@ -317,5 +354,9 @@ public class MeetingService {
         }
         String lower = fileName.toLowerCase();
         return NOTICE_FILE_NAME_HINTS.stream().anyMatch(lower::contains);
+    }
+
+    private boolean hasFileContent(PersistentPreMeetingFile file) {
+        return file != null && file.getFileContent() != null && !file.getFileContent().isBlank();
     }
 }

@@ -16,12 +16,14 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -102,6 +104,29 @@ class MeetingServiceSecurityTest {
     }
 
     @Test
+    void getMeetingNoticeTextSkipsEmptyLegacyNoticeFile() {
+        Meeting meeting = new Meeting();
+        meeting.setId(10L);
+        meeting.setUserId(1L);
+        PersistentPreMeetingFile emptyNotice = new PersistentPreMeetingFile();
+        emptyNotice.setId(20L);
+        emptyNotice.setMeetingId(10L);
+        emptyNotice.setFileName("2026.06.19——会议通知.pdf");
+        emptyNotice.setFileContent("");
+        PersistentPreMeetingFile usableNotice = new PersistentPreMeetingFile();
+        usableNotice.setId(21L);
+        usableNotice.setMeetingId(10L);
+        usableNotice.setFileName("2026.06.19——会议通知.pdf");
+        usableNotice.setFileContent("会议时间：2026年6月19日");
+        when(meetingMapper.findById(10L)).thenReturn(meeting);
+        when(fileMapper.findByMeetingId(10L)).thenReturn(List.of(emptyNotice, usableNotice));
+
+        String noticeText = service.getMeetingNoticeText(new AuthenticatedActor(1L), 10L);
+
+        assertEquals("会议时间：2026年6月19日", noticeText);
+    }
+
+    @Test
     void uploadFile_acceptsPdfReportFiles() throws Exception {
         Meeting meeting = new Meeting();
         meeting.setId(10L);
@@ -122,6 +147,27 @@ class MeetingServiceSecurityTest {
         assertEquals("report.pdf", captor.getValue().getFileName());
         assertEquals("pdf", captor.getValue().getFileType());
         assertEquals("extracted report", captor.getValue().getFileContent());
+    }
+
+    @Test
+    void savePreMeetingFile_reusesParsedTextWithoutReparsingUpload() throws Exception {
+        Meeting meeting = new Meeting();
+        meeting.setId(10L);
+        meeting.setUserId(1L);
+        when(meetingMapper.findById(10L)).thenReturn(meeting);
+        byte[] content = "raw-pdf".getBytes(StandardCharsets.UTF_8);
+        when(preMeetingService.requireStoredFile("parsed-1"))
+                .thenReturn(new PreMeetingService.StoredPreMeetingFile(
+                        "notice.pdf", "pdf", "already extracted", content));
+
+        MeetingFileVo uploaded = service.savePreMeetingFile(new AuthenticatedActor(1L), 10L, "parsed-1");
+
+        ArgumentCaptor<PersistentPreMeetingFile> captor = ArgumentCaptor.forClass(PersistentPreMeetingFile.class);
+        verify(fileMapper).insert(captor.capture());
+        assertEquals("notice.pdf", uploaded.getFileName());
+        assertEquals("pdf", uploaded.getFileType());
+        assertEquals("already extracted", captor.getValue().getFileContent());
+        verify(preMeetingService, never()).extractFileText(any(byte[].class), eq("pdf"), eq("notice.pdf"));
     }
 
     @Test
