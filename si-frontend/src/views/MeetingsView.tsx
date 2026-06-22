@@ -119,11 +119,9 @@ export default function MeetingsView() {
       const result = await getMeetings()
       const list = result.data || []
       setMeetings(list)
-      const saved = Number(localStorage.getItem(MEETINGS_STORAGE_KEYS.LAST_SELECTED_MEETING_ID))
-      const nextId = Number.isSafeInteger(saved) && list.some(item => item.id === saved)
-        ? saved
-        : list[0]?.id ?? null
-      applyMeetingSelection(nextId, list)
+      // 进入会议页默认不自动选中任何会议（下拉显示"请选择会议"，各区块为空），
+      // 由用户手动选择，避免一进来就带出上次或第一个（可能已删）会议的数据。
+      applyMeetingSelection(null, list)
     } catch (err) {
       setError(err instanceof Error ? err.message : '会议加载失败')
     } finally {
