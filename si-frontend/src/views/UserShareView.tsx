@@ -23,7 +23,9 @@ const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
 const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 1.35x 排空更快, 压客户端积压)
 // 积压硬上限: 变速仍追不上、积压超过此值时, 丢弃已排队的旧音频并跳回接近实时,
 // 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。文本不受影响。
-const DROP_BACKLOG_SEC = 8.0
+// 取 25s(此前 8s 过激, 会把长句子的后半段也丢掉): 长句 TTS 可完整播完, 句间停顿
+// 会把积压自然排空, 平时延迟不会持续累积; 仅超长独白才可能临时落后, 此时才触发丢弃兜底。
+const DROP_BACKLOG_SEC = 25.0
 // 与后端 Constants.WS_CLOSE_SHARE_FULL 对应：收听人数已满的 WS 关闭码
 const SHARE_FULL_CLOSE_CODE = 4290
 const catchupRate = (backlogSec: number): number => {
