@@ -120,6 +120,23 @@
   transition: background 0.13s, border-color 0.13s, color 0.13s;
 }
 
+/* 一键清空全部术语：危险操作，红色描边以示警示 */
+.terminology-toolbar .term-clear-all-btn {
+  margin-left: auto;
+  border-color: #f1b0b7;
+  color: #b42318;
+  background: #fff5f5;
+}
+.terminology-toolbar .term-clear-all-btn:hover:not(:disabled) {
+  background: #b42318;
+  border-color: #b42318;
+  color: #fff;
+}
+.terminology-toolbar .term-clear-all-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .terminology-editor-actions button:hover,
 .terminology-toolbar button:hover,
 .terminology-table-wrap button:hover {

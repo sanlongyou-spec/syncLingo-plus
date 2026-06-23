@@ -285,6 +285,17 @@ public class TerminologyService {
         log.info("[TerminologyService] deleteTerminology end, id={}", id);
     }
 
+    /** 清空当前用户的全部术语，返回删除条数。 */
+    @Transactional
+    public int clearAllTerminologies(Long userId) {
+        log.info("[TerminologyService] clearAllTerminologies start, userId={}", userId);
+        requireUserId(userId);
+        int deleted = terminologyMapper.deleteAllByUserId(userId);
+        invalidateTerminologyIndex(userId);
+        log.info("[TerminologyService] clearAllTerminologies end, userId={}, deleted={}", userId, deleted);
+        return deleted;
+    }
+
     private void requireUserId(Long userId) {
         if (userId == null) {
             throw BizException.of(ErrorCode.UNAUTHORIZED, "Unauthenticated");

@@ -1,5 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react'
 import {
+  clearAllTerminology,
   confirmHotwordsFromSession,
   createAsrHotword,
   createAsrHotwordsBatch,
@@ -99,6 +100,7 @@ export default function TerminologyView() {
   const [userImportMessage, setUserImportMessage] = useState('')
   const [termImporting, setTermImporting] = useState(false)
   const [termImportMessage, setTermImportMessage] = useState('')
+  const [clearingTerms, setClearingTerms] = useState(false)
 
   const [collapsedTermGroups, setCollapsedTermGroups] = useState<Set<string>>(new Set())
   const [collapsedHwGroups, setCollapsedHwGroups] = useState<Set<string>>(new Set())
@@ -374,6 +376,22 @@ export default function TerminologyView() {
     await loadItems()
   }
 
+  const clearAllTerms = async () => {
+    if (!window.confirm('确定清空当前账号的全部术语吗？此操作不可恢复！')) return
+    if (!window.confirm('再次确认：将永久删除所有术语，是否继续？')) return
+    setClearingTerms(true)
+    setError('')
+    try {
+      const res = await clearAllTerminology()
+      await loadItems()
+      window.alert(`已清空，共删除 ${res.data ?? 0} 条术语`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清空术语失败')
+    } finally {
+      setClearingTerms(false)
+    }
+  }
+
   const removeHotword = async (item: AsrHotword) => {
     if (!item.id || !window.confirm('删除这个热词？')) return
     await deleteAsrHotword(item.id)
@@ -534,6 +552,16 @@ export default function TerminologyView() {
             <button type="submit">查询</button>
             {activeTab === 'hotwords' && (
               <button type="button" className="extract-btn" onClick={() => { void openExtractModal() }}>从历史提取热词</button>
+            )}
+            {activeTab === 'terminology' && (
+              <button
+                type="button"
+                className="term-clear-all-btn"
+                disabled={clearingTerms || terms.length === 0}
+                onClick={() => { void clearAllTerms() }}
+              >
+                {clearingTerms ? '清空中...' : '清空全部术语'}
+              </button>
             )}
           </form>
           {error && <div className="terminology-error">{error}</div>}

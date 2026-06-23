@@ -105,4 +105,14 @@ public class TerminologyController {
         log.info("[TerminologyController] deleteTerminology end, id={}", id);
         return Result.ok();
     }
+
+    /** 一键清空当前账号的全部术语，返回删除条数。 */
+    @DeleteMapping("/all")
+    public Result<Integer> clearAllTerminologies() {
+        Long userId = AuthContext.requireActor().userId();
+        log.info("[TerminologyController] clearAllTerminologies start, userId={}", userId);
+        int deleted = facade.clearAll(userId);
+        log.info("[TerminologyController] clearAllTerminologies end, userId={}, deleted={}", userId, deleted);
+        return Result.ok(deleted);
+    }
 }

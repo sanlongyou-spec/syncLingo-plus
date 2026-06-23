@@ -72,6 +72,13 @@ public class TerminologyFacade {
         log.info("[TerminologyFacade] delete end, id={}, userId={}", id, userId);
     }
 
+    public int clearAll(Long userId) {
+        log.info("[TerminologyFacade] clearAll start, userId={}", userId);
+        int deleted = terminologyService.clearAllTerminologies(userId);
+        log.info("[TerminologyFacade] clearAll end, userId={}, deleted={}", userId, deleted);
+        return deleted;
+    }
+
     private Terminology toEntity(Long userId, SaveTerminologyRequest request) {
         Terminology terminology = new Terminology();
         terminology.setUserId(userId);

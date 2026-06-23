@@ -241,9 +241,10 @@ jwt:
   secret: ${JWT_SECRET:change_this_secret_to_random_32_plus_chars}
   expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 
-# 分享页收听并发上限：超过即拒绝新听众，防止带宽/内存被打满。
+# 分享页收听并发上限：> 0 时超过即拒绝新听众；0 = 不限制(当前默认不限制)。
+# 需要重新限制时把 SHARE_MAX_AUDIO_CONNECTIONS 设为正数即可。
 share:
-  max-audio-connections: ${SHARE_MAX_AUDIO_CONNECTIONS:130}
+  max-audio-connections: ${SHARE_MAX_AUDIO_CONNECTIONS:0}
   # 共享链接有效期（小时）：所有链接自签发起仅在此时长内有效，过期自动失效。
   token-validity-hours: ${SHARE_TOKEN_VALIDITY_HOURS:6}
 

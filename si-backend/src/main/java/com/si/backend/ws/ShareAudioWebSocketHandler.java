@@ -61,9 +61,9 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     private final Map<String, OpusStreamEncoder> encoders = new ConcurrentHashMap<>();
     private final ShareWsTicketService shareWsTicketService;
 
-    /** 最大并发收听(音频)连接数：超过即拒绝新听众，防止带宽/线程/内存被压垮。 */
-    @Value("${share.max-audio-connections:130}")
-    private int maxAudioConnections = 130;
+    /** 最大并发收听(音频)连接数：> 0 时超过即拒绝新听众；<= 0 表示不限制(当前默认不限制)。 */
+    @Value("${share.max-audio-connections:0}")
+    private int maxAudioConnections = 0;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -78,9 +78,9 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
             closeQuietly(session);
             return;
         }
-        // 并发上限保护：达到最大收听连接数则拒绝新听众，前端据关闭码提示"人数已满"。
+        // 并发上限保护：仅当 maxAudioConnections > 0 时启用；<= 0 表示不限制收听人数。
         int current = connectionMap.size();
-        if (current >= maxAudioConnections) {
+        if (maxAudioConnections > 0 && current >= maxAudioConnections) {
             log.warn("[ShareAudioWebSocketHandler] capacity full, reject, current={}, max={}, sessionId={}, connectionId={}",
                     current, maxAudioConnections, sessionId, session.getId());
             try {

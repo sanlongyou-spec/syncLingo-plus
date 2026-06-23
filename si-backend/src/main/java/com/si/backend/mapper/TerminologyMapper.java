@@ -93,6 +93,9 @@ public interface TerminologyMapper {
     @Update("DELETE FROM terminology WHERE id = #{id} AND user_id = #{userId}")
     int deleteById(@Param("id") Long id, @Param("userId") Long userId);
 
+    @Update("DELETE FROM terminology WHERE user_id = #{userId}")
+    int deleteAllByUserId(@Param("userId") Long userId);
+
     @Update("ALTER TABLE terminology ADD COLUMN user_id BIGINT DEFAULT 1 AFTER id")
     void addUserIdColumnIfNotExists();
 

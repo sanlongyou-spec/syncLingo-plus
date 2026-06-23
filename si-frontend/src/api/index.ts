@@ -261,6 +261,10 @@ export const updateTerminologyEnabled = (id: number, enabled: boolean): Promise<
 export const deleteTerminology = (id: number): Promise<Result<void>> =>
   client.delete<Result<void>>(`/api/terminology/${id}`).then(r => r.data)
 
+// 一键清空当前账号的全部术语，返回删除条数
+export const clearAllTerminology = (): Promise<Result<number>> =>
+  client.delete<Result<number>>('/api/terminology/all').then(r => r.data)
+
 export const createHotwordsFromTerminology = (terminologyId: number): Promise<Result<AsrHotword[]>> =>
   client.post<Result<AsrHotword[]>>(`/api/asr-hotwords/from-terminology/${terminologyId}`).then(r => r.data)
 
