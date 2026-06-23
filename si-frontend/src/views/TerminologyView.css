@@ -137,6 +137,54 @@
   cursor: not-allowed;
 }
 
+/* 术语翻译测试框 */
+.term-test-panel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e7ecf3;
+}
+.term-test-panel h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #101828;
+}
+.term-test-input {
+  width: 100%;
+  min-height: 56px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  resize: vertical;
+}
+.term-test-langs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.term-test-langs select {
+  height: 34px;
+  border: 1px solid #d5dde8;
+  border-radius: 8px;
+  padding: 0 8px;
+  background: #fff;
+}
+.term-test-arrow {
+  color: #667085;
+}
+.term-test-result {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #f4f8ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #101828;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .terminology-editor-actions button:hover,
 .terminology-toolbar button:hover,
 .terminology-table-wrap button:hover {

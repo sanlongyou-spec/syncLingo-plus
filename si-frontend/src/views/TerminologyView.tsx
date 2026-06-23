@@ -17,6 +17,7 @@ import {
   importSystemUsers,
   importTerminology,
   previewHotwordsFromSession,
+  translateText,
   updateAsrHotword,
   updateAsrHotwordEnabled,
   updateSystemUser,
@@ -101,6 +102,12 @@ export default function TerminologyView() {
   const [termImporting, setTermImporting] = useState(false)
   const [termImportMessage, setTermImportMessage] = useState('')
   const [clearingTerms, setClearingTerms] = useState(false)
+  // 术语翻译测试
+  const [testText, setTestText] = useState('')
+  const [testSource, setTestSource] = useState('zh')
+  const [testTarget, setTestTarget] = useState('id')
+  const [testResult, setTestResult] = useState('')
+  const [testing, setTesting] = useState(false)
 
   const [collapsedTermGroups, setCollapsedTermGroups] = useState<Set<string>>(new Set())
   const [collapsedHwGroups, setCollapsedHwGroups] = useState<Set<string>>(new Set())
@@ -376,6 +383,23 @@ export default function TerminologyView() {
     await loadItems()
   }
 
+  const runTermTest = async () => {
+    const text = testText.trim()
+    if (!text) { setError('请输入要测试的文本'); return }
+    if (testSource === testTarget) { setError('源语言和目标语言不能相同'); return }
+    setTesting(true)
+    setError('')
+    setTestResult('')
+    try {
+      const res = await translateText(text, testSource, testTarget)
+      setTestResult(res.data || '(空)')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '翻译测试失败')
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const clearAllTerms = async () => {
     if (!window.confirm('确定清空当前账号的全部术语吗？此操作不可恢复！')) return
     if (!window.confirm('再次确认：将永久删除所有术语，是否继续？')) return
@@ -474,6 +498,30 @@ export default function TerminologyView() {
               </label>
               <div className="user-import-hint">表头需含「中文/印尼语/英语」(可含拼音/分类/备注)，重复项自动跳过</div>
               {termImportMessage && <div className="user-import-message">{termImportMessage}</div>}
+            </div>
+
+            <div className="term-test-panel">
+              <h3>术语翻译测试</h3>
+              <textarea
+                className="term-test-input"
+                value={testText}
+                onChange={e => setTestText(e.target.value)}
+                placeholder="输入含术语的句子，验证是否按术语表翻译"
+              />
+              <div className="term-test-langs">
+                <select value={testSource} onChange={e => setTestSource(e.target.value)}>
+                  <option value="zh">中文</option><option value="id">印尼语</option><option value="en">英语</option>
+                </select>
+                <span className="term-test-arrow">→</span>
+                <select value={testTarget} onChange={e => setTestTarget(e.target.value)}>
+                  <option value="id">印尼语</option><option value="zh">中文</option><option value="en">英语</option>
+                </select>
+                <button type="button" onClick={() => { void runTermTest() }} disabled={testing}>
+                  {testing ? '翻译中...' : '测试翻译'}
+                </button>
+              </div>
+              {testResult && <div className="term-test-result">{testResult}</div>}
+              <div className="user-import-hint">用当前账号的术语翻译；译文若用了术语表的目标译名即说明该术语生效</div>
             </div>
           </section>
         )}
