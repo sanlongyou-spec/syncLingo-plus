@@ -75,20 +75,18 @@ chmod 600 /opt/syncLingo/backend.env /opt/syncLingo/bot/CallingBotSample/appsett
 - Azure Speech / Google Translate / Cartesia / OpenAI or OpenRouter keys
 - `BOT_API_ALLOWED_USER_IDS`：允许从网页发送 Teams 通知的操作员用户 ID 列表
 
-语音性别检测和全局男/女音色需要设置：
+TTS 一律使用各目标语言的母语**男声**（已移除性别检测/女声）。配置男声音色：
 
 ```bash
-VOICE_GENDER_SERVICE_ENABLED=true
-VOICE_GENDER_SERVICE_URL=http://127.0.0.1:7000
-VOICE_GENDER_TIMEOUT_MS=5000
-TTS_VOICE_GENDER_ENABLED=true
-CARTESIA_GLOBAL_MALE_VOICE_ID=<real-cartesia-male-voice-id>
-CARTESIA_GLOBAL_FEMALE_VOICE_ID=<real-cartesia-female-voice-id>
+CARTESIA_GLOBAL_MALE_VOICE_ID=<real-cartesia-male-voice-id>   # 全局兜底男声
+CARTESIA_ZH_MALE_VOICE_ID=<real-zh-male-voice-id>             # 中文母语男声
+CARTESIA_EN_MALE_VOICE_ID=<real-en-male-voice-id>
+CARTESIA_ID_MALE_VOICE_ID=<real-id-male-voice-id>
 ```
 
-`CARTESIA_GLOBAL_MALE_VOICE_ID` 和 `CARTESIA_GLOBAL_FEMALE_VOICE_ID` 必须是真实
-Cartesia voice ID，不要保留占位文字。否则后端可以检测性别，但 TTS 会因为没有
-可用全局男/女音色而回退。
+`CARTESIA_*_MALE_VOICE_ID` 必须是真实 Cartesia voice ID（建议各语种配母语男声，否则
+跨语种发音不自然）。语种专属男声留空时回退到全局男声。可用 `scripts/select-cartesia-voices.sh`
+按 language+gender=masculine 从官方 /voices 选取。
 
 ## 4. MySQL
 
@@ -129,7 +127,7 @@ docker run -d --name si-backend --restart=always --network host \
   si-backend:latest
 
 curl -sf http://127.0.0.1:8080/api/health
-docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|VoiceGenderIntegration|SpeakerVoiceGenderService|ERROR|Exception'
+docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|ERROR|Exception'
 ```
 
 > **必须固定带上 `-v /opt/syncLingo/audio-records:/app/audio-records`**：录音写在容器内 `/app/audio-records`，不挂卷则每次 `docker rm`/重建都会丢失，合并会议录音时会出现 `source recording skipped`。`-Xmx2g`（而非 3g）给 8G 机器留内存余量，避免 OOM。
@@ -142,10 +140,9 @@ python3 -m venv .venv
 .venv/bin/pip install -U pip wheel
 .venv/bin/pip install -r requirements.txt
 if [ -f requirements-optional.txt ]; then .venv/bin/pip install -r requirements-optional.txt; fi
-if [ -f tools/ensure_voice_gender_model.py ]; then .venv/bin/python tools/ensure_voice_gender_model.py; fi
 ```
 
-声纹和性别模型放在 `speaker-service/models/`，模型下载产物不入库。
+声纹/标点/分句模型放在 `speaker-service/models/`，模型下载产物不入库。
 
 ```bash
 cp /opt/syncLingo/deploy/linux/systemd/si-speaker.service /etc/systemd/system/
@@ -273,7 +270,6 @@ docker run -d --name si-backend --restart=always --network host \
 cd /opt/syncLingo/speaker-service
 .venv/bin/pip install -r requirements.txt
 if [ -f requirements-optional.txt ]; then .venv/bin/pip install -r requirements-optional.txt; fi
-if [ -f tools/ensure_voice_gender_model.py ]; then .venv/bin/python tools/ensure_voice_gender_model.py; fi
 
 cd /opt/syncLingo/si-frontend
 npm ci && npm run build
@@ -297,7 +293,7 @@ nginx -t
 systemctl restart si-speaker si-bot
 systemctl reload nginx
 curl -sf http://127.0.0.1:8080/api/health
-docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|VoiceGenderIntegration|SpeakerVoiceGenderService|ERROR|Exception'
+docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|ERROR|Exception'
 systemctl is-active si-speaker si-bot nginx
 docker ps --filter name=si-backend --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
 echo "deployed commit=$NEW_COMMIT imageTag=$NEW_TAG"
@@ -347,41 +343,14 @@ journalctl -u si-bot -f
 tail -f /var/log/nginx/access.log /var/log/nginx/error.log
 ```
 
-Voice gender runtime check during a real meeting:
+TTS 音色运行检查（应一律选用各目标语言的男声）：
 
 ```bash
-docker logs -f si-backend 2>&1 | grep -E 'VoiceGenderIntegration|SpeakerVoiceGenderService|detect end|resolveVoiceIdByGender|gender voiceId selected|gender voiceId blank'
+docker logs -f si-backend 2>&1 | grep -E 'resolveVoiceId.*reason='
 ```
 
-Expected successful selection examples:
-
-```text
-detect end ... accepted=MALE
-gender voiceId selected, reason=male ... voiceId=<real-cartesia-male-voice-id>
-detect end ... accepted=FEMALE
-gender voiceId selected, reason=female ... voiceId=<real-cartesia-female-voice-id>
-```
-
-If `gender voiceId blank` appears, the backend is detecting gender but the
-global male/female voice IDs are missing or still placeholders in `backend.env`.
-
-If live testing shows `resolveGender ... gender=UNKNOWN` followed by
-`schedule skipped ... reason=maxRetries`, collect the raw detection result before
-changing thresholds:
-
-```bash
-docker logs --since "10 minutes ago" si-backend 2>&1 \
-  | grep -E 'VoiceGenderIntegration|detect end|accepted=|timeout|gender voiceId selected|resolveVoiceIdByGender|schedule skipped' \
-  | tail -n 260
-```
-
-Use the result to distinguish timeout from confidence rejection:
-
-- `timeout ... budgetMs=5000`: the local model response is still too slow.
-- `detect end ... rawGender=FEMALE ... accepted=UNKNOWN`: the model returned a
-  female score, but the configured confidence/margin thresholds rejected it.
-- `gender voiceId selected, reason=female`: the backend selected the global
-  female Cartesia voice ID and TTS should use the female voice.
+预期日志：`resolveVoiceId ... reason=male, voiceId=<对应语种男声>`（或 `reason=explicit`
+用户手选音色 / `reason=target-default-*` 未配男声时回退默认音色）。已无任何性别检测日志。
 
 Backups:
 

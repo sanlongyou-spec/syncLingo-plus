@@ -122,8 +122,6 @@ docker run -d --name si-backend -p 8080:8080 --env-file "%BACKEND_ENV_FILE%" ^
   -e APP_HOST=0.0.0.0 ^
   -e SPEAKER_SERVICE_ENABLED=true ^
   -e SPEAKER_SERVICE_URL=http://host.docker.internal:17000 ^
-  -e VOICE_GENDER_SERVICE_ENABLED=true ^
-  -e VOICE_GENDER_SERVICE_URL=http://host.docker.internal:17000 ^
   -e BOT_API_URL=http://host.docker.internal:3978 ^
   si-backend:latest
 set "RUN_RESULT=%errorlevel%"
@@ -141,7 +139,7 @@ if errorlevel 1 (
     echo [SKIP] Python not found, speaker service will not be started.
     echo        To enable: install Python 3.10+, then run: cd speaker-service ^&^& python main.py
 ) else (
-    start "syncLingo Speaker Service" /D "%ROOT%speaker-service" cmd /k "set VOICE_GENDER_ENABLED=true&& set VOICE_GENDER_MODEL_DIR=models/wav2vec2-large-robust-6-ft-age-gender&& set PORT=17000&& set HOST=0.0.0.0&& call start.bat"
+    start "syncLingo Speaker Service" /D "%ROOT%speaker-service" cmd /k "set PORT=17000&& set HOST=0.0.0.0&& call start.bat"
     echo Speaker service starting at http://localhost:17000
 )
 

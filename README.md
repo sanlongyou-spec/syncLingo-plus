@@ -7,7 +7,7 @@ syncLingo Plus is a commercial simultaneous interpretation and meeting knowledge
 - Frontend: React + Vite static files served by Nginx.
 - Backend: Spring Boot 3 / Java 21, packaged as a Docker image from the root `Dockerfile`.
 - Database: MySQL 8.
-- Speaker service: Python FastAPI service for speaker identity and voice-gender detection.
+- Speaker service: Python FastAPI service for punctuation restoration and sentence-boundary detection.
 - Teams Bot: C# Bot Framework service under `bot/CallingBotSample`.
 - Public ingress: Linux server + Nginx + HTTPS.
 - No ngrok is used in production. Azure Bot Messaging endpoint must point to `https://<domain>/api/messages`.
@@ -18,7 +18,7 @@ syncLingo Plus is a commercial simultaneous interpretation and meeting knowledge
 |---|---|
 | `si-backend/` | Java backend, database migrations, authorization, ASR/translation/TTS/RAG integrations |
 | `si-frontend/` | React frontend |
-| `speaker-service/` | Python speaker recognition, punctuation, segmentation, and voice-gender helper service |
+| `speaker-service/` | Python punctuation restoration and sentence-boundary segmentation helper service |
 | `bot/CallingBotSample/` | C# Teams Bot service |
 | `deploy/linux/` | Production Linux templates for env, systemd, and Nginx |
 | `docs/deployment-runbook.md` | Canonical production deployment and operations runbook |

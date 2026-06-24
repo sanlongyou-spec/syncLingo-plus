@@ -32,8 +32,11 @@ public class TtsService {
                 cartesiaStreamingIntegration.prewarmPool(properties.getDefaultVoiceIdEnglish(), warmCount);
             }
             if (properties.getVoiceGender() != null) {
+                // 仅预热男声音色（已移除性别检测/女声）
                 prewarmIfConfigured(properties.getVoiceGender().getMaleVoiceId(), warmCount);
-                prewarmIfConfigured(properties.getVoiceGender().getFemaleVoiceId(), warmCount);
+                prewarmIfConfigured(properties.getVoiceGender().getZhMaleVoiceId(), warmCount);
+                prewarmIfConfigured(properties.getVoiceGender().getEnMaleVoiceId(), warmCount);
+                prewarmIfConfigured(properties.getVoiceGender().getIdMaleVoiceId(), warmCount);
             }
             log.info("[TtsService] init end");
         });

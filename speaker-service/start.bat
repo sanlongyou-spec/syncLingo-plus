@@ -27,15 +27,5 @@ if /I "%INSTALL_WTPSPLIT%"=="true" (
 if not defined SPEAKER_MIN_SCORE set SPEAKER_MIN_SCORE=0.4
 if not defined PORT set PORT=7000
 if not defined HOST set HOST=0.0.0.0
-if not defined VOICE_GENDER_ENABLED set VOICE_GENDER_ENABLED=true
-if not defined VOICE_GENDER_MODEL_DIR set VOICE_GENDER_MODEL_DIR=models/wav2vec2-large-robust-6-ft-age-gender
-
-if /I "%VOICE_GENDER_ENABLED%"=="true" (
-    python tools\ensure_voice_gender_model.py
-    if errorlevel 1 (
-        echo [ERROR] Failed to prepare voice gender model.
-        exit /b 1
-    )
-)
 
 uvicorn main:app --host %HOST% --port %PORT%

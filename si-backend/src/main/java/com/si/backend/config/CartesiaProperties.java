@@ -40,31 +40,19 @@ public class CartesiaProperties {
 
     @Data
     public static class VoiceGenderTtsProperties {
-        private boolean enabled = true;
-        /** 全局兜底男/女音色：未配置语种专属音色时使用。 */
+        /** 全局兜底男声：未配置语种专属男声时使用。 */
         private String maleVoiceId;
-        private String femaleVoiceId;
         /**
-         * 语种专属男/女音色（Cartesia 语言码 zh/en/id）。
-         * 官方 Sonic 为多语种模型，但单个音色在非母语语种上发音会不自然，
-         * 因此中文等语种应配置母语音色；留空则回退到全局男/女音色。
+         * 语种专属男声（Cartesia 语言码 zh/en/id）。Sonic 为多语种模型，但单个音色在
+         * 非母语语种上发音不自然，因此各语种应配置母语男声；留空则回退到全局男声。
          */
         private String zhMaleVoiceId;
-        private String zhFemaleVoiceId;
         private String enMaleVoiceId;
-        private String enFemaleVoiceId;
         private String idMaleVoiceId;
-        private String idFemaleVoiceId;
-        private String unknownFallback = "target-default";
 
         /** 按语种取男声音色，缺省回退全局男声。lang 为 Cartesia 语言码 zh/en/id。 */
         public String maleVoiceIdForLanguage(String lang) {
             return firstNonBlank(languageSpecificMale(lang), maleVoiceId);
-        }
-
-        /** 按语种取女声音色，缺省回退全局女声。 */
-        public String femaleVoiceIdForLanguage(String lang) {
-            return firstNonBlank(languageSpecificFemale(lang), femaleVoiceId);
         }
 
         private String languageSpecificMale(String lang) {
@@ -75,18 +63,6 @@ public class CartesiaProperties {
                 case "zh" -> zhMaleVoiceId;
                 case "en" -> enMaleVoiceId;
                 case "id" -> idMaleVoiceId;
-                default -> null;
-            };
-        }
-
-        private String languageSpecificFemale(String lang) {
-            if (lang == null) {
-                return null;
-            }
-            return switch (lang) {
-                case "zh" -> zhFemaleVoiceId;
-                case "en" -> enFemaleVoiceId;
-                case "id" -> idFemaleVoiceId;
                 default -> null;
             };
         }

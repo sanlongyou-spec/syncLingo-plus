@@ -6,7 +6,6 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
-import com.si.backend.service.SpeakerVoiceGenderService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TranslationService;
@@ -49,7 +48,6 @@ class RealtimeInterpretationOrderTest {
         InterpretationRecordService recordService = mock(InterpretationRecordService.class);
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
         SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
-        SpeakerVoiceGenderService speakerVoiceGenderService = mock(SpeakerVoiceGenderService.class);
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
@@ -61,7 +59,6 @@ class RealtimeInterpretationOrderTest {
                 recordService,
                 audioRecordService,
                 speakerTurnService,
-                speakerVoiceGenderService,
                 userVoiceService
         );
 

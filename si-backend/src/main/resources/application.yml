@@ -200,18 +200,12 @@ cartesia:
   default-voice-id-chinese: ${CARTESIA_DEFAULT_VOICE_ID_ZH:6eb8965c-e295-47bd-a9e4-3eeebb3abcff}
   default-voice-id-indonesian: ${CARTESIA_DEFAULT_VOICE_ID_ID:a053f6bc-7df4-40de-96d4-de026bc47ce8}
   default-voice-id-english: ${CARTESIA_DEFAULT_VOICE_ID_EN:default}
+  # TTS 一律使用各目标语言的母语男声（已移除性别检测/女声）。
   voice-gender:
-    enabled: ${TTS_VOICE_GENDER_ENABLED:true}
     male-voice-id: ${CARTESIA_GLOBAL_MALE_VOICE_ID:}
-    female-voice-id: ${CARTESIA_GLOBAL_FEMALE_VOICE_ID:}
-    # 语种专属男/女音色（留空则回退到上面的全局音色）。中文务必配中文母语音色。
     zh-male-voice-id: ${CARTESIA_ZH_MALE_VOICE_ID:}
-    zh-female-voice-id: ${CARTESIA_ZH_FEMALE_VOICE_ID:}
     en-male-voice-id: ${CARTESIA_EN_MALE_VOICE_ID:}
-    en-female-voice-id: ${CARTESIA_EN_FEMALE_VOICE_ID:}
     id-male-voice-id: ${CARTESIA_ID_MALE_VOICE_ID:}
-    id-female-voice-id: ${CARTESIA_ID_FEMALE_VOICE_ID:}
-    unknown-fallback: ${TTS_UNKNOWN_GENDER_FALLBACK:target-default}
   tts:
     model: sonic
     sample-rate: 24000
@@ -220,22 +214,6 @@ cartesia:
     max-total-per-voice: 4    # 全局共用池：TTS 并发上限（贴合 Cartesia 账户 5 并发，留 1 余量）
     min-idle-per-voice: 0     # 不常驻空闲连接（连接合成完即关，避免空占并发额度）
     max-wait-millis: 5000
-
-voice-gender:
-  service:
-    enabled: ${VOICE_GENDER_SERVICE_ENABLED:false}
-    url: ${VOICE_GENDER_SERVICE_URL:http://localhost:7000}
-    timeout-ms: ${VOICE_GENDER_TIMEOUT_MS:3000}
-    sample-rate: ${VOICE_GENDER_SAMPLE_RATE:16000}
-    min-audio-seconds: ${VOICE_GENDER_MIN_AUDIO_SECONDS:6}
-    max-audio-seconds: ${VOICE_GENDER_MAX_AUDIO_SECONDS:8}
-    max-buffer-seconds: ${VOICE_GENDER_MAX_BUFFER_SECONDS:12}
-    max-retries: ${VOICE_GENDER_MAX_RETRIES:3}
-    retry-interval-seconds: ${VOICE_GENDER_RETRY_INTERVAL_SECONDS:10}
-    queue-capacity: ${VOICE_GENDER_QUEUE_CAPACITY:32}
-    min-confidence: ${VOICE_GENDER_MIN_CONFIDENCE:0.75}
-    min-margin: ${VOICE_GENDER_MIN_MARGIN:0.15}
-
 
 jwt:
   secret: ${JWT_SECRET:change_this_secret_to_random_32_plus_chars}

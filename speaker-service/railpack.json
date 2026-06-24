@@ -10,8 +10,7 @@
       "libsndfile1"
     ],
     "variables": {
-      "OMP_NUM_THREADS": "1",
-      "VOICE_GENDER_NUM_THREADS": "1"
+      "OMP_NUM_THREADS": "1"
     }
   }
 }

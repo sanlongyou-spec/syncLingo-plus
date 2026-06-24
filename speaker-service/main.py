@@ -11,14 +11,12 @@ Endpoints:
 import os
 import logging
 import time
-import base64
 from pathlib import Path
 
 import sherpa_onnx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
-from voice_gender import VoiceGenderDetector
 
 # 日志级别可用环境变量覆盖：排查问题时设 LOG_LEVEL=DEBUG 获取最细粒度日志，排查完成后改回 INFO。
 _LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -42,23 +40,11 @@ PUNCT_NUM_THREADS = int(os.environ.get("PUNCT_NUM_THREADS", "1"))
 # sat-3l-sm 有 ONNX 导出，配合 ort_providers 无需 torch
 # 若需要更高精度可改为 sat-3l（同样支持 ort_providers）
 SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-3l-sm")
-VOICE_GENDER_ENABLED = os.environ.get("VOICE_GENDER_ENABLED", "false").lower() == "true"
-VOICE_GENDER_MODEL_DIR = os.environ.get(
-    "VOICE_GENDER_MODEL_DIR",
-    "models/wav2vec2-large-robust-6-ft-age-gender"
-)
-VOICE_GENDER_MIN_SECONDS = float(os.environ.get("VOICE_GENDER_MIN_SECONDS", "6"))
-VOICE_GENDER_MAX_SECONDS = float(os.environ.get("VOICE_GENDER_MAX_SECONDS", "8"))
-VOICE_GENDER_CONFIDENCE = float(os.environ.get("VOICE_GENDER_CONFIDENCE", "0.75"))
-VOICE_GENDER_MARGIN = float(os.environ.get("VOICE_GENDER_MARGIN", "0.15"))
-# audeering/wav2vec2-large-robust-6-ft-age-gender 的 gender 输出顺序固定为 [female, male, child]。
-VOICE_GENDER_LABELS = os.environ.get("VOICE_GENDER_LABELS", "female,male,child")
-VOICE_GENDER_NUM_THREADS = int(os.environ.get("VOICE_GENDER_NUM_THREADS", "1"))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global punct_model, sat_model, voice_gender_detector
+    global punct_model, sat_model
     # ── 标点模型（可选，文件不存在则降级为不加标点）────────────────────────────
     punct_path = Path(PUNCT_MODEL_PATH)
     if punct_path.exists():
@@ -93,18 +79,6 @@ async def lifespan(app: FastAPI):
         log.warning("[sat] Failed to load SaT model (%s): %s — /segment-boundary will return no boundary", SAT_MODEL_NAME, e)
         sat_model = None
 
-    voice_gender_detector = VoiceGenderDetector(
-        enabled=VOICE_GENDER_ENABLED,
-        model_dir=VOICE_GENDER_MODEL_DIR,
-        min_seconds=VOICE_GENDER_MIN_SECONDS,
-        max_seconds=VOICE_GENDER_MAX_SECONDS,
-        confidence=VOICE_GENDER_CONFIDENCE,
-        margin=VOICE_GENDER_MARGIN,
-        labels=VOICE_GENDER_LABELS,
-        num_threads=VOICE_GENDER_NUM_THREADS,
-    )
-    voice_gender_detector.load()
-
     yield
 
 
@@ -113,7 +87,6 @@ app = FastAPI(title="Speaker Service", lifespan=lifespan)
 # Global state
 punct_model = None
 sat_model = None
-voice_gender_detector = None
 
 
 class PunctuateRequest(BaseModel):
@@ -213,90 +186,12 @@ async def segment_boundary(req: SegmentBoundaryRequest):
         return SegmentBoundaryResponse(boundary=-1, latency_ms=round(latency_ms, 2), model_available=False)
 
 
-class VoiceGenderRequest(BaseModel):
-    audio_base64: str
-    sample_rate: int = 16000
-    encoding: str = "pcm_s16le"
-    speaker_id: str | None = None
-
-
-class VoiceGenderResponse(BaseModel):
-    gender: str
-    confidence: float
-    male_score: float
-    female_score: float
-    child_score: float
-    latency_ms: float
-    model_available: bool
-    reason: str = "unknown"
-
-
-@app.post("/voice-gender", response_model=VoiceGenderResponse)
-async def voice_gender(req: VoiceGenderRequest):
-    started = time.time()
-    if req.encoding.lower() != "pcm_s16le":
-        log.warning("[voice-gender] reject speakerId=%s reason=bad_encoding encoding=%s", req.speaker_id, req.encoding)
-        return VoiceGenderResponse(
-            gender="unknown",
-            confidence=0.0,
-            male_score=0.0,
-            female_score=0.0,
-            child_score=0.0,
-            latency_ms=round((time.time() - started) * 1000, 2),
-            model_available=False,
-            reason="bad_encoding",
-        )
-    try:
-        pcm_data = base64.b64decode(req.audio_base64, validate=True)
-    except Exception:
-        log.warning("[voice-gender] reject speakerId=%s reason=bad_base64", req.speaker_id)
-        return VoiceGenderResponse(
-            gender="unknown",
-            confidence=0.0,
-            male_score=0.0,
-            female_score=0.0,
-            child_score=0.0,
-            latency_ms=round((time.time() - started) * 1000, 2),
-            model_available=False,
-            reason="bad_base64",
-        )
-    detector = voice_gender_detector
-    if detector is None:
-        log.warning("[voice-gender] reject speakerId=%s reason=detector_missing", req.speaker_id)
-        return VoiceGenderResponse(
-            gender="unknown",
-            confidence=0.0,
-            male_score=0.0,
-            female_score=0.0,
-            child_score=0.0,
-            latency_ms=round((time.time() - started) * 1000, 2),
-            model_available=False,
-            reason="detector_missing",
-        )
-    result = detector.predict(pcm_data, req.sample_rate)
-    log.info(
-        "[voice-gender] speakerId=%s gender=%s reason=%s confidence=%.4f male=%.4f female=%.4f child=%.4f latency=%.1fms model=%s bytes=%d",
-        req.speaker_id,
-        result["gender"],
-        result.get("reason", "unknown"),
-        result["confidence"],
-        result["male_score"],
-        result["female_score"],
-        result["child_score"],
-        result["latency_ms"],
-        result["model_available"],
-        len(pcm_data),
-    )
-    return VoiceGenderResponse(**result)
-
-
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "punct_model_loaded": punct_model is not None,
         "sat_model_loaded": sat_model is not None,
-        "voice_gender_model_loaded": voice_gender_detector.loaded if voice_gender_detector is not None else False,
     }
 
 

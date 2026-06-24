@@ -54,17 +54,10 @@ tail -n 1000 /var/log/nginx/error.log > "${WORK}/nginx-error.log" 2>/dev/null \
   echo "## backend /api/health"; curl -sf http://127.0.0.1:8080/api/health || echo "(unreachable)"; echo
   echo "## speaker /health"; curl -sf http://127.0.0.1:7000/health || echo "(unreachable)"; echo
   echo "## SI_LOG_LEVEL (backend)"; docker exec "${BACKEND_CONTAINER}" printenv SI_LOG_LEVEL 2>/dev/null || echo "(unset -> INFO)"
-  echo "## VOICE_GENDER_TIMEOUT_MS (backend)"; docker exec "${BACKEND_CONTAINER}" printenv VOICE_GENDER_TIMEOUT_MS 2>/dev/null || echo "(unset)"
   echo "## speaker Environment"; systemctl show si-speaker -p Environment --no-pager 2>/dev/null || echo "(unknown)"
   echo "## backend image/status"; docker ps --filter "name=${BACKEND_CONTAINER}" --format '{{.Image}} {{.Status}}'
   echo "## git commit"; git -C /opt/syncLingo rev-parse HEAD 2>/dev/null || echo "(n/a)"
 } > "${WORK}/snapshot.txt" 2>&1 || true
-
-# 5) 语音性别问题聚焦提取（仅从已按时间截取的来源里提，保持干净）
-grep -hE 'VoiceGenderIntegration|SpeakerVoiceGenderService|detect end|detect start|resolveVoiceIdByGender|gender voiceId|schedule (queued|skipped)|timeout|\[voice-gender\]|reason=|accepted=' \
-  "${WORK}/backend.log" "${WORK}/speaker.log" 2>/dev/null \
-  > "${WORK}/voice-gender-focused.log" \
-  || echo "[collect] (未匹配到语音性别日志 — 确认已真人跑过会话)"
 
 ARCHIVE="/tmp/synclingo-diag-${STAMP}.tar.gz"
 tar -czf "${ARCHIVE}" -C /tmp "synclingo-diag-${STAMP}"
