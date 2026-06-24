@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
@@ -50,14 +52,28 @@ public class BotProxyIntegration {
             );
             log.info("[BotProxyIntegration] forward end, method={}, path={}, status={}, costMs={}",
                     method, path, response.getStatusCode().value(), System.currentTimeMillis() - start);
-            return response;
+            return cleanResponse(response.getStatusCode(), response.getHeaders().getContentType(), response.getBody());
         } catch (HttpStatusCodeException error) {
             log.warn("[BotProxyIntegration] forward rejected by bot, method={}, path={}, status={}, costMs={}",
                     method, path, error.getStatusCode().value(), System.currentTimeMillis() - start);
-            return ResponseEntity.status(error.getStatusCode())
-                    .headers(error.getResponseHeaders())
-                    .body(error.getResponseBodyAsByteArray());
+            return cleanResponse(error.getStatusCode(),
+                    error.getResponseHeaders() != null ? error.getResponseHeaders().getContentType() : null,
+                    error.getResponseBodyAsByteArray());
         }
+    }
+
+    /**
+     * 只保留状态码、Content-Type 和响应体，丢弃上游(C# Bot)的逐跳头
+     * (Content-Length / Transfer-Encoding / Connection / Date / Server 等)。
+     * 否则把这些原样转发给浏览器会导致响应体被破坏(前端表现为 Network Error)。
+     * Content-Length 由 Spring 按实际 body 重新计算。
+     */
+    private ResponseEntity<byte[]> cleanResponse(HttpStatusCode status, MediaType contentType, byte[] body) {
+        HttpHeaders safe = new HttpHeaders();
+        if (contentType != null) {
+            safe.setContentType(contentType);
+        }
+        return ResponseEntity.status(status).headers(safe).body(body);
     }
 
     /** 配置了下行密钥时对转发请求签名;未配置则跳过(本地/灰度,C# 兼容忽略)。 */

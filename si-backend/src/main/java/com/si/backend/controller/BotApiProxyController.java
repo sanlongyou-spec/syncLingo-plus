@@ -2,7 +2,6 @@ package com.si.backend.controller;
 
 import com.si.backend.common.BizException;
 import com.si.backend.common.ErrorCode;
-import com.si.backend.config.BotApiProxyProperties;
 import com.si.backend.integration.BotProxyIntegration;
 import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.util.AuthContext;
@@ -38,7 +37,6 @@ public class BotApiProxyController {
             "/api/meetings/summary", Set.of(HttpMethod.POST)
     );
 
-    private final BotApiProxyProperties properties;
     private final BotProxyIntegration integration;
 
     @RequestMapping("/**")
@@ -47,7 +45,6 @@ public class BotApiProxyController {
             @RequestBody(required = false) byte[] body
     ) {
         AuthenticatedActor actor = AuthContext.requireActor();
-        requireAllowedUser(actor);
         String path = request.getRequestURI().substring(PROXY_PREFIX.length());
         HttpMethod method = HttpMethod.valueOf(request.getMethod());
         requireAllowedOperation(path, method);
@@ -62,14 +59,6 @@ public class BotApiProxyController {
         log.info("[BotApiProxyController] proxy end, userId={}, method={}, path={}, status={}",
                 actor.userId(), method, path, response.getStatusCode().value());
         return response;
-    }
-
-    private void requireAllowedUser(AuthenticatedActor actor) {
-        if (properties.getAllowedUserIds().isEmpty()
-                || !properties.getAllowedUserIds().contains(actor.userId())) {
-            log.warn("[BotApiProxyController] user denied, userId={}", actor.userId());
-            throw BizException.of(ErrorCode.FORBIDDEN, "Bot operation is not allowed");
-        }
     }
 
     private void requireAllowedOperation(String path, HttpMethod method) {

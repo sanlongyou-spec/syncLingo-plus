@@ -1,7 +1,6 @@
 package com.si.backend.controller;
 
 import com.si.backend.common.BizException;
-import com.si.backend.config.BotApiProxyProperties;
 import com.si.backend.integration.BotProxyIntegration;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -14,8 +13,6 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,13 +23,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies Java-side Teams Bot proxy authorization and sensitive-header stripping.
+ * Verifies Java-side Teams Bot proxy operation allowlist and sensitive-header stripping.
+ * 用户级授权由 @AuthorizationSpec(BOT_OPERATE) 统一把关，代理本身不再维护 userId 白名单。
  */
 class BotApiProxyControllerTest {
 
-    private final BotApiProxyProperties properties = new BotApiProxyProperties();
     private final BotProxyIntegration integration = mock(BotProxyIntegration.class);
-    private final BotApiProxyController controller = new BotApiProxyController(properties, integration);
+    private final BotApiProxyController controller = new BotApiProxyController(integration);
 
     @AfterEach
     void clearRequestContext() {
@@ -40,18 +37,7 @@ class BotApiProxyControllerTest {
     }
 
     @Test
-    void emptyUserAllowlist_deniesAllUsers() {
-        bindActor(5L);
-        HttpServletRequest request = request("POST", "/bot-api/api/meetings/summary");
-
-        BizException error = assertThrows(BizException.class, () -> controller.proxy(request, new byte[0]));
-
-        assertEquals(403, error.getCode());
-    }
-
-    @Test
     void unknownOperation_isDenied() {
-        properties.setAllowedUserIds(List.of(5L));
         bindActor(5L);
         HttpServletRequest request = request("POST", "/bot-api/api/meetings/join");
 
@@ -62,7 +48,6 @@ class BotApiProxyControllerTest {
 
     @Test
     void allowedOperation_forwardsOnlySafeHeaders() {
-        properties.setAllowedUserIds(List.of(5L));
         bindActor(5L);
         MockHttpServletRequest request = (MockHttpServletRequest) request(
                 "POST",
