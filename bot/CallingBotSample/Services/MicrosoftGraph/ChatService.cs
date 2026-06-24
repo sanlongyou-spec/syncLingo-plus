@@ -83,18 +83,33 @@ namespace CallingBotSample.Services.MicrosoftGraph
             EnsureCatalogAppIdConfigured();
 
             var installId = await InstallBotForUserAsync(target.AadId);
-            // GET /chat triggers Teams to send a fresh conversationUpdate to the bot's messaging endpoint.
-            await TriggerConversationUpdateAsync(target.AadId, installId);
 
+            // 直接用 GET /chat 返回的 1:1 会话(chat.Id)构造会话引用并发送，不再依赖那个
+            // 常常不回投的 conversationUpdate 事件(实测安装后该事件永远不到，导致超时失败)。
+            var chat = await GetInstalledAppChatAsync(target.AadId, installId);
+            if (!string.IsNullOrEmpty(chat?.Id))
+            {
+                var directRef = BuildReferenceFromChat(chat.Id, target.AadId);
+                logger.LogInformation("[ChatService] Sending via chat-id direct reference, aadId={AadId}, chatId={ChatId}",
+                    target.AadId, chat.Id);
+                await SendViaAdapterAsync(directRef, htmlContent);
+                conversationReferenceCache.SetConversationReference(target.AadId, directRef);
+                sw.Stop();
+                logger.LogInformation("[ChatService] SendMessageToUser end (chat-id path), aadId={AadId}, ms={Ms}",
+                    target.AadId, sw.ElapsedMilliseconds);
+                return target;
+            }
+
+            // 兜底：拿不到 chat.Id 时，再尝试轮询 conversationUpdate 捕获的引用。
             var polledRef = await PollConversationReferenceAsync(target.AadId, maxWaitMs: 8000);
             if (polledRef == null)
                 throw new InvalidOperationException(
-                    $"Bot was installed for user {target.AadId} but no conversationUpdate arrived within 8 s. " +
-                    "Ask the user to open a chat with the bot once in Teams so Teams can establish the 1:1 conversation.");
+                    $"Bot installed for user {target.AadId} but could not obtain a 1:1 chat reference (chat id missing). " +
+                    "Ask the user to open a chat with the bot once in Teams.");
 
             await SendViaAdapterAsync(polledRef, htmlContent);
             sw.Stop();
-            logger.LogInformation("[ChatService] SendMessageToUser end (install+poll path), aadId={AadId}, ms={Ms}",
+            logger.LogInformation("[ChatService] SendMessageToUser end (poll fallback path), aadId={AadId}, ms={Ms}",
                 target.AadId, sw.ElapsedMilliseconds);
             return target;
         }
@@ -301,21 +316,41 @@ namespace CallingBotSample.Services.MicrosoftGraph
             return existing.Id;
         }
 
-        // GET /users/{id}/teamwork/installedApps/{installId}/chat causes Teams to fire conversationUpdate
-        // to the bot's messaging endpoint, which OnMembersAddedAsync captures as a ConversationReference.
-        private async Task TriggerConversationUpdateAsync(string userAadId, string installId)
+        // GET /users/{id}/teamwork/installedApps/{installId}/chat 返回该用户与机器人的 1:1 会话(含 chat.Id)。
+        // 直接用 chat.Id 构造会话引用即可主动发消息，无需等待 conversationUpdate 回投。
+        private async Task<Chat?> GetInstalledAppChatAsync(string userAadId, string installId)
         {
             try
             {
-                logger.LogInformation("[ChatService] Triggering conversationUpdate via GET /chat for user {Id}", userAadId);
-                await graphServiceClient.Users[userAadId].Teamwork.InstalledApps[installId].Chat
+                logger.LogInformation("[ChatService] GET installedApp 1:1 chat for user {Id}", userAadId);
+                return await graphServiceClient.Users[userAadId].Teamwork.InstalledApps[installId].Chat
                     .Request()
                     .GetAsync();
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "[ChatService] GET /chat failed (non-fatal), user {Id}", userAadId);
+                logger.LogWarning(ex, "[ChatService] GET /chat failed, user {Id}", userAadId);
+                return null;
             }
+        }
+
+        // 用 Graph 返回的 1:1 会话 id 直接构造 ConversationReference（personal 1:1）。
+        private ConversationReference BuildReferenceFromChat(string chatId, string userAadId)
+        {
+            return new ConversationReference
+            {
+                ChannelId = "msteams",
+                ServiceUrl = GetTenantServiceUrl(),
+                Bot = new ChannelAccount { Id = $"28:{botOptions.AppId}" },
+                Conversation = new ConversationAccount
+                {
+                    Id = chatId,
+                    IsGroup = false,
+                    ConversationType = "personal",
+                    TenantId = azureAdOptions.TenantId,
+                },
+                User = new ChannelAccount { AadObjectId = userAadId },
+            };
         }
 
         // Poll the cache until OnMembersAddedAsync stores a ConversationReference, or timeout.
