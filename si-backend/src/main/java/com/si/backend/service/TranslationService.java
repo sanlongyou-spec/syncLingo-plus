@@ -12,6 +12,8 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Translation business service.
@@ -23,6 +25,17 @@ public class TranslationService {
 
     private static final String COMPRESSION_DIRECTION_ZH_TO_ID = "zh->id";
     private static final String COMPRESSION_DIRECTION_ZH_TO_EN = "zh->en";
+
+    // ── 印尼语数字格式归一化 ──────────────────────────────────────────────
+    // 印尼语用「.」做千分位、「,」做小数点（与中英相反）。直接送翻译会被误读，
+    // 出现量级错/丢小数（如 60.390,8 被读成 60390、丢掉 .8）。翻译前仅对印尼语源文本，
+    // 把印尼式数字改写成通用写法（「.」小数点、去千分位）。
+    /** 印尼式带千分位的数字：1~3 位 + 若干组「.三位」+ 可选「,小数」，如 60.390,80 / 1.000 */
+    private static final Pattern INDONESIAN_GROUPED_NUMBER =
+            Pattern.compile("\\d{1,3}(?:\\.\\d{3})+(?:,\\d+)?");
+    /** 印尼式小数点：数字之间的「,」（如 0,05 / 1,5），转为「.」 */
+    private static final Pattern INDONESIAN_DECIMAL_COMMA =
+            Pattern.compile("(?<=\\d),(?=\\d)");
 
     private final GoogleTranslateIntegration translator;
     private final LlmIntegration llmIntegration;
@@ -63,6 +76,12 @@ public class TranslationService {
         validateLanguages(sourceLang, targetLang);
 
         long start = System.currentTimeMillis();
+        String normalizedText = normalizeIndonesianNumbersIfNeeded(text, sourceLang);
+        if (!normalizedText.equals(text)) {
+            log.info("[TranslationService] indonesian number normalized, userId={}, textHash={}, beforeLen={}, afterLen={}",
+                    userId, diagnosticHash(text), text.length(), normalizedText.length());
+            text = normalizedText;
+        }
         TerminologyService.TerminologyProtection terminologyProtection =
                 terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
         String protectedText = terminologyProtection.getProtectedText();
@@ -188,6 +207,34 @@ public class TranslationService {
                     direction, e.getMessage());
             return translatedText;
         }
+    }
+
+    /**
+     * 仅当源语言为印尼语时，把印尼式数字写法归一化为通用写法。
+     * 先处理带千分位的数字（去「.」、「,」→「.」），再处理裸小数逗号（数字间「,」→「.」）。
+     * 中/英源文本不处理（它们的「,」是千分位，改写会出错）。
+     */
+    private String normalizeIndonesianNumbersIfNeeded(String text, String sourceLang) {
+        if (text == null || text.isBlank() || !isIndonesianSource(sourceLang)) {
+            return text;
+        }
+        Matcher matcher = INDONESIAN_GROUPED_NUMBER.matcher(text);
+        StringBuilder grouped = new StringBuilder();
+        while (matcher.find()) {
+            String normalized = matcher.group().replace(".", "").replace(",", ".");
+            matcher.appendReplacement(grouped, Matcher.quoteReplacement(normalized));
+        }
+        matcher.appendTail(grouped);
+        return INDONESIAN_DECIMAL_COMMA.matcher(grouped.toString()).replaceAll(".");
+    }
+
+    private boolean isIndonesianSource(String sourceLang) {
+        if (sourceLang == null) {
+            return false;
+        }
+        String lower = sourceLang.trim().toLowerCase();
+        return lower.startsWith("id") || lower.startsWith("in")
+                || Constants.LANG_ID_ISO6391.equalsIgnoreCase(lower);
     }
 
     private boolean isAutoDetect(String lang) {
