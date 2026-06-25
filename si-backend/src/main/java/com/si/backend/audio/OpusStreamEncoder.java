@@ -29,10 +29,29 @@ public class OpusStreamEncoder {
     /** DTX/静音帧字节阈值，小于等于此值视为不发送（静音不传） */
     private static final int DTX_MIN_BYTES = 2;
 
+    // ── 响度归一化（让不同语言/音色播放音量一致）──────────────────────────
+    // 不同语言使用不同的 Cartesia 音色，各音色天生录制响度不同；原始麦克风音量也各异。
+    // 这里把每一路音频在编码前统一拉到同一目标 RMS，使各语言（含源语言原声）感知音量一致，
+    // 切换语言不再忽大忽小。采用“目标 RMS + 跨块平滑 + 块内逐样本斜坡 + 限幅”，避免抽气式音量起伏与爆音。
+    /** 目标均方根电平（16-bit 量纲），约 -19.4 dBFS，给语音峰值留足余量避免削顶 */
+    private static final double TARGET_RMS = 3500.0;
+    /** 低于此 RMS 视为静音/底噪，不再上推增益（避免放大噪声），保持当前增益 */
+    private static final double SILENCE_RMS_FLOOR = 150.0;
+    /** 增益下限（最多衰减约 -12 dB） */
+    private static final double MIN_GAIN = 0.25;
+    /** 增益上限（最多放大约 +12 dB），防止把安静底噪放得过响 */
+    private static final double MAX_GAIN = 4.0;
+    /** 跨块增益平滑系数（新目标增益的权重，越小越平滑），抑制块间音量跳变 */
+    private static final double GAIN_SMOOTHING = 0.25;
+    private static final double PCM_MAX = 32767.0;
+    private static final double PCM_MIN = -32768.0;
+
     private final FrameEncoderFactory encoderFactory;
     private FrameEncoder encoder;
     private final short[] frameBuffer = new short[FRAME_SAMPLES];
     private int frameFill = 0;
+    /** 当前已应用的归一化增益（跨块保持，逐块向目标平滑收敛） */
+    private double currentGain = 1.0;
 
     // 跨块连续重采样状态：保留小数读取位置与上一块末样本，消除“逐块相位重置”导致的周期性突变(怪音/音乐声)
     private int resampleRate = 0;      // 当前输入采样率；变化时重置相位
@@ -70,6 +89,7 @@ public class OpusStreamEncoder {
             return packets;
         }
         short[] samples = toShorts(pcm);
+        normalizeLoudness(samples);
         short[] resampled = resampleTo48k(samples, inSampleRate);
         int offset = 0;
         while (offset < resampled.length) {
@@ -116,6 +136,7 @@ public class OpusStreamEncoder {
         resampleRate = 0;
         resamplePos = 0.0;
         resamplePrev = 0;
+        currentGain = 1.0;
         try {
             encoder = encoderFactory.create();
             log.info("[OpusStreamEncoder] encoder reset, reason={}", reason);
@@ -123,6 +144,48 @@ public class OpusStreamEncoder {
             log.error("[OpusStreamEncoder] encoder reset failed, reason={}, error={}",
                     reason, e.getMessage(), e);
         }
+    }
+
+    /**
+     * 就地把一段 PCM 拉到统一目标响度（{@link #TARGET_RMS}），使不同语言/音色播放音量一致。
+     * <p>步骤：① 计算本块 RMS；② 近静音块不上推增益（避免放大底噪），其余按 {@code TARGET_RMS/rms}
+     * 求目标增益并限幅到 [{@link #MIN_GAIN}, {@link #MAX_GAIN}]；③ 用 {@link #GAIN_SMOOTHING}
+     * 跨块平滑目标增益；④ 块内从上一块增益线性斜坡到本块增益逐样本施加，消除块边界爆音；⑤ 限幅防削顶。
+     */
+    void normalizeLoudness(short[] samples) {
+        if (samples.length == 0) {
+            return;
+        }
+        double sumSq = 0.0;
+        for (short s : samples) {
+            sumSq += (double) s * s;
+        }
+        double rms = Math.sqrt(sumSq / samples.length);
+
+        double targetGain;
+        if (rms < SILENCE_RMS_FLOOR) {
+            // 近静音/底噪：保持当前增益，不放大噪声（静音帧后续由 DTX 丢弃）
+            targetGain = currentGain;
+        } else {
+            double rawGain = Math.max(MIN_GAIN, Math.min(MAX_GAIN, TARGET_RMS / rms));
+            targetGain = currentGain + (rawGain - currentGain) * GAIN_SMOOTHING;
+        }
+
+        // 块内从 currentGain 线性斜坡到 targetGain，逐样本施加并限幅，避免块边界的增益跳变产生爆音
+        double startGain = currentGain;
+        double step = (targetGain - startGain) / samples.length;
+        double gain = startGain;
+        for (int i = 0; i < samples.length; i++) {
+            gain += step;
+            double v = samples[i] * gain;
+            if (v > PCM_MAX) {
+                v = PCM_MAX;
+            } else if (v < PCM_MIN) {
+                v = PCM_MIN;
+            }
+            samples[i] = (short) Math.round(v);
+        }
+        currentGain = targetGain;
     }
 
     private static short[] toShorts(byte[] pcm) {
