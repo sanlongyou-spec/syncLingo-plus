@@ -230,8 +230,8 @@ export default function UserShareView() {
         copyTo: (dest: Float32Array, opt: { planeIndex: number; format: string }) => void
         close: () => void
       }
-      // Guard: if stopAudio() was called after this startAudio, discard stale callback
-      if (audioGenRef.current !== myGen) {
+      // Guard: 停止/切换语言后丢弃旧解码回调；并确保只播放当前选中语言(同一时刻仅一种语言)
+      if (audioGenRef.current !== myGen || selectedLangRef.current !== canonical) {
         try { audioData.close() } catch { /* already closed */ }
         return
       }
@@ -321,7 +321,9 @@ export default function UserShareView() {
       }, 3000)
     }
     ws.onmessage = event => {
-      if (!(event.data instanceof ArrayBuffer) || decoderRef.current !== decoder) return
+      // 同一时刻只接受当前选中语言:非当前语言(或已切换/已停止)的所有包一律丢弃
+      if (!(event.data instanceof ArrayBuffer) || decoderRef.current !== decoder
+        || selectedLangRef.current !== canonical) return
       const view = new Uint8Array(event.data)
       if (view.length === 0) return
       const type = view[0]
