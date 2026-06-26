@@ -16,23 +16,12 @@ const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
   id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
 }
 const AUDIO_SAMPLE_RATE = 48000
-// 播放积压时加速追赶(变速变调 playbackRate, 不丢音频): 队列空→1.0x, 积压越多越快, 封顶 1.3x
-// 合成阶段不再加速(后端一律 1.0x 自然语速), 所有加速都在这里按积压驱动
-const CATCHUP_START_SEC = 1.0   // 积压超过此值开始加速
-const CATCHUP_FULL_SEC = 4.0    // 积压达到此值用最高速
-const CATCHUP_MAX_RATE = 1.35   // 最高播放速率(变调; 1.35x 排空更快, 压客户端积压)
-// 积压硬上限: 变速仍追不上、积压超过此值时, 丢弃已排队的旧音频并跳回接近实时,
-// 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。文本不受影响。
-// 取 25s(此前 8s 过激, 会把长句子的后半段也丢掉): 长句 TTS 可完整播完, 句间停顿
-// 会把积压自然排空, 平时延迟不会持续累积; 仅超长独白才可能临时落后, 此时才触发丢弃兜底。
+// 已去除播放加速：播放恒定 1.0x 自然语速(不再用 playbackRate 追赶积压)。
+// 积压硬上限: 积压超过此值时, 丢弃已排队的旧音频并跳回接近实时(只丢音频, 文本完整保留),
+// 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。
 const DROP_BACKLOG_SEC = 25.0
 // 与后端 Constants.WS_CLOSE_SHARE_FULL 对应：收听人数已满的 WS 关闭码
 const SHARE_FULL_CLOSE_CODE = 4290
-const catchupRate = (backlogSec: number): number => {
-  if (backlogSec <= CATCHUP_START_SEC) return 1.0
-  if (backlogSec >= CATCHUP_FULL_SEC) return CATCHUP_MAX_RATE
-  return 1.0 + (backlogSec - CATCHUP_START_SEC) / (CATCHUP_FULL_SEC - CATCHUP_START_SEC) * (CATCHUP_MAX_RATE - 1.0)
-}
 
 const toCanonicalLang = (lang: string): string => {
   const lower = lang.trim().toLowerCase()
@@ -265,9 +254,9 @@ export default function UserShareView() {
           console.warn(`[share-audio] backlog ${backlogSec.toFixed(1)}s > ${DROP_BACKLOG_SEC}s, dropped queued audio to resync`)
           backlogSec = 0
         }
-        const rate = catchupRate(backlogSec)
+        const rate = 1.0   // 已去除追赶加速：播放恒定 1.0x 自然语速
         source.playbackRate.value = rate
-        maxRateRef.current = Math.max(maxRateRef.current, rate)   // 句中峰值倍速
+        maxRateRef.current = Math.max(maxRateRef.current, rate)   // 恒为 1.0x（保留上报字段）
         const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
         pendingSourcesRef.current.add(source)
         source.onended = () => pendingSourcesRef.current.delete(source)
