@@ -67,12 +67,12 @@ public class MeetingMaterialExtractionService {
         long start = System.currentTimeMillis();
         log.info("[MeetingMaterialExtractionService] extract start, userId={}, sourceType={}, sourceRef={}, textLen={}",
                 userId, sourceType, sourceRef, extractionText.length());
-        runStep("hotwords", sourceType, sourceRef,
-                () -> hotwordExtractionService.extractAndSaveFromText(extractionText, userId));
         runStep("knowledge", sourceType, sourceRef,
                 () -> meetingKnowledgeService.generateAndSaveFromText(userId, extractionText));
         runStep("terminology", sourceType, sourceRef,
                 () -> terminologyExtractionService.extractAndSaveFromText(userId, extractionText));
+        runStep("hotwords", sourceType, sourceRef,
+                () -> hotwordExtractionService.extractAndSaveFromText(extractionText, userId));
         if (entities != null) {
             runStep("meetingEntities", sourceType, sourceRef,
                     () -> asrHotwordService.saveMeetingEntities(

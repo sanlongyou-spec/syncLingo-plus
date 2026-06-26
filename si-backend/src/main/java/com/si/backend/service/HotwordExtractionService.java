@@ -27,7 +27,6 @@ public class HotwordExtractionService {
     private static final int MAX_RECORDS = 60;
     private static final int MAX_TEXT_CHARS = 4000;
     /** 会议材料热词抽取的最大分块数(覆盖全文用,控成本) */
-    private static final int MAX_DOC_CHUNKS = 8;
 
     private final LlmIntegration llmIntegration;
     private final InterpretationRecordMapper recordMapper;
@@ -85,8 +84,9 @@ public class HotwordExtractionService {
     public List<AsrHotword> extractAndSaveFromText(String text, Long userId) {
         if (text == null || text.isBlank() || userId == null) return List.of();
         log.info("[HotwordExtractionService] extractAndSaveFromText start, userId={}, textLen={}", userId, text.length());
-        // 覆盖全文:分块抽取(每块 ≤MAX_TEXT_CHARS,最多 MAX_DOC_CHUNKS 块),不再只取前 4000 字。
-        List<String> chunks = com.si.backend.util.TextChunks.split(text, MAX_TEXT_CHARS, MAX_DOC_CHUNKS);
+        int requiredChunks = Math.max(1, (text.strip().length() + MAX_TEXT_CHARS - 1) / MAX_TEXT_CHARS);
+        // 覆盖全文：按实际文本长度分块抽取，不再只取前 4000 字或固定前 N 块。
+        List<String> chunks = com.si.backend.util.TextChunks.split(text, MAX_TEXT_CHARS, requiredChunks);
         // 跨块按 phrase(trim+小写) 去重,合并所有块的抽取结果
         java.util.Map<String, HotwordSuggestion> uniqueByPhrase = new java.util.LinkedHashMap<>();
         for (String chunk : chunks) {
