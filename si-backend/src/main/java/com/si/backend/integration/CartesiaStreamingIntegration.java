@@ -522,7 +522,7 @@ public class CartesiaStreamingIntegration {
             ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
             ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
             ttsMsg.put(Constants.CARTESIA_FIELD_CONTINUE, false);
-            ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, Constants.CARTESIA_CUSTOM_BUFFER_DELAY_MS);
+            ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, properties.getTts().getMaxBufferDelayMs());
             return ttsMsg;
         }
 

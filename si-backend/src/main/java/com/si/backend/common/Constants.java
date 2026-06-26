@@ -149,10 +149,8 @@ public final class Constants {
     public static final String CARTESIA_FIELD_CONTEXT_ID = "context_id";
     /** Cartesia TTS WebSocket JSON 字段：continue */
     public static final String CARTESIA_FIELD_CONTINUE = "continue";
-    /** Cartesia TTS WebSocket JSON 字段：max_buffer_delay_ms */
+    /** Cartesia TTS WebSocket JSON 字段：max_buffer_delay_ms（取值见 cartesia.tts.max-buffer-delay-ms 配置） */
     public static final String CARTESIA_FIELD_MAX_BUFFER_DELAY_MS = "max_buffer_delay_ms";
-    /** Cartesia 自定义缓冲模式：完整句子到达后立即生成 */
-    public static final int CARTESIA_CUSTOM_BUFFER_DELAY_MS = 0;
     /** Cartesia TTS WebSocket JSON 字段：speed（语速倍率，1.0 为正常） */
     public static final String CARTESIA_FIELD_SPEED = "speed";
     /** TTS 语速倍率（固定 1.0 自然语速；所有加速由前端 playbackRate ≤ 1.35 驱动） */

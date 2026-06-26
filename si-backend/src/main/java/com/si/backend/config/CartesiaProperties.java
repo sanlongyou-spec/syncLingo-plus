@@ -29,6 +29,12 @@ public class CartesiaProperties {
         private String modelId = "sonic-3";
         private int sampleRate = 24000;
         private String container = "raw";
+        /**
+         * Cartesia max_buffer_delay_ms：模型在合成前最多缓冲多少毫秒文本以攒够上下文。
+         * 0 = 收到即合成(最低延迟,但短输入易产生 choppy/怪音)。官方建议给小正值减少怪音。
+         * 折中默认 150ms：明显降低短句怪音,首音延迟仅略增。
+         */
+        private int maxBufferDelayMs = 150;
     }
 
     @Data
