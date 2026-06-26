@@ -105,12 +105,42 @@ public class TerminologyExtractionService {
         if (zh.isBlank() || id.isBlank()) {
             return;
         }
+        if (isLikelyJunkTerm(zh, id)) {
+            return; // 通用单位/符号/纯数字等噪声不入强制术语表
+        }
         Terminology terminology = new Terminology();
         terminology.setTermZh(zh);
         terminology.setTermId(id);
         terminology.setTermEn(en.isBlank() ? null : en);
         terminology.setCategory(text(node, "category"));
         result.add(terminology);
+    }
+
+    /** 通用单位 / 量纲词 / 符号:当强制术语纯属噪声,自动术语入库前过滤掉(手动 Excel 不走此过滤)。 */
+    private static final java.util.Set<String> JUNK_TERMS = java.util.Set.of(
+            // 印尼/英文单位与符号
+            "%", "％", "ppm", "ha", "kg", "ton", "rp", "m", "cm", "mm", "km", "l", "ml",
+            "hk", "kg/pokok", "kg/pkk", "ha/hari", "ha/day", "hk/ha", "dosis kg/pkk", "kg/ha",
+            // 通用中文量纲/统计词(非专业术语)
+            "百分比", "公顷", "公斤", "吨", "印尼盾", "单位", "面积", "种植面积", "单价",
+            "数量", "金额", "总价", "公里", "米", "升"
+    );
+
+    /** 判断是否为应过滤的噪声术语对(两侧任一命中通用词,或印尼侧为单字符/纯数字符号)。 */
+    static boolean isLikelyJunkTerm(String zh, String id) {
+        if (zh == null || id == null) {
+            return true;
+        }
+        String z = zh.trim().toLowerCase();
+        String i = id.trim().toLowerCase();
+        if (JUNK_TERMS.contains(z) || JUNK_TERMS.contains(i)) {
+            return true;
+        }
+        if (i.length() <= 1) {
+            return true; // 单字符(如 "%"、单字母)
+        }
+        // 印尼/中文侧为纯数字或纯标点符号(含全角百分号)
+        return i.matches("[\\d\\p{Punct}％%]+") || z.matches("[\\d\\p{Punct}％%]+");
     }
 
     private List<String> completeObjectJsons(String json) {
