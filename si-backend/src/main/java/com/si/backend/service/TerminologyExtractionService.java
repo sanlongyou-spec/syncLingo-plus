@@ -9,28 +9,28 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
- * 从上传的中↔印双语会议材料里自动抽取术语对(中=印[=英]),入术语表(强制级)。
- * 会前上传后异步调用一次,覆盖全文分块抽取;失败不影响上传主流程。
+ * Extracts bilingual terminology pairs from uploaded meeting materials.
+ * The workflow is best-effort: failed chunks are logged and do not block upload.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TerminologyExtractionService {
 
-    /** 每块字符数 */
     private static final int CHUNK_CHARS = 8000;
-    /** 最多分块数(控成本) */
     private static final int MAX_CHUNKS = 8;
+    private static final int LOG_SAMPLE_LIMIT = 20;
 
     private final LlmIntegration llmIntegration;
     private final TerminologyService terminologyService;
     private final ObjectMapper objectMapper;
 
-    /** 从文件文本抽取术语对并入库。返回新建条数。 */
     public int extractAndSaveFromText(Long userId, String text) {
         if (userId == null || text == null || text.isBlank()) {
             return 0;
@@ -38,11 +38,15 @@ public class TerminologyExtractionService {
         log.info("[TerminologyExtractionService] start, userId={}, textLen={}", userId, text.length());
         List<String> chunks = TextChunks.split(text, CHUNK_CHARS, MAX_CHUNKS);
         List<Terminology> candidates = new ArrayList<>();
-        for (String chunk : chunks) {
+        for (int i = 0; i < chunks.size(); i++) {
             try {
-                candidates.addAll(parsePairs(llmIntegration.extractTerminologyPairsJson(chunk)));
+                List<Terminology> parsed = parsePairs(llmIntegration.extractTerminologyPairsJson(chunks.get(i)));
+                candidates.addAll(parsed);
+                log.info("[TerminologyExtractionService] chunk extracted, userId={}, chunk={}/{}, candidates={}, terms={}",
+                        userId, i + 1, chunks.size(), parsed.size(), summarizeTerms(parsed));
             } catch (Exception e) {
-                log.warn("[TerminologyExtractionService] chunk extract failed, userId={}, reason={}", userId, e.getMessage());
+                log.warn("[TerminologyExtractionService] chunk extract failed, userId={}, chunk={}/{}, reason={}",
+                        userId, i + 1, chunks.size(), e.getMessage());
             }
         }
         if (candidates.isEmpty()) {
@@ -50,41 +54,118 @@ public class TerminologyExtractionService {
             return 0;
         }
         int created = terminologyService.addExtractedTerms(userId, candidates);
-        log.info("[TerminologyExtractionService] end, userId={}, chunks={}, candidates={}, created={}",
-                userId, chunks.size(), candidates.size(), created);
+        log.info("[TerminologyExtractionService] end, userId={}, chunks={}, candidates={}, created={}, terms={}",
+                userId, chunks.size(), candidates.size(), created, summarizeTerms(candidates));
         return created;
     }
 
-    /** 解析 LLM 返回的 JSON 数组(每元素 {zh,id,en,category})为术语候选;容错 markdown 围栏与脏数据。 */
-    private List<Terminology> parsePairs(String json) {
-        List<Terminology> result = new ArrayList<>();
+    private List<Terminology> parsePairs(String json) throws IOException {
         if (json == null || json.isBlank()) {
-            return result;
+            return List.of();
         }
-        String cleaned = json.replaceAll("(?s)```(?:json)?\\s*", "").replace("```", "").trim();
+        String cleaned = cleanJson(json);
         try {
             JsonNode root = objectMapper.readTree(cleaned);
             if (!root.isArray()) {
-                return result;
+                return List.of();
             }
+            List<Terminology> result = new ArrayList<>();
             for (JsonNode node : root) {
-                String zh = text(node, "zh");
-                String id = text(node, "id");
-                String en = text(node, "en");
-                if (zh.isBlank() || id.isBlank()) {
-                    continue; // 需中+印对照
-                }
-                Terminology t = new Terminology();
-                t.setTermZh(zh);
-                t.setTermId(id);
-                t.setTermEn(en.isBlank() ? null : en);
-                t.setCategory(text(node, "category"));
-                result.add(t);
+                addParsedTerm(result, node);
             }
+            return result;
+        } catch (IOException e) {
+            List<Terminology> salvaged = salvageCompleteTermObjects(cleaned);
+            if (!salvaged.isEmpty()) {
+                log.warn("[TerminologyExtractionService] repaired partial terminology JSON, recovered={}", salvaged.size());
+                return salvaged;
+            }
+            throw e;
         } catch (Exception e) {
-            log.warn("[TerminologyExtractionService] parse failed: {}", e.getMessage());
+            throw new IOException("parse failed: " + e.getMessage(), e);
+        }
+    }
+
+    private List<Terminology> salvageCompleteTermObjects(String json) {
+        List<Terminology> result = new ArrayList<>();
+        for (String objectJson : completeObjectJsons(json)) {
+            try {
+                addParsedTerm(result, objectMapper.readTree(objectJson));
+            } catch (Exception ignored) {
+                // Keep any later complete object even if this fragment is malformed.
+            }
         }
         return result;
+    }
+
+    private void addParsedTerm(List<Terminology> result, JsonNode node) {
+        String zh = text(node, "zh");
+        String id = text(node, "id");
+        String en = text(node, "en");
+        if (zh.isBlank() || id.isBlank()) {
+            return;
+        }
+        Terminology terminology = new Terminology();
+        terminology.setTermZh(zh);
+        terminology.setTermId(id);
+        terminology.setTermEn(en.isBlank() ? null : en);
+        terminology.setCategory(text(node, "category"));
+        result.add(terminology);
+    }
+
+    private List<String> completeObjectJsons(String json) {
+        List<String> objects = new ArrayList<>();
+        if (json == null || json.isBlank()) {
+            return objects;
+        }
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        int objectStart = -1;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '{') {
+                if (depth == 0) {
+                    objectStart = i;
+                }
+                depth++;
+            } else if (c == '}' && depth > 0) {
+                depth--;
+                if (depth == 0 && objectStart >= 0) {
+                    objects.add(json.substring(objectStart, i + 1));
+                    objectStart = -1;
+                }
+            }
+        }
+        return objects;
+    }
+
+    private String cleanJson(String json) {
+        return json.replaceAll("(?s)```(?:json)?\\s*", "").replace("```", "").trim();
+    }
+
+    private String summarizeTerms(List<Terminology> terms) {
+        if (terms == null || terms.isEmpty()) {
+            return "";
+        }
+        return terms.stream()
+                .limit(LOG_SAMPLE_LIMIT)
+                .map(t -> t.getTermZh() + "|" + t.getTermId() + "|" + (t.getTermEn() != null ? t.getTermEn() : ""))
+                .collect(Collectors.joining(", "));
     }
 
     private String text(JsonNode node, String field) {

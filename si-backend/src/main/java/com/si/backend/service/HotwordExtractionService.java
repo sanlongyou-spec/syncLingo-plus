@@ -12,7 +12,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -26,6 +30,7 @@ public class HotwordExtractionService {
 
     private static final int MAX_RECORDS = 60;
     private static final int MAX_TEXT_CHARS = 4000;
+    private static final int LOG_SAMPLE_LIMIT = 20;
     /** 会议材料热词抽取的最大分块数(覆盖全文用,控成本) */
 
     private final LlmIntegration llmIntegration;
@@ -88,9 +93,9 @@ public class HotwordExtractionService {
         // 覆盖全文：按实际文本长度分块抽取，不再只取前 4000 字或固定前 N 块。
         List<String> chunks = com.si.backend.util.TextChunks.split(text, MAX_TEXT_CHARS, requiredChunks);
         // 跨块按 phrase(trim+小写) 去重,合并所有块的抽取结果
-        java.util.Map<String, HotwordSuggestion> uniqueByPhrase = new java.util.LinkedHashMap<>();
-        for (String chunk : chunks) {
-            for (HotwordSuggestion s : extractSuggestions(chunk)) {
+        Map<String, HotwordSuggestion> uniqueByPhrase = new LinkedHashMap<>();
+        for (int i = 0; i < chunks.size(); i++) {
+            for (HotwordSuggestion s : extractSuggestions(chunks.get(i), i + 1, chunks.size())) {
                 if (s.getPhrase() == null || s.getPhrase().isBlank()) continue;
                 uniqueByPhrase.putIfAbsent(s.getPhrase().trim().toLowerCase(), s);
             }
@@ -101,8 +106,8 @@ public class HotwordExtractionService {
                 .map(s -> buildGlobalHotword(s, "AUTO_EXTRACTED"))
                 .map(hw -> hotwordService.create(userId, hw))
                 .toList();
-        log.info("[HotwordExtractionService] extractAndSaveFromText end, userId={}, chunks={}, extracted={}, saved={}",
-                userId, chunks.size(), uniqueByPhrase.size(), saved.size());
+        log.info("[HotwordExtractionService] extractAndSaveFromText end, userId={}, chunks={}, extracted={}, saved={}, phrases={}",
+                userId, chunks.size(), uniqueByPhrase.size(), saved.size(), summarizeSavedHotwords(saved));
         return saved;
     }
 
@@ -140,16 +145,96 @@ public class HotwordExtractionService {
     }
 
     private List<HotwordSuggestion> extractSuggestions(String text) {
+        return extractSuggestions(text, 1, 1);
+    }
+
+    private List<HotwordSuggestion> extractSuggestions(String text, int chunkIndex, int chunkCount) {
         try {
             String json = llmIntegration.extractHotwordsJson(text);
-            // Strip markdown fences if the model adds them despite instructions
-            json = json.replaceAll("(?s)```(?:json)?\\s*", "").replace("```", "").trim();
-            List<HotwordSuggestion> result = objectMapper.readValue(json, new TypeReference<>() {});
-            return result != null ? result : List.of();
+            List<HotwordSuggestion> result = parseSuggestions(json);
+            log.info("[HotwordExtractionService] chunk extracted, chunk={}/{}, suggestions={}, phrases={}",
+                    chunkIndex, chunkCount, result.size(), summarizeSuggestions(result));
+            return result;
         } catch (Exception e) {
-            log.warn("[HotwordExtractionService] failed to parse LLM hotword response: {}", e.getMessage());
+            log.warn("[HotwordExtractionService] chunk extract failed, chunk={}/{}, reason={}",
+                    chunkIndex, chunkCount, e.getMessage());
             return List.of();
         }
+    }
+
+    private List<HotwordSuggestion> parseSuggestions(String json) throws IOException {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        String cleaned = cleanJson(json);
+        try {
+            List<HotwordSuggestion> result = objectMapper.readValue(cleaned, new TypeReference<>() {});
+            return result != null ? result : List.of();
+        } catch (IOException e) {
+            List<HotwordSuggestion> salvaged = salvageCompleteHotwordObjects(cleaned);
+            if (!salvaged.isEmpty()) {
+                log.warn("[HotwordExtractionService] repaired partial hotword JSON, recovered={}", salvaged.size());
+                return salvaged;
+            }
+            throw e;
+        }
+    }
+
+    private List<HotwordSuggestion> salvageCompleteHotwordObjects(String json) {
+        List<HotwordSuggestion> result = new ArrayList<>();
+        for (String objectJson : completeObjectJsons(json)) {
+            try {
+                result.add(objectMapper.readValue(objectJson, HotwordSuggestion.class));
+            } catch (Exception ignored) {
+                // Skip malformed object fragments and keep later complete objects if any.
+            }
+        }
+        return result;
+    }
+
+    private List<String> completeObjectJsons(String json) {
+        List<String> objects = new ArrayList<>();
+        if (json == null || json.isBlank()) {
+            return objects;
+        }
+        boolean inString = false;
+        boolean escaped = false;
+        int depth = 0;
+        int objectStart = -1;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '{') {
+                if (depth == 0) {
+                    objectStart = i;
+                }
+                depth++;
+            } else if (c == '}' && depth > 0) {
+                depth--;
+                if (depth == 0 && objectStart >= 0) {
+                    objects.add(json.substring(objectStart, i + 1));
+                    objectStart = -1;
+                }
+            }
+        }
+        return objects;
+    }
+
+    private String cleanJson(String json) {
+        return json.replaceAll("(?s)```(?:json)?\\s*", "").replace("```", "").trim();
     }
 
     private AsrHotword buildHotword(HotwordSuggestion s, String sourceType) {
@@ -168,5 +253,25 @@ public class HotwordExtractionService {
         AsrHotword hw = buildHotword(s, sourceType);
         hw.setLanguage("");
         return hw;
+    }
+
+    private String summarizeSuggestions(List<HotwordSuggestion> suggestions) {
+        if (suggestions == null || suggestions.isEmpty()) {
+            return "";
+        }
+        return suggestions.stream()
+                .limit(LOG_SAMPLE_LIMIT)
+                .map(s -> s.getPhrase() + "(" + (s.getLanguage() != null ? s.getLanguage() : "ALL") + ")")
+                .collect(Collectors.joining(", "));
+    }
+
+    private String summarizeSavedHotwords(List<AsrHotword> hotwords) {
+        if (hotwords == null || hotwords.isEmpty()) {
+            return "";
+        }
+        return hotwords.stream()
+                .limit(LOG_SAMPLE_LIMIT)
+                .map(AsrHotword::getPhrase)
+                .collect(Collectors.joining(", "));
     }
 }

@@ -32,6 +32,10 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor
 public class LlmIntegration {
 
+    private static final long TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS = 2500L;
+    private static final long MEETING_KNOWLEDGE_PACK_MAX_OUTPUT_TOKENS = 1500L;
+    private static final long HOTWORD_EXTRACTION_MAX_OUTPUT_TOKENS = 1500L;
+
     private static final String INDONESIAN_COMPRESSION_PROMPT_TEMPLATE =
             "You are a simultaneous interpretation compression model.\n\n"
             + "Task: Compress the already-translated Indonesian text into a concise real-time interpretation version.\n\n"
@@ -167,7 +171,7 @@ public class LlmIntegration {
                 openAiProperties.getSummaryModel(),
                 TERMINOLOGY_PAIR_EXTRACTION_SYSTEM_PROMPT,
                 text,
-                1500L
+                TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS
         );
         log.info("[LlmIntegration] extractTerminologyPairs end, resultLen={}", result.length());
         return result;
@@ -432,14 +436,15 @@ public class LlmIntegration {
         log.info("[LlmIntegration] extractMeetingKnowledgePack start, model={}, fileLen={}, chunks={}",
                 openAiProperties.getSummaryModel(), fileText.length(), chunks.size());
         java.util.LinkedHashSet<String> mergedLines = new java.util.LinkedHashSet<>();
-        for (String chunk : chunks) {
-            String part = createTextResponse(
-                    openAiProperties.getSummaryModel(),
-                    MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
-                    chunk,
-                    1500L
-            );
-            if (part == null) {
+        int failedChunks = 0;
+        for (int i = 0; i < chunks.size(); i++) {
+            String part;
+            try {
+                part = extractMeetingKnowledgeChunk(chunks.get(i));
+            } catch (Exception e) {
+                failedChunks++;
+                log.warn("[LlmIntegration] extractMeetingKnowledgePack chunk failed, index={}, chunks={}, reason={}",
+                        i + 1, chunks.size(), e.getMessage());
                 continue;
             }
             for (String line : part.split("\n")) {
@@ -450,9 +455,18 @@ public class LlmIntegration {
             }
         }
         String result = String.join("\n", mergedLines);
-        log.info("[LlmIntegration] extractMeetingKnowledgePack end, chunks={}, mergedLines={}, resultLen={}",
-                chunks.size(), mergedLines.size(), result.length());
+        log.info("[LlmIntegration] extractMeetingKnowledgePack end, chunks={}, failedChunks={}, mergedLines={}, resultLen={}",
+                chunks.size(), failedChunks, mergedLines.size(), result.length());
         return result;
+    }
+
+    String extractMeetingKnowledgeChunk(String chunk) throws IOException {
+        return createTextResponse(
+                openAiProperties.getSummaryModel(),
+                MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
+                chunk,
+                MEETING_KNOWLEDGE_PACK_MAX_OUTPUT_TOKENS
+        );
     }
 
     public String extractHotwordsJson(String text) throws IOException {
@@ -462,7 +476,7 @@ public class LlmIntegration {
                 openAiProperties.getSummaryModel(),
                 HOTWORD_EXTRACTION_SYSTEM_PROMPT,
                 text,
-                800L
+                HOTWORD_EXTRACTION_MAX_OUTPUT_TOKENS
         );
         log.info("[LlmIntegration] extractHotwordsJson end, resultLen={}", result.length());
         return result;
@@ -823,8 +837,13 @@ public class LlmIntegration {
                 throw new IOException(buildLlmFailureMessage(response.statusCode(), response.body()));
             }
             JsonNode root = OBJECT_MAPPER.readTree(response.body());
-            String text = root.path("choices").get(0).path("message").path("content").asText("").trim();
+            JsonNode choices = root.path("choices");
+            JsonNode choice = choices.isArray() && !choices.isEmpty() ? choices.get(0) : OBJECT_MAPPER.createObjectNode();
+            String text = choice.path("message").path("content").asText("").trim();
             if (text.isBlank()) {
+                log.warn("[LlmIntegration] chat/completions empty content, model={}, finishReason={}, bodySnippet={}",
+                        model, choice.path("finish_reason").asText(""),
+                        abbreviateForLog(response.body(), 1000));
                 throw new IOException("LLM response content is empty");
             }
             log.info("[LlmIntegration] chat/completions done, model={}, costMs={}, outputLen={}",
@@ -936,5 +955,16 @@ public class LlmIntegration {
             return "unknown";
         }
         return message.replaceAll("[\\r\\n\\t]+", " ").trim();
+    }
+
+    private String abbreviateForLog(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        String compact = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        if (compact.length() <= maxChars) {
+            return compact;
+        }
+        return compact.substring(0, maxChars) + "...";
     }
 }
