@@ -1477,3 +1477,61 @@ python -m compileall -q .
 ### Result Record
 
 - Pending execution after this documentation and cleanup change set.
+
+## 周度验证记录：2026-W26 印尼语→中文翻译质量增强 + 分享音量统一
+
+### 对应优化范围
+
+- 对应 `docs/optimization-implementation-plan.md` 中的 `周度优化记录：2026-W26 印尼语→中文翻译质量增强（ASR 后处理 + LLM 纠错翻译）+ 分享音量统一`。
+
+### 验证目标
+
+- 证明 id→zh 走 LLM 纠错翻译、失败可回退 Google。
+- 证明印尼语成句与最小句长闸门生效（无碎片）。
+- 证明数字归一化、术语（精确/模糊）、专名/称谓锁定、元话语拦截生效。
+- 证明分享各语言音量趋于一致。
+
+### 优先通过日志 / 接口 / 数据库验证
+
+后端单测（含本周新增）：
+
+```powershell
+cd si-backend
+mvn test
+# 关键用例：TranslationNumberNormalizationTest / TranslationLlmIdZhTest /
+#           LlmIdZhSanitizeTest / TerminologyFuzzyHintTest / OpusLoudnessNormalizationTest / OpusBandwidthTest
+```
+
+线上运行日志（开印尼语会议后）：
+
+```bash
+# LLM 纠错翻译在跑、且很少回退
+docker logs si-backend 2>&1 | grep -E "idZhCorrectTranslate|translate end \(llm id->zh\)|fallback to google"
+# 成句：有 wtpsplit 边界，且参数生效（开会创建会话时打印）
+docker logs si-backend 2>&1 | grep -E "ASR silence config|force-segment by=|asr-segment final"
+# 术语命中（精确+模糊）
+docker logs si-backend 2>&1 | grep -E "glossaryLines|terminology .* restored"
+# 数字归一化
+docker logs si-backend 2>&1 | grep "indonesian number normalized"
+# 健康检查
+curl -sf http://127.0.0.1:8080/api/health
+```
+
+通过标准：
+
+- `mvn test` 全绿（339+，0 失败）。
+- 出现 `idZhCorrectTranslate` / `translate end (llm id->zh)`，`fallback to google` 仅偶发。
+- `ASR silence config` 显示 `segmentationSilenceMs=800`、`maxSegmentWords=35`、印尼语最小句长生效；无 <24 字印尼语碎片。
+- 译文无 `发件人`、无元话语（无法判断/说明/疑似识别错误）、无残留 `（疑似…）`。
+
+### 必要时再做人工判断
+
+- 对照导出的会议转写：`pacarmen`→“董事长”、`julong`→“聚龙”、`pupuk/boron/LSU/pH` 术语正确、整句通顺、数字量级正确。
+- 分享页切换中文/英文/印尼语，三者音量基本一致、无爆音、静音不被放大。
+- 体感延迟可接受（LLM 多约 1~2.5s/句）。
+
+### 结果记录
+
+- 通过 / 不通过：后端 `mvn test` 通过（339）；线上部署 `c3e0b52`，健康检查 OK；实测转写质量显著改善（pacarmen→董事长、聚龙、术语、断句、数字均正确）。
+- 遗留问题：个别 ASR 偶发听错（bernilai→香草等）文本层无法恢复；术语合并修正总表需运维清空重导。
+- 需回归项：长会议下 LLM 延迟与 `fallback to google` 比例；不同发言人停顿习惯下 `min-sentence-emit-id-chars` / 静音阈值是否需再调。

@@ -1453,3 +1453,67 @@ GET    /api/admin/audit-logs
 
 - Real production domain, privacy policy URL, terms URL, Teams app IDs, Azure Bot credentials, and server secrets remain manual deployment inputs.
 - Historical weekly records still mention old experiments for auditability; they are not current instructions.
+
+## 周度优化记录：2026-W26 印尼语→中文翻译质量增强（ASR 后处理 + LLM 纠错翻译）+ 分享音量统一
+
+### 本周目标
+
+- 解决印尼语→中文同传质量差的问题：专业词/缩写被 ASR 听错、句子被切碎、`dari` 误译为“发件人”、术语未发挥作用。
+- 在不破坏现有分层（controller→facade→service→integration→mapper）的前提下，把 id→zh 改为“先纠错再翻译”，并把术语真正喂给模型。
+- 统一三种语言（含源语言原声）的分享播放音量。
+- 所有改动可回滚、可配置、失败可降级，绝不阻断实时链路。
+
+### 优化项
+
+| 优化项 | 状态 | 说明 |
+|---|---|---|
+| 分享音量统一（响度归一化） | 已完成 | `OpusStreamEncoder.feed()` 编码前做目标 RMS 归一化（跨块平滑 + 块内斜坡 + 限幅 + 静音不放大），各语言/音色收敛到同一响度。 |
+| 印尼语成句（wtpsplit） | 已完成 | 服务器开启 `SEGMENTATION_SERVICE_ENABLED=true`（speaker-service `sat-3l-sm` 模型，首启自动下载），印尼语先成完整句再翻译。 |
+| 印尼语分句最小句长闸门 | 已完成 | 新增 `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS`（默认 24）：wtpsplit 检测到的过短边界不切，避免 “satu/nine/depan 4” 碎片。 |
+| 静音切句/超长兜底调参 | 已完成 | 线上 `AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS=800`、`AZURE_ASR_MAX_SEGMENT_WORDS=35`，减少停顿误切与句中硬切。 |
+| 印尼语数字格式归一化（译前） | 已完成 | `TranslationService` 仅对印尼语源文本：千分位 `.` 去除、小数 `,`→`.`（如 60.390,8→60390.8）。 |
+| id→zh LLM 纠错翻译 | 已完成 | 新增 `LlmIntegration.correctAndTranslateIndonesianToChinese`：按棕榈施肥/缺素/叶片分析语境先纠 ASR 错词再翻中文；`TranslationService` 路由 id→zh 走 LLM，默认开启，失败/超时回退 Google。 |
+| 滑动上下文消歧 | 已完成 | `RealtimeInterpretationFacade` 维护会话级印尼语源文本滑动窗口（去重 + 600 字截断），供 LLM 消歧（如 kang→K/钾）。 |
+| 术语喂给 LLM：精确 + 模糊 | 已完成 | 精确命中（原文确有该词）标“必须遵守”；新增 `TerminologyService.fuzzyIdToZhHints`（有界 Levenshtein）把形近术语（kupu≈pupuk、buron≈boron）标“参考”，解决“听错就匹配不上”。 |
+| LLM 元话语拦截 + 译文清洗 | 已完成 | 拦截“无法判断/疑似识别错误/说明/我注意到”等解释性输出（命中→回退 Google），并清除（疑似…）括号注释，绝不让元话语进入 TTS/记录。 |
+| 专名/称谓锁定 | 已完成 | 提示词固定：`pacar/pacarmen/pacar men/pak carmen/pak jaren/pak cermin → 董事长`；`julong/culong → 聚龙`；`starling → 星链`、`starship → Starship`、`satelit → 卫星`。 |
+| 词典“未生效”根因定位 | 已完成 | 证实术语本就生效（id→zh 支持），问题是个别词条本身标错（humas→环境部）、一词一译无法随语境、专业词未覆盖；已产出合并修正总表供清空重导。 |
+
+### 可调参数（运维调优用）
+
+| 参数（环境变量） | 默认 | 线上建议 | 含义 / 调法 |
+|---|---|---|---|
+| `OPENAI_ID_ZH_LLM_TRANSLATE_ENABLED` | true | true | id→zh 是否走 LLM 纠错翻译；false 回退普通 Google 翻译。 |
+| `OPENAI_ID_ZH_LLM_TRANSLATE_MODEL` | anthropic/claude-haiku-4.5 | 同默认 | 纠错翻译模型；需快、控延迟。 |
+| `OPENAI_ID_ZH_LLM_TRANSLATE_TIMEOUT_MS` | 4000 | 4000~6000 | 超时即回退 Google；大量 fallback 时调大。 |
+| `OPENAI_ID_ZH_LLM_TRANSLATE_CONTEXT_CHARS` | 600 | 600 | 滑动上下文字符数；调小略降延迟、消歧变弱。 |
+| `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS` | 24 | 24 | 印尼语 wtpsplit 最小句长；嫌碎调大(32)，黏句调小(16)。 |
+| `AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS` | 300 | 800 | 停顿多长算一句结束；越大句子越完整、延迟越高。 |
+| `AZURE_ASR_MAX_SEGMENT_WORDS` | 25 | 35 | 超长句兜底硬切词数；调大句子更完整、延迟略增。 |
+| `SEGMENTATION_SERVICE_ENABLED` | false | true | 印尼语 wtpsplit 成句开关（需 speaker-service 装 wtpsplit + 模型）。 |
+
+### 实施结果
+
+- 实测同一篇“九宫格防火/卫星战略”讲话：从最初“近半看不懂、词堆”到现在整句通顺、专业术语正确、董事长称谓与公司名锁定。
+- `dari→发件人`、`kupu/buron/pH→…`、碎句等系统性问题基本消除；剩余为个别 ASR 偶发听错（如 bernilai→香草）。
+
+### 影响范围
+
+- 后端：`OpusStreamEncoder`、`TranslationService`、`LlmIntegration`、`TerminologyService`、`RealtimeInterpretationFacade`、`AzureAsrIntegration`、`AzureSpeechProperties`、`OpenAiProperties`、`application.yml`。
+- 前端：无（纯后端 + 配置）。
+- 配置 / 数据：backend.env 新增上述环境变量；术语建议清空后导入“合并修正总表”（用开会账号导入，account 与会话 userId 必须一致）。
+- speaker-service：启用 `/segment-boundary`（wtpsplit `sat-3l-sm`）。
+
+### 验收标准
+
+- 日志可见 `idZhCorrectTranslate` 与 `translate end (llm id->zh)`，无大量 `fallback to google`。
+- 日志可见 `force-segment by=sentence-wtpsplit`，且无 <24 字的印尼语碎片段。
+- 译文中无 `发件人`、无 LLM 元话语（无法判断/说明/疑似识别错误）。
+- `pacarmen` 等→“董事长”，`julong`→“聚龙”，数字量级正确。
+- 全量 `mvn test` 通过（339+）。
+
+### 遗留问题
+
+- 个别 ASR 听错无法靠文本恢复（bernilai→香草、akre→等）；后续可考虑印尼语 Azure 自定义语音模型（Custom Speech）。
+- LLM 纠错翻译比 Google 多约 1~2.5s/句延迟（并发执行、不累加）；按需用 timeout/context 调。
+- 合并修正总表需运维手动清空重导；后续可考虑内置默认术语种子。
