@@ -101,6 +101,8 @@ public class HotwordExtractionService {
             }
         }
         List<AsrHotword> saved = uniqueByPhrase.values().stream()
+                // 热词质量过滤:剔除整句/表头/单位符号,只留短专名/术语(热词本就该是短词)
+                .filter(s -> isUsableHotword(s.getPhrase()))
                 // 文件抽取的热词入库时语言置空(=全局),让三种语言识别路径都生效
                 .filter(s -> hotwordMapper.countByUserIdPhraseAndLanguage(userId, s.getPhrase().trim(), "") == 0)
                 .map(s -> buildGlobalHotword(s, "AUTO_EXTRACTED"))
@@ -253,6 +255,47 @@ public class HotwordExtractionService {
         AsrHotword hw = buildHotword(s, sourceType);
         hw.setLanguage("");
         return hw;
+    }
+
+    /** 热词最多词数(超过=整句/表头,不是热词) */
+    private static final int HOTWORD_MAX_WORDS = 5;
+    /** 单串(无空格,如中文标题)最多字符数,超过=长标题 */
+    private static final int HOTWORD_MAX_SINGLE_CHARS = 16;
+
+    /**
+     * 热词质量判断:热词应是【短的专名/术语/人名】。剔除整句、表头、单位/符号/纯数字。
+     * 规则(纯本地,不调 LLM):①多于 5 个词的整句 ②单串超过 16 字的长标题 ③单位/货币/纯数字符号。
+     */
+    static boolean isUsableHotword(String phrase) {
+        if (phrase == null) {
+            return false;
+        }
+        String p = phrase.trim();
+        if (p.isEmpty()) {
+            return false;
+        }
+        String[] words = p.split("\\s+");
+        if (words.length > HOTWORD_MAX_WORDS) {
+            return false; // 整句/表头(如 "Perbandingan Nutrient Level LSU Jul '25 vs May '26")
+        }
+        if (words.length == 1 && p.length() > HOTWORD_MAX_SINGLE_CHARS) {
+            return false; // 长中文标题(如 "根据实验室分析结果调整的施肥剂量（公斤/棵）")
+        }
+        String low = p.toLowerCase();
+        // 单位 / 货币 / 量纲 / 表头字段
+        if (low.matches("(ha|ton|kg|rp|%|％|ppm|tabel\\s*\\d+|rd\\s*\\d+|g\\.?\\s*total|grand\\s*total|jumlah|selisih|total|公顷|吨|kebun|luas)")) {
+            return false;
+        }
+        if (low.matches(".*\\(\\s*(%|％|ppm|kg|ha)\\s*\\).*")) {
+            return false; // "Mg (%)"、"B (ppm)"
+        }
+        if (low.matches(".*(rp\\s*\\d|/ha|/kg|/pkk|/pokok|rp\\d).*")) {
+            return false; // "Rp000/Ha"、"Rp/Kg"、"Kg/Pkk"
+        }
+        if (p.matches("[\\d\\p{Punct}％%\\s]+")) {
+            return false; // 纯数字/符号
+        }
+        return true;
     }
 
     private String summarizeSuggestions(List<HotwordSuggestion> suggestions) {
