@@ -280,32 +280,63 @@ public class TranslationService {
         }
     }
 
+    /** 模糊匹配最多注入的"参考术语"条数 */
+    private static final int FUZZY_GLOSSARY_MAX = 20;
+
     /**
-     * 用现有术语匹配,提取本句命中的"印尼语 = 中文"对照,作为动态术语表喂给 LLM。
-     * 复用 {@link TerminologyService#applyBeforeTranslate}(只取匹配结果,不用其占位符文本)。
+     * 为 LLM 构建动态术语段,分两部分:
+     * ① 精确命中(原文里确有该词)→「必须遵守」;
+     * ② 模糊命中(原文某词疑似被听错成形近词)→「参考」(不强制,防误伤)。
+     * 复用 {@link TerminologyService#applyBeforeTranslate}(精确)与 {@link TerminologyService#fuzzyIdToZhHints}(模糊)。
      */
     private String buildDynamicGlossary(Long userId, String text, String sourceLang, String targetLang) {
+        StringBuilder glossary = new StringBuilder();
+        java.util.Set<String> exactSources = new java.util.HashSet<>();
+        // ① 精确命中
         try {
             TerminologyService.TerminologyProtection protection =
                     terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
             Map<String, String> sourceByPlaceholder = protection.getSourceTermByPlaceholder();
             Map<String, String> targetByPlaceholder = protection.getTargetTermByPlaceholder();
-            if (sourceByPlaceholder == null || sourceByPlaceholder.isEmpty()) {
-                return null;
-            }
-            StringBuilder glossary = new StringBuilder();
-            for (Map.Entry<String, String> entry : sourceByPlaceholder.entrySet()) {
-                String source = entry.getValue();
-                String target = targetByPlaceholder.get(entry.getKey());
-                if (source != null && !source.isBlank() && target != null && !target.isBlank()) {
-                    glossary.append(source).append(" = ").append(target).append("\n");
+            if (sourceByPlaceholder != null && !sourceByPlaceholder.isEmpty()) {
+                StringBuilder exact = new StringBuilder();
+                for (Map.Entry<String, String> entry : sourceByPlaceholder.entrySet()) {
+                    String source = entry.getValue();
+                    String target = targetByPlaceholder.get(entry.getKey());
+                    if (source != null && !source.isBlank() && target != null && !target.isBlank()) {
+                        exact.append(source).append(" = ").append(target).append("\n");
+                        exactSources.add(source.toLowerCase());
+                    }
+                }
+                if (exact.length() > 0) {
+                    glossary.append("[本句必须遵守的术语对照]\n").append(exact);
                 }
             }
-            return glossary.length() == 0 ? null : glossary.toString();
         } catch (Exception e) {
-            log.debug("[TranslationService] buildDynamicGlossary skipped, reason={}", e.getMessage());
-            return null;
+            log.debug("[TranslationService] buildDynamicGlossary exact skipped, reason={}", e.getMessage());
         }
+        // ② 模糊命中(参考)
+        try {
+            Map<String, String> fuzzy = terminologyService.fuzzyIdToZhHints(
+                    userId, text, sourceLang, targetLang, FUZZY_GLOSSARY_MAX);
+            if (fuzzy != null && !fuzzy.isEmpty()) {
+                StringBuilder hints = new StringBuilder();
+                for (Map.Entry<String, String> entry : fuzzy.entrySet()) {
+                    if (!exactSources.contains(entry.getKey().toLowerCase())) {
+                        hints.append(entry.getKey()).append(" = ").append(entry.getValue()).append("\n");
+                    }
+                }
+                if (hints.length() > 0) {
+                    if (glossary.length() > 0) {
+                        glossary.append("\n");
+                    }
+                    glossary.append("[参考术语(本句若有词被识别错,可纠正为此术语;不确定则忽略)]\n").append(hints);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[TranslationService] buildDynamicGlossary fuzzy skipped, reason={}", e.getMessage());
+        }
+        return glossary.length() == 0 ? null : glossary.toString();
     }
 
     private boolean isAutoDetect(String lang) {

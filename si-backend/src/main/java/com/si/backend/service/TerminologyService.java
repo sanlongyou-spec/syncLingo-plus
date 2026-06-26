@@ -355,6 +355,120 @@ public class TerminologyService {
         return new TerminologyProtection(protectedText.toString(), targetTermByPlaceholder, sourceTermByPlaceholder);
     }
 
+    /**
+     * 模糊匹配:返回印尼语原文里"形近某术语"的术语对照(印尼语→中文),用于 LLM 纠错翻译。
+     * 解决 ASR 把术语听错(kupu≈pupuk、buron≈boron)导致精确匹配失效的场景——
+     * 把可能被听错的术语作为"参考"提示给 LLM。只处理单词拉丁术语,按编辑距离阈值取近形词。
+     *
+     * @param maxHints 最多返回的提示数(防止 prompt 过大)
+     * @return 印尼语→中文 的有序映射(按相近程度),可能为空
+     */
+    public LinkedHashMap<String, String> fuzzyIdToZhHints(
+            Long userId, String sourceText, String sourceLang, String targetLang, int maxHints) {
+        LinkedHashMap<String, String> hints = new LinkedHashMap<>();
+        if (sourceText == null || sourceText.isBlank() || maxHints <= 0) {
+            return hints;
+        }
+        List<TerminologyCandidate> candidates;
+        try {
+            candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang);
+        } catch (Exception e) {
+            log.debug("[TerminologyService] fuzzyIdToZhHints load failed, reason={}", e.getMessage());
+            return hints;
+        }
+        if (candidates.isEmpty()) {
+            return hints;
+        }
+        String lower = sourceText.toLowerCase(Locale.ROOT);
+        Set<String> tokens = new java.util.LinkedHashSet<>();
+        for (String token : lower.split("[^\\p{IsLatin}]+")) {
+            if (token.length() >= FUZZY_MIN_LEN) {
+                tokens.add(token);
+            }
+        }
+        if (tokens.isEmpty()) {
+            return hints;
+        }
+        // (distance, sourceTerm, targetTerm) — 取编辑距离最小的若干个
+        List<Object[]> scored = new ArrayList<>();
+        for (TerminologyCandidate candidate : candidates) {
+            String src = candidate.sourceTerm();
+            if (src == null) {
+                continue;
+            }
+            String s = src.toLowerCase(Locale.ROOT);
+            if (s.length() < FUZZY_MIN_LEN || s.indexOf(' ') >= 0 || !isLatinTerm(src)) {
+                continue;
+            }
+            if (lower.contains(s)) {
+                continue;   // 精确出现的由 applyBeforeTranslate 处理,这里只补"形近未精确命中"
+            }
+            int maxAllowed = s.length() <= FUZZY_SHORT_LEN ? 1 : 2;
+            int best = Integer.MAX_VALUE;
+            for (String token : tokens) {
+                if (Math.abs(token.length() - s.length()) > maxAllowed) {
+                    continue;
+                }
+                int distance = boundedLevenshtein(token, s, maxAllowed);
+                if (distance < best) {
+                    best = distance;
+                }
+                if (best <= 1) {
+                    break;
+                }
+            }
+            if (best >= 1 && best <= maxAllowed) {
+                scored.add(new Object[]{best, src, candidate.targetTerm()});
+            }
+        }
+        scored.sort(Comparator.comparingInt(row -> (int) row[0]));
+        for (Object[] row : scored) {
+            if (hints.size() >= maxHints) {
+                break;
+            }
+            hints.putIfAbsent((String) row[1], (String) row[2]);
+        }
+        log.debug("[TerminologyService] fuzzyIdToZhHints userId={}, tokens={}, hints={}",
+                userId, tokens.size(), hints.size());
+        return hints;
+    }
+
+    /** 模糊匹配术语的最小长度(过短易误伤) */
+    private static final int FUZZY_MIN_LEN = 4;
+    /** 长度=4 的术语只允许编辑距离 1,更长(≥5)的允许 2(覆盖 kupu→pupuk 这类 ASR 错听) */
+    private static final int FUZZY_SHORT_LEN = 4;
+
+    /** 带上界的 Levenshtein:超过 maxDistance 立即返回 maxDistance+1,避免无谓计算。 */
+    private static int boundedLevenshtein(String a, String b, int maxDistance) {
+        int lenA = a.length();
+        int lenB = b.length();
+        if (Math.abs(lenA - lenB) > maxDistance) {
+            return maxDistance + 1;
+        }
+        int[] prev = new int[lenB + 1];
+        int[] curr = new int[lenB + 1];
+        for (int j = 0; j <= lenB; j++) {
+            prev[j] = j;
+        }
+        for (int i = 1; i <= lenA; i++) {
+            curr[0] = i;
+            int rowMin = curr[0];
+            char ca = a.charAt(i - 1);
+            for (int j = 1; j <= lenB; j++) {
+                int cost = (ca == b.charAt(j - 1)) ? 0 : 1;
+                curr[j] = Math.min(Math.min(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
+                rowMin = Math.min(rowMin, curr[j]);
+            }
+            if (rowMin > maxDistance) {
+                return maxDistance + 1;
+            }
+            int[] tmp = prev;
+            prev = curr;
+            curr = tmp;
+        }
+        return prev[lenB];
+    }
+
     public String protectTargetTermsForRewrite(String targetText, TerminologyProtection protection) {
         long startMs = System.currentTimeMillis();
         int placeholderCount = protection != null ? protection.getTargetTermByPlaceholder().size() : 0;

@@ -224,7 +224,8 @@ public class LlmIntegration {
             userMessage.append("[上文(仅供消歧,不要翻译)]\n").append(recentContext.trim()).append("\n\n");
         }
         if (dynamicGlossary != null && !dynamicGlossary.isBlank()) {
-            userMessage.append("[本句必须遵守的术语对照]\n").append(dynamicGlossary.trim()).append("\n\n");
+            // 术语段(含"必须遵守"精确命中 + "参考"模糊命中)由调用方格式化好,这里原样插入
+            userMessage.append(dynamicGlossary.trim()).append("\n\n");
         }
         userMessage.append("[当前句(请纠错后翻成中文)]\n").append(currentText.trim());
 
