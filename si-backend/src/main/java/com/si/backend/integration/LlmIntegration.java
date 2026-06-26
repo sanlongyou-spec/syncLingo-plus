@@ -287,6 +287,40 @@ public class LlmIntegration {
         return cleaned;
     }
 
+    /** 方案2:实时分句的系统提示。让 LLM 只判断"已说完的整句"边界,逐字照抄,绝不翻译/改写。 */
+    private static final String ID_ZH_SENTENCE_BOUNDARY_SYSTEM_PROMPT =
+            "你是印尼语口语转写的实时断句器。输入是一段还在持续增长的 ASR 文本(可能在中途被截断)。"
+            + "你的唯一任务:找出其中【已经说完的完整句子】,把它们【逐字原样照抄】输出(保留原标点与空格)。\n"
+            + "严格规则:\n"
+            + "1. 只输出已说完的整句;最后一个还没说完的小句(被截断的尾巴)【一个字都不要输出】。\n"
+            + "2. 【逐字照抄】输入原文,绝对不要翻译、不要改写、不要纠错、不要补全、不要加任何解释。\n"
+            + "3. 如果连一个完整句子都还没说完,输出【空】(什么都不输出)。\n"
+            + "4. 只输出照抄的印尼语原文本身,不要 markdown、不要引号、不要说明。";
+
+    /**
+     * 方案2:让快 LLM 在【句子边界】切句。返回输入文本里「已说完的完整句子」前缀(逐字照抄原文),
+     * 尾部没说完的部分不返回;一句都没说完返回空串。调用方据此用前缀匹配算出切点。
+     * 失败/超时返回空串(上层即本轮不切,等下一轮或 Azure 终稿兜底),绝不抛断同传。
+     */
+    public String findIndonesianSentenceBoundaryPrefix(String growingText) {
+        if (growingText == null || growingText.isBlank()) {
+            return "";
+        }
+        try {
+            String result = createTextResponse(
+                    openAiProperties.getIdZhLlmSegmentModel(),
+                    ID_ZH_SENTENCE_BOUNDARY_SYSTEM_PROMPT,
+                    growingText.trim(),
+                    300L,
+                    Duration.ofMillis(openAiProperties.getIdZhLlmSegmentTimeoutMs())
+            );
+            return result == null ? "" : result.trim();
+        } catch (Exception e) {
+            log.warn("[LlmIntegration] findIndonesianSentenceBoundaryPrefix failed: {}", e.toString());
+            return "";
+        }
+    }
+
     /** 元话语标记:LLM 偶尔输出"解释/拒绝/说明"而非译文,命中即判无效(回退普通翻译)。 */
     private static final String[] ID_ZH_META_MARKERS = {
             "无法判断", "无法确定", "疑似识别错误", "按您的要求", "建议补充", "重新听取",

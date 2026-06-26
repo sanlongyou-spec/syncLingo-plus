@@ -54,6 +54,18 @@ public class OpenAiProperties {
     /** id→zh 时让 LLM 在同一次调用里做轻度口译式精简(去口头语/重复,不丢事实/数字/专名) */
     private boolean idZhLlmTranslateConcise = true;
 
+    // ── 方案2:LLM 实时分句(让 LLM 在句子边界切,异步,不阻塞 ASR) ──────────
+    /** 开启后印尼语改由 LLM 异步判断"已说完的整句"再切;关闭则回到现有(Azure/词数/wtpsplit)分句 */
+    private boolean idZhLlmSegmentEnabled = true;
+    /** 分句用的快模型 */
+    private String idZhLlmSegmentModel = "anthropic/claude-haiku-4.5";
+    /** 分句调用超时(ms) */
+    private int idZhLlmSegmentTimeoutMs = 4000;
+    /** 未提交文本达到该字符数才触发一次分句调用(过短不调,省成本) */
+    private int idZhLlmSegmentMinChars = 40;
+    /** 距上次触发,未提交文本至少再增长这么多字符才再次调用(节流) */
+    private int idZhLlmSegmentRefireChars = 30;
+
     // Summaries / Q&A / RAG helper — DeepSeek V4 (good Chinese, low cost).
     private String summaryModel = "deepseek/deepseek-v4-pro";
 

@@ -33,14 +33,17 @@ public class AzureAsrIntegration {
     private final AzureSpeechProperties asrProperties;
     private final PunctuationServiceIntegration punctuationService;
     private final SegmentationServiceIntegration segmentationService;
+    private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
     private final Map<String, AsrSession> sessions = new ConcurrentHashMap<>();
 
     public AzureAsrIntegration(AzureSpeechProperties asrProperties,
                                 PunctuationServiceIntegration punctuationService,
-                                SegmentationServiceIntegration segmentationService) {
+                                SegmentationServiceIntegration segmentationService,
+                                com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
         this.asrProperties = asrProperties;
         this.punctuationService = punctuationService;
         this.segmentationService = segmentationService;
+        this.idSegmenter = idSegmenter;
     }
 
     /**
@@ -109,12 +112,12 @@ public class AzureAsrIntegration {
             );
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
-            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService);
+            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter);
         } else {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber, specified lang={}, sessionId={}", sourceLang, sessionId);
             config.setSpeechRecognitionLanguage(sourceLang);
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
-            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService);
+            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter);
         }
 
         sessions.put(sessionId, session);
@@ -206,6 +209,12 @@ public class AzureAsrIntegration {
         private final PunctuationServiceIntegration punctuationSvc;
         /** 句边界检测服务（null = 未启用），用于印尼语等无标点还原模型的语言 */
         private final SegmentationServiceIntegration segmentationSvc;
+        /** 方案2:LLM 实时分句器(null = 未启用)。开启后印尼语改由它在句子边界异步切句 */
+        private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
+        /** 方案2:是否有一次分句 LLM 调用在途(同一会话同一时刻最多一次,省成本/防乱序);仅在 segLock 内读写 */
+        private boolean idSegInFlight = false;
+        /** 方案2:上次触发分句调用时的 working 长度,用于节流(只在 segLock 内读写) */
+        private int idSegLastFiredLen = 0;
         /** 调用标点服务的最短文本长度（避免在极短片段上浪费调用） */
         private static final int PUNCT_MIN_CHARS = 10;
         /** 当前未提交段落的开始时刻（ms）；emit 或 final 后重置，用于按时间强切 */
@@ -235,7 +244,8 @@ public class AzureAsrIntegration {
         public AsrSession(SpeechConfig config, AudioConfig audioConfig, PushAudioInputStream pushStream,
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
                           PunctuationServiceIntegration punctuationService,
-                          SegmentationServiceIntegration segmentationService) {
+                          SegmentationServiceIntegration segmentationService,
+                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = false;
@@ -251,13 +261,15 @@ public class AzureAsrIntegration {
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
+            this.idSegmenter = idSegmenter;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
 
         public AsrSession(SpeechConfig config, AutoDetectSourceLanguageConfig autoConfig, PushAudioInputStream pushStream,
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
                           PunctuationServiceIntegration punctuationService,
-                          SegmentationServiceIntegration segmentationService) {
+                          SegmentationServiceIntegration segmentationService,
+                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = true;
@@ -272,6 +284,7 @@ public class AzureAsrIntegration {
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
+            this.idSegmenter = idSegmenter;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
             this.conversationTranscriber = new ConversationTranscriber(config, autoConfig, audioConfig);
@@ -439,6 +452,14 @@ public class AzureAsrIntegration {
                 return;
             }
             String working = text.substring(start);
+
+            // ── 方案2:LLM 实时分句(印尼语)。开启后印尼语完全交给 LLM 在句子边界异步切句,
+            //    本轮不做同步切(wtpsplit/逗号/词数都跳过);说话停顿时 transcribed 终稿兜底剩余。
+            if (idSegmenter != null && idSegmenter.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                maybeFireIdSegmenter(working, start, lang, speakerId);
+                return;
+            }
+
             int stableInWorking = Math.max(0, stableAbs - start);
             int safe = Math.min(stableInWorking, working.length() - FORCE_TAIL_MARGIN_CHARS);
             log.debug("[AsrSession] emitForcedSegments workingLen={} stable={} safe={} lang={} speakerId={}",
@@ -558,6 +579,62 @@ public class AzureAsrIntegration {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                 log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
                         reason, segment.length(), lang, resolvedSpeakerId, punctuated != null,
+                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+            }
+        }
+
+        /**
+         * 方案2:在 segLock 内,按节流条件向 LLM 异步发起一次"句子边界"分句。
+         * 同一会话同一时刻最多一个在途调用;working 是当前未提交文本(= text.substring(start))。
+         */
+        private void maybeFireIdSegmenter(String working, int start, String lang, String speakerId) {
+            if (idSegInFlight) {
+                return;
+            }
+            if (working.length() < idSegmenter.getMinChars()) {
+                return;
+            }
+            if (idSegLastFiredLen > 0 && working.length() - idSegLastFiredLen < idSegmenter.getRefireChars()) {
+                return; // 文本相比上次触发增长不足,节流,先不调
+            }
+            idSegInFlight = true;
+            idSegLastFiredLen = working.length();
+            final int snapStart = start;
+            final String snapshot = working;
+            final String snapLang = lang;
+            final String snapSpeaker = speakerId;
+            idSegmenter.findAsync(snapshot, cut -> applyIdBoundary(snapStart, snapshot, cut, snapLang, snapSpeaker));
+        }
+
+        /**
+         * 方案2:LLM 异步分句结果回调(可能在分句线程)。在 segLock 内推进 emittedLen 并发出完整印尼语句。
+         * 陈旧校验:若 emittedLen 已不等于发起时的 start(Azure 改写/终稿已推进),丢弃该结果,绝不回改已播。
+         */
+        private void applyIdBoundary(int start, String snapshot, int cut, String lang, String speakerId) {
+            synchronized (segLock) {
+                idSegInFlight = false;
+                idSegLastFiredLen = 0; // 允许下一轮再触发
+                if (cut <= 0) {
+                    return;
+                }
+                if (emittedLen != start) {
+                    return; // 陈旧:文本在调用期间被推进/改写,丢弃本次切点
+                }
+                int end = Math.min(cut, snapshot.length());
+                if (end <= 0) {
+                    return;
+                }
+                String segment = snapshot.substring(0, end).trim();
+                if (segment.isBlank()) {
+                    return;
+                }
+                emittedLen = start + end;
+                emittedSuffix = snapshot.substring(Math.max(0, end - EMIT_SUFFIX_LEN), end);
+                segmentStartMs.set(System.currentTimeMillis());
+                String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                log.info("[AsrSession] force-segment by=llm-boundary len={} lang={} speakerId={} text='{}'",
+                        segment.length(), lang, resolvedSpeakerId,
                         segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
                 callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
