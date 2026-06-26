@@ -339,9 +339,10 @@ public class AzureAsrIntegration {
                 segmentStartMs.compareAndSet(0, System.currentTimeMillis());
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
-                log.debug("[AsrSession] transcribing textLen={} emittedLen={} lang={} speakerId={} text='{}'",
+                // DEBUG: 每个 ASR 中间结果(流式)都打印,含完整文本,用于离线还原"逐字增长 + 切句"全过程
+                log.debug("[AsrSession] asr-stream textLen={} emittedLen={} lang={} speakerId={} text='{}'",
                         text.length(), emittedLen, lang, speakerId,
-                        text.length() <= 40 ? text : text.substring(0, 37) + "...");
+                        text.length() <= 200 ? text : text.substring(0, 200) + "…");
                 // 节流 INFO：文本每增长 40 字符、或距上次超过 5 秒，记录一次便于分析分段问题
                 long nowMs = System.currentTimeMillis();
                 if (text.length() - lastLoggedTranscribeLen >= LOG_TRANSCRIBING_CHAR_STEP
@@ -496,6 +497,10 @@ public class AzureAsrIntegration {
                     && startsWithIgnoreCase(lang, "id")) {
                 int b = segmentationSvc.findBoundary(working, lang, safe);
                 if (b > 0) wtpBoundary = b;
+                // DEBUG: 每次 wtpsplit 查询的输入与返回的句边界,用于分析"该不该切/切在哪"
+                log.debug("[AsrSession] wtpsplit query workingLen={} safe={} boundary={} working='{}'",
+                        working.length(), safe, b,
+                        working.length() <= 200 ? working : working.substring(0, 200) + "…");
             }
 
             int end = NO_SEGMENT;

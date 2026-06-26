@@ -371,7 +371,19 @@ public class LlmIntegration {
         }
         log.info("[LlmIntegration] idZhCorrectTranslate end, costMs={}, outputLen={}",
                 System.currentTimeMillis() - start, cleaned.length());
+        // 调试用:把"源句 → 中文译文"成对打到日志,便于离线分析分段与翻译质量(截断防日志膨胀)
+        log.info("[LlmIntegration] idZhCorrectTranslate io, src='{}' -> out='{}'",
+                preview(currentText, 240), preview(cleaned, 240));
         return cleaned;
+    }
+
+    /** 日志预览:截断到 max 字符,去掉换行,避免刷屏。 */
+    private static String preview(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        String oneLine = text.replace('\n', ' ').strip();
+        return oneLine.length() <= max ? oneLine : oneLine.substring(0, max) + "…";
     }
 
     /** 方案2:实时分句的系统提示。让 LLM 只判断"已说完的整句"边界,逐字照抄,绝不翻译/改写。 */
