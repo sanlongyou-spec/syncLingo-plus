@@ -70,6 +70,10 @@ public class RealtimeInterpretationFacade {
     private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, null, -1L, -1, -1L);
     private final ConcurrentHashMap<String, String> sessionLastSourceLang = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> sessionTargetLangMap = new ConcurrentHashMap<>();
+    /** 会话级印尼语源文本滑动上下文(供 id→zh LLM 纠错翻译消歧)；按句去重、按字符数截断 */
+    private final ConcurrentHashMap<String, java.util.ArrayDeque<String>> sessionIdSourceContext = new ConcurrentHashMap<>();
+    /** 滑动上下文最大字符数 */
+    private static final int MAX_ID_CONTEXT_CHARS = 600;
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsQueueSize = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsSequence = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionUtteranceStartMs = new ConcurrentHashMap<>();
@@ -171,6 +175,7 @@ public class RealtimeInterpretationFacade {
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
+        sessionIdSourceContext.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
@@ -345,7 +350,12 @@ public class RealtimeInterpretationFacade {
         String translated;
         try {
             Long userId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L);
-            translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress);
+            boolean indonesianSource = sourceLang != null && sourceLang.trim().toLowerCase().startsWith("id");
+            String recentContext = indonesianSource ? recentIdContext(sessionId, text) : null;
+            translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress, recentContext);
+            if (indonesianSource) {
+                appendIdContext(sessionId, text);
+            }
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}", sessionId, e);
             completeTtsReservation(reservation, "translate_failed");
@@ -688,6 +698,7 @@ public class RealtimeInterpretationFacade {
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
+        sessionIdSourceContext.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
         sessionTtsSequence.remove(sessionId);
         sessionUtteranceStartMs.remove(sessionId);
@@ -698,6 +709,50 @@ public class RealtimeInterpretationFacade {
         speakerTurnService.flushSession(sessionId);
         speakerTurnService.cleanupSession(sessionId);
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
+    }
+
+    /** 取该会话最近的印尼语原文作为上下文(排除当前句),供 id→zh LLM 纠错翻译消歧。 */
+    private String recentIdContext(String sessionId, String currentText) {
+        java.util.ArrayDeque<String> buffer = sessionIdSourceContext.get(sessionId);
+        if (buffer == null || buffer.isEmpty()) {
+            return null;
+        }
+        StringBuilder context = new StringBuilder();
+        synchronized (buffer) {
+            for (String item : buffer) {
+                if (item.equals(currentText)) {
+                    continue;
+                }
+                if (context.length() > 0) {
+                    context.append(' ');
+                }
+                context.append(item);
+            }
+        }
+        return context.length() == 0 ? null : context.toString();
+    }
+
+    /** 把当前印尼语原文追加进会话上下文(连续重复只记一次),并按 {@link #MAX_ID_CONTEXT_CHARS} 截断旧句。 */
+    private void appendIdContext(String sessionId, String text) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        java.util.ArrayDeque<String> buffer =
+                sessionIdSourceContext.computeIfAbsent(sessionId, k -> new java.util.ArrayDeque<>());
+        synchronized (buffer) {
+            if (text.equals(buffer.peekLast())) {
+                return;   // 同句被多目标语言重复翻译时,只记一次
+            }
+            buffer.addLast(text);
+            int total = 0;
+            for (String item : buffer) {
+                total += item.length() + 1;
+            }
+            while (total > MAX_ID_CONTEXT_CHARS && buffer.size() > 1) {
+                String removed = buffer.pollFirst();
+                total -= removed.length() + 1;
+            }
+        }
     }
 
     public String translateText(String text, String targetLang) {

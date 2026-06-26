@@ -71,7 +71,7 @@ class RealtimeInterpretationOrderTest {
 
         CountDownLatch firstTranslationStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstTranslation = new CountDownLatch(1);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean()))
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean(), any()))
                 .thenAnswer(invocation -> {
                     String text = invocation.getArgument(0);
                     if ("first".equals(text)) {

@@ -33,6 +33,24 @@ public class OpenAiProperties {
 
     private double compressionZhToEnTargetRatio = 0.70;
 
+    // ── 印尼语→中文 LLM 纠错翻译(ASR 后处理 + 专业翻译) ──────────────────
+    // 印尼语 ASR 把专业词/缩写听错(pupuk→kupu、boron→buron、pH→PHK 等),普通翻译会照错直翻。
+    // 开启后,id→zh 改走 LLM:先按棕榈种植园施肥/缺素语境纠错 ASR 文本,再翻成自然中文。
+    // 失败/超时自动回退到原 Google 翻译路径,绝不阻断同传。
+    private boolean idZhLlmTranslateEnabled = false;
+
+    /** 纠错翻译用的快模型(非推理),与实时压缩同档,控延迟 */
+    private String idZhLlmTranslateModel = "anthropic/claude-haiku-4.5";
+
+    /** 单次纠错翻译的最大输出 token */
+    private long idZhLlmTranslateMaxOutputTokens = 600L;
+
+    /** 实时预算:超时即回退 Google,避免拖慢同传 */
+    private int idZhLlmTranslateTimeoutMs = 4000;
+
+    /** 滑动上下文窗口字符数:把最近若干印尼语原文作为上下文给 LLM 消歧 */
+    private int idZhLlmTranslateContextChars = 600;
+
     // Summaries / Q&A / RAG helper — DeepSeek V4 (good Chinese, low cost).
     private String summaryModel = "deepseek/deepseek-v4-pro";
 

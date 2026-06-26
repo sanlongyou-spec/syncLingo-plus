@@ -70,6 +70,32 @@ public class LlmIntegration {
             + "- Target length: keep about %s of the original length when possible.\n\n"
             + "Output only the compressed English text, no explanation.";
 
+    /**
+     * 印尼语→中文 ASR 后处理 + 翻译。先按棕榈种植园施肥/缺素/叶片分析语境纠正 ASR 错词与断句，
+     * 再翻成自然中文。只输出当前句的中文，供 TTS 直接朗读，不带任何标注。
+     */
+    private static final String ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT =
+            "你是印尼语到中文的农业会议同声传译助手。输入来自语音识别(ASR)，可能有识别错误、"
+            + "断句错误、口语重复和专业术语误识别。不要逐词硬翻：先结合上下文和下面的业务背景把印尼语纠正成"
+            + "合理文本，再翻成自然、通顺的中文。\n\n"
+            + "[业务背景] 印尼棕榈种植园的叶片分析、施肥建议、缺素分析会议。\n"
+            + "[常见术语]\n"
+            + "- defisiensi/defisitensi = 缺素/养分缺乏\n"
+            + "- K/Kalium = 钾；P/Fosfor = 磷；N = 氮；Zn/unsur Zn = 锌元素；Cu = 铜；Ca = 钙；Mg = 镁；B/boron = 硼\n"
+            + "- pupuk = 肥料/施肥；rekomendasi pupuk = 施肥建议；pemupukan = 施肥；dosis = 用量；MOP = 氯化钾肥\n"
+            + "- analisa daun = 叶片分析；LSU = 叶片分析；blok = 区块/地块；kebun = 园区/种植园；pokok = 株/棵\n"
+            + "- kg per pokok = 每株公斤数；curah hujan = 降雨量；lahan gambut = 泥炭地；agronomi = 农艺\n"
+            + "- kondisi lapangan = 现场/田间情况；waterlogging = 渍水；topografi = 地形\n\n"
+            + "[纠错规则]\n"
+            + "1. ASR 把 K 听成 kang、pupuk 听成 kupu/pukul、blok 听成 blog/peluk、boron 听成 buron、"
+            + "pH 听成 PHK、efisiensi 听成 episensi、konteks 听成 kontes、tonase 听成 tonas、LSU 听成 RSU、"
+            + "unsur Zn 听成 unsumsi zin 等，请按上下文纠正回正确术语。\n"
+            + "2. dari = “从…来看/的”，绝不是“发件人”。\n"
+            + "3. 文本不完整时按上下文译成最可能的意思，但绝不编造具体数值；数字、单位、元素符号按原文保留。\n"
+            + "4. 完全无法判断的词保留原词，并在其后用（疑似识别错误）标注。\n"
+            + "5. 只翻译【当前句】，上文仅用于消歧，不要翻译上文、不要复述上文。\n\n"
+            + "只输出当前句的中文译文，不要输出印尼语、解释或任何前后缀。";
+
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
             "你是会议总结助手。请根据用户要求和会议记录生成会议总结。\n"
             + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
@@ -166,6 +192,49 @@ public class LlmIntegration {
 
     private String buildPrompt(String template, double targetRatio) {
         return String.format(template, String.format("%.0f%%", targetRatio * 100));
+    }
+
+    /**
+     * 印尼语→中文 ASR 纠错翻译。结合滑动上下文与（可选）本句命中的术语表，先纠错再翻成中文。
+     *
+     * @param currentText    当前句印尼语 ASR 原文（待翻译）
+     * @param recentContext  最近若干句印尼语原文（仅用于消歧，不翻译），可为空
+     * @param dynamicGlossary 本句命中的术语对照（每行“印尼语 = 中文”），可为空
+     * @return 当前句的中文译文
+     * @throws IOException LLM 不可用 / 超时
+     */
+    public String correctAndTranslateIndonesianToChinese(
+            String currentText,
+            String recentContext,
+            String dynamicGlossary
+    ) throws IOException {
+        if (currentText == null || currentText.isBlank()) {
+            return "";
+        }
+        String model = openAiProperties.getIdZhLlmTranslateModel();
+        StringBuilder userMessage = new StringBuilder();
+        if (recentContext != null && !recentContext.isBlank()) {
+            userMessage.append("[上文(仅供消歧,不要翻译)]\n").append(recentContext.trim()).append("\n\n");
+        }
+        if (dynamicGlossary != null && !dynamicGlossary.isBlank()) {
+            userMessage.append("[本句必须遵守的术语对照]\n").append(dynamicGlossary.trim()).append("\n\n");
+        }
+        userMessage.append("[当前句(请纠错后翻成中文)]\n").append(currentText.trim());
+
+        long start = System.currentTimeMillis();
+        log.info("[LlmIntegration] idZhCorrectTranslate start, model={}, curLen={}, ctxLen={}, glossaryLines={}",
+                model, currentText.length(), recentContext != null ? recentContext.length() : 0,
+                dynamicGlossary != null && !dynamicGlossary.isBlank() ? dynamicGlossary.split("\n").length : 0);
+        String result = createTextResponse(
+                model,
+                ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT,
+                userMessage.toString(),
+                openAiProperties.getIdZhLlmTranslateMaxOutputTokens(),
+                Duration.ofMillis(openAiProperties.getIdZhLlmTranslateTimeoutMs())
+        );
+        log.info("[LlmIntegration] idZhCorrectTranslate end, costMs={}, outputLen={}",
+                System.currentTimeMillis() - start, result.length());
+        return result;
     }
 
     /**

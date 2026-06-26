@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -67,6 +68,14 @@ public class TranslationService {
      *                      由调用方按"该语言通道是否有播放积压"决定(见 RealtimeInterpretationFacade 阶段1)。
      */
     public String translate(String text, String sourceLang, String targetLang, Long userId, boolean allowCompress) {
+        return translate(text, sourceLang, targetLang, userId, allowCompress, null);
+    }
+
+    /**
+     * @param recentContext 最近若干句源文本，仅用于 id→zh LLM 纠错翻译的上下文消歧；其它路径忽略。
+     */
+    public String translate(String text, String sourceLang, String targetLang, Long userId, boolean allowCompress,
+                            String recentContext) {
         log.info("[TranslationService] translate start, userId={}, textLen={}, textHash={}, sourceLang={}, targetLang={}, allowCompress={}",
                 userId, text != null ? text.length() : 0, diagnosticHash(text), sourceLang, targetLang, allowCompress);
         if (text == null || text.isBlank()) {
@@ -82,6 +91,20 @@ public class TranslationService {
                     userId, diagnosticHash(text), text.length(), normalizedText.length());
             text = normalizedText;
         }
+
+        // 印尼语→中文:走 LLM 纠错翻译(ASR 后处理 + 专业翻译)。失败/超时回退下方 Google 路径。
+        if (openAiProperties.isIdZhLlmTranslateEnabled()
+                && isIndonesianSource(sourceLang) && isChineseTarget(targetLang)) {
+            String llmResult = tryLlmCorrectTranslate(text, sourceLang, targetLang, userId, recentContext);
+            if (llmResult != null && !llmResult.isBlank()) {
+                log.info("[TranslationService] translate end (llm id->zh), userId={}, textHash={}, resultLen={}, costMs={}",
+                        userId, diagnosticHash(text), llmResult.length(), System.currentTimeMillis() - start);
+                return llmResult;
+            }
+            log.warn("[TranslationService] llm id->zh unavailable, fallback to google, userId={}, textHash={}",
+                    userId, diagnosticHash(text));
+        }
+
         TerminologyService.TerminologyProtection terminologyProtection =
                 terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
         String protectedText = terminologyProtection.getProtectedText();
@@ -235,6 +258,54 @@ public class TranslationService {
         String lower = sourceLang.trim().toLowerCase();
         return lower.startsWith("id") || lower.startsWith("in")
                 || Constants.LANG_ID_ISO6391.equalsIgnoreCase(lower);
+    }
+
+    private boolean isChineseTarget(String targetLang) {
+        return targetLang != null && targetLang.trim().toLowerCase().startsWith("zh");
+    }
+
+    /**
+     * 调 LLM 做印尼语→中文纠错翻译。把本句命中的术语作为"必须遵守的对照表"一并传入。
+     * 任何异常/超时返回 null，由调用方回退到 Google 翻译路径。
+     */
+    private String tryLlmCorrectTranslate(String text, String sourceLang, String targetLang, Long userId,
+                                          String recentContext) {
+        try {
+            String glossary = buildDynamicGlossary(userId, text, sourceLang, targetLang);
+            return llmIntegration.correctAndTranslateIndonesianToChinese(text, recentContext, glossary);
+        } catch (Exception e) {
+            log.warn("[TranslationService] llm id->zh failed, userId={}, textHash={}, reason={}",
+                    userId, diagnosticHash(text), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 用现有术语匹配,提取本句命中的"印尼语 = 中文"对照,作为动态术语表喂给 LLM。
+     * 复用 {@link TerminologyService#applyBeforeTranslate}(只取匹配结果,不用其占位符文本)。
+     */
+    private String buildDynamicGlossary(Long userId, String text, String sourceLang, String targetLang) {
+        try {
+            TerminologyService.TerminologyProtection protection =
+                    terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
+            Map<String, String> sourceByPlaceholder = protection.getSourceTermByPlaceholder();
+            Map<String, String> targetByPlaceholder = protection.getTargetTermByPlaceholder();
+            if (sourceByPlaceholder == null || sourceByPlaceholder.isEmpty()) {
+                return null;
+            }
+            StringBuilder glossary = new StringBuilder();
+            for (Map.Entry<String, String> entry : sourceByPlaceholder.entrySet()) {
+                String source = entry.getValue();
+                String target = targetByPlaceholder.get(entry.getKey());
+                if (source != null && !source.isBlank() && target != null && !target.isBlank()) {
+                    glossary.append(source).append(" = ").append(target).append("\n");
+                }
+            }
+            return glossary.length() == 0 ? null : glossary.toString();
+        } catch (Exception e) {
+            log.debug("[TranslationService] buildDynamicGlossary skipped, reason={}", e.getMessage());
+            return null;
+        }
     }
 
     private boolean isAutoDetect(String lang) {
