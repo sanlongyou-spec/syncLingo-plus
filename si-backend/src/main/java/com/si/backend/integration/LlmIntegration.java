@@ -35,6 +35,8 @@ public class LlmIntegration {
     private static final long TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS = 2500L;
     private static final long MEETING_KNOWLEDGE_PACK_MAX_OUTPUT_TOKENS = 1500L;
     private static final long HOTWORD_EXTRACTION_MAX_OUTPUT_TOKENS = 1500L;
+    private static final ChatRequestOptions DEFAULT_CHAT_OPTIONS = new ChatRequestOptions(false);
+    private static final ChatRequestOptions NO_REASONING_CHAT_OPTIONS = new ChatRequestOptions(true);
 
     private static final String INDONESIAN_COMPRESSION_PROMPT_TEMPLATE =
             "You are a simultaneous interpretation compression model.\n\n"
@@ -166,12 +168,13 @@ public class LlmIntegration {
             return "[]";
         }
         log.info("[LlmIntegration] extractTerminologyPairs start, model={}, textLen={}",
-                openAiProperties.getSummaryModel(), text.length());
+                openAiProperties.effectiveExtractionModel(), text.length());
         String result = createTextResponse(
-                openAiProperties.getSummaryModel(),
+                openAiProperties.effectiveExtractionModel(),
                 TERMINOLOGY_PAIR_EXTRACTION_SYSTEM_PROMPT,
                 text,
-                TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS
+                TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS,
+                extractionChatOptions()
         );
         log.info("[LlmIntegration] extractTerminologyPairs end, resultLen={}", result.length());
         return result;
@@ -434,7 +437,7 @@ public class LlmIntegration {
         // 覆盖全文:分块蒸馏(每块 ≤12000 字,最多 6 块),逐块合并、按行去重,避免单次截断丢掉后半部分。
         List<String> chunks = com.si.backend.util.TextChunks.split(fileText, 12000, 6);
         log.info("[LlmIntegration] extractMeetingKnowledgePack start, model={}, fileLen={}, chunks={}",
-                openAiProperties.getSummaryModel(), fileText.length(), chunks.size());
+                openAiProperties.effectiveExtractionModel(), fileText.length(), chunks.size());
         java.util.LinkedHashSet<String> mergedLines = new java.util.LinkedHashSet<>();
         int failedChunks = 0;
         for (int i = 0; i < chunks.size(); i++) {
@@ -462,21 +465,23 @@ public class LlmIntegration {
 
     String extractMeetingKnowledgeChunk(String chunk) throws IOException {
         return createTextResponse(
-                openAiProperties.getSummaryModel(),
+                openAiProperties.effectiveExtractionModel(),
                 MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
                 chunk,
-                MEETING_KNOWLEDGE_PACK_MAX_OUTPUT_TOKENS
+                MEETING_KNOWLEDGE_PACK_MAX_OUTPUT_TOKENS,
+                extractionChatOptions()
         );
     }
 
     public String extractHotwordsJson(String text) throws IOException {
         log.info("[LlmIntegration] extractHotwordsJson start, model={}, textLen={}",
-                openAiProperties.getSummaryModel(), text != null ? text.length() : 0);
+                openAiProperties.effectiveExtractionModel(), text != null ? text.length() : 0);
         String result = createTextResponse(
-                openAiProperties.getSummaryModel(),
+                openAiProperties.effectiveExtractionModel(),
                 HOTWORD_EXTRACTION_SYSTEM_PROMPT,
                 text,
-                HOTWORD_EXTRACTION_MAX_OUTPUT_TOKENS
+                HOTWORD_EXTRACTION_MAX_OUTPUT_TOKENS,
+                extractionChatOptions()
         );
         log.info("[LlmIntegration] extractHotwordsJson end, resultLen={}", result.length());
         return result;
@@ -738,14 +743,42 @@ public class LlmIntegration {
     }
 
     private String buildStreamRequestJson(String model, String systemPrompt, String userMessage, long maxTokens) throws IOException {
+        return buildChatRequestJson(model, systemPrompt, userMessage, maxTokens, true, DEFAULT_CHAT_OPTIONS);
+    }
+
+    String buildTextRequestJson(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxTokens,
+            ChatRequestOptions options
+    ) throws IOException {
+        return buildChatRequestJson(model, systemPrompt, userMessage, maxTokens, false, options);
+    }
+
+    private String buildChatRequestJson(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxTokens,
+            boolean stream,
+            ChatRequestOptions options
+    ) throws IOException {
         Map<String, Object> req = new LinkedHashMap<>();
         req.put("model", model);
-        req.put("stream", true);
+        req.put("stream", stream);
         req.put("max_tokens", maxTokens);
         List<Map<String, String>> messages = new ArrayList<>();
         messages.add(Map.of("role", "system", "content", systemPrompt));
         messages.add(Map.of("role", "user", "content", userMessage));
         req.put("messages", messages);
+        if (options != null && options.disableReasoning()) {
+            Map<String, Object> reasoning = new LinkedHashMap<>();
+            reasoning.put("effort", "none");
+            reasoning.put("exclude", true);
+            req.put("reasoning", reasoning);
+            req.put("include_reasoning", false);
+        }
         try {
             return OBJECT_MAPPER.writeValueAsString(req);
         } catch (Exception e) {
@@ -772,6 +805,17 @@ public class LlmIntegration {
         return value == null ? "" : value;
     }
 
+    private ChatRequestOptions extractionChatOptions() {
+        return openAiProperties.isExtractionDisableReasoning() && isOpenRouterBaseUrl()
+                ? NO_REASONING_CHAT_OPTIONS
+                : DEFAULT_CHAT_OPTIONS;
+    }
+
+    private boolean isOpenRouterBaseUrl() {
+        String baseUrl = openAiProperties.getBaseUrl();
+        return baseUrl != null && baseUrl.toLowerCase().contains("openrouter.ai");
+    }
+
     /**
      * Generic non-streaming chat completion, for RAG helpers (query expansion, reranking, etc.).
      */
@@ -794,7 +838,17 @@ public class LlmIntegration {
             String userMessage,
             long maxOutputTokens
     ) throws IOException {
-        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, DEFAULT_LLM_TIMEOUT);
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, DEFAULT_LLM_TIMEOUT, DEFAULT_CHAT_OPTIONS);
+    }
+
+    private String createTextResponse(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxOutputTokens,
+            ChatRequestOptions options
+    ) throws IOException {
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, DEFAULT_LLM_TIMEOUT, options);
     }
 
     private String createTextResponse(
@@ -804,6 +858,17 @@ public class LlmIntegration {
             long maxOutputTokens,
             Duration requestTimeout
     ) throws IOException {
+        return createTextResponse(model, systemPrompt, userMessage, maxOutputTokens, requestTimeout, DEFAULT_CHAT_OPTIONS);
+    }
+
+    private String createTextResponse(
+            String model,
+            String systemPrompt,
+            String userMessage,
+            long maxOutputTokens,
+            Duration requestTimeout,
+            ChatRequestOptions options
+    ) throws IOException {
         if (userMessage == null || userMessage.isBlank()) {
             return "";
         }
@@ -811,9 +876,7 @@ public class LlmIntegration {
             throw new IOException("OPENAI_API_KEY is blank");
         }
         long start = System.currentTimeMillis();
-        String requestBodyJson = buildStreamRequestJson(model, systemPrompt, userMessage, maxOutputTokens);
-        // Override stream=false for non-streaming request
-        requestBodyJson = requestBodyJson.replace("\"stream\":true", "\"stream\":false");
+        String requestBodyJson = buildTextRequestJson(model, systemPrompt, userMessage, maxOutputTokens, options);
 
         String chatUrl = openAiProperties.getBaseUrl().replaceAll("/+$", "") + "/chat/completions";
         HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
@@ -966,5 +1029,8 @@ public class LlmIntegration {
             return compact;
         }
         return compact.substring(0, maxChars) + "...";
+    }
+
+    record ChatRequestOptions(boolean disableReasoning) {
     }
 }

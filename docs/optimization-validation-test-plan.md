@@ -1591,3 +1591,65 @@ mvn test
 - Focused tests passed locally for the new orchestrator, meeting file upload wiring, and controller constructor regression.
 - Full backend `mvn test` passed locally: 366 tests, 0 failures, 0 errors.
 - Server validation still requires redeploying this change and re-uploading or reprocessing the report files.
+
+## Weekly Validation Record: 2026-W26 Meeting Material Extraction LLM Stabilization
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W26 Meeting Material Extraction LLM Stabilization`.
+
+### Validation Goals
+
+- Prove the production issue is the extraction LLM response shape, not the upload endpoint or async extraction wiring.
+- Prove extraction requests can use a dedicated non-reasoning model and OpenRouter no-reasoning options.
+- Prove hotword, terminology, and meeting knowledge extraction still tolerate bad chunks and continue processing later chunks.
+
+### Log / API / Database Validation First
+
+```bash
+# Confirm the backend is running the newly deployed image.
+curl -sf http://127.0.0.1:8080/api/health
+docker logs --tail 80 si-backend 2>&1 | grep -E "Started|ERROR|Exception"
+
+# Re-upload the three report PDFs, then confirm ordinary upload and async extraction start.
+docker logs --since 20m si-backend 2>&1 | grep -E \
+ "MeetingController.*uploadFile|MeetingService.*uploadFile|MeetingMaterialExtractionService|extractMeetingKnowledgePack|TerminologyExtractionService|HotwordExtractionService"
+
+# Confirm extraction uses the dedicated model and no longer repeatedly fails with null content.
+docker logs --since 60m si-backend 2>&1 | grep -E \
+ "extractMeetingKnowledgePack start|extractTerminologyPairs|extractHotwordsJson|chunk extracted|terms=|phrases=|finishReason=length|content=null|empty content|repaired partial"
+
+# Optional database checks after async extraction has finished.
+docker exec -i si-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" sync_lingo -e \
+ "SELECT COUNT(*) AS auto_doc_terms FROM terminology WHERE user_id=<USER_ID> AND source_sheet='AUTO_DOC' AND enabled=1;"
+docker exec -i si-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" sync_lingo -e \
+ "SELECT COUNT(*) AS auto_hotwords FROM asr_hotword WHERE user_id=<USER_ID> AND source_type='AUTO_EXTRACTED' AND enabled=1;"
+```
+
+Pass criteria:
+
+- Upload logs still show `/api/meetings/<id>/files` followed by `MeetingMaterialExtractionService extract start`.
+- Extraction logs show the dedicated extraction model, normally `anthropic/claude-haiku-4.5` unless `OPENAI_EXTRACTION_MODEL` is overridden.
+- `finishReason=length` / `content=null` is not repeated for extraction calls after deployment.
+- At least one successful extraction path logs `chunk extracted` with `terms=` or `phrases=`, and corresponding database rows increase.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn "-Dtest=LlmRequestOptionsTest,LlmMeetingKnowledgePackTest,HotwordExtractionServiceJsonRepairTest,TerminologyExtractionServiceJsonRepairTest,HotwordExtractionServiceDocumentChunkTest" test
+mvn clean test
+```
+
+### Manual Validation
+
+- Re-upload the same three bilingual PDFs after deploying this change, because previously failed fileIds are not automatically reprocessed.
+- Refresh the hotword and terminology pages after async extraction finishes and confirm extracted items are visible.
+- Spot-check that extracted terms cover Chinese, English, and Indonesian material names instead of only a small prefix of each report.
+
+### Result Record
+
+- Production logs after `8934134` deployment confirmed the full-text upload wiring works and isolated the remaining failure to reasoning-heavy LLM responses with empty `message.content`.
+- Local focused tests passed: 7 tests, 0 failures, 0 errors.
+- Local full backend verification passed: 373 tests, 0 failures, 0 errors.
+- Server validation remains pending until this stabilization change is rebuilt on the server and the report files are re-uploaded or reprocessed.

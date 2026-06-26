@@ -70,6 +70,11 @@ public class OpenAiProperties {
     // Summaries / Q&A / RAG helper — DeepSeek V4 (good Chinese, low cost).
     private String summaryModel = "deepseek/deepseek-v4-pro";
 
+    // Background structured extraction must avoid reasoning models eating the JSON output budget.
+    private String extractionModel = "anthropic/claude-haiku-4.5";
+
+    private boolean extractionDisableReasoning = true;
+
     private String documentSummaryModel = "deepseek/deepseek-v4-pro";
 
     private long compressionMaxOutputTokens = 512L;
@@ -133,5 +138,12 @@ public class OpenAiProperties {
 
     public String effectiveRagHelperModel() {
         return (ragHelperModel != null && !ragHelperModel.isBlank()) ? ragHelperModel : summaryModel;
+    }
+
+    public String effectiveExtractionModel() {
+        if (extractionModel != null && !extractionModel.isBlank()) {
+            return extractionModel;
+        }
+        return compressionModel;
     }
 }

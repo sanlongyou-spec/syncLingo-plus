@@ -1552,3 +1552,48 @@ GET    /api/admin/audit-logs
 
 - Real extraction still depends on configured LLM credentials and runtime quota.
 - Large files trigger multiple asynchronous LLM calls; operators should leave processing time after upload before checking hotword/terminology pages.
+
+## Weekly Optimization Record: 2026-W26 Meeting Material Extraction LLM Stabilization
+
+### Goal
+
+- Stabilize the asynchronous extraction path for uploaded meeting materials after the full-text wiring fix was deployed.
+- Make hotword, terminology, and meeting knowledge extraction return usable JSON instead of failing when a reasoning-heavy model consumes the output budget.
+- Keep the extraction model configurable independently from the realtime compression / translation model.
+
+### Evidence From Production Logs
+
+- Deployment of `8934134` proved the upload wiring is correct: `/api/meetings/53/files` saved the three uploaded PDFs and then started `MeetingMaterialExtractionService` for fileIds `95`, `96`, and `97`.
+- The remaining failure was not upload or async orchestration. Logs showed many OpenRouter responses from `deepseek/deepseek-v4-pro` with `finishReason=length`, `content=null`, and a large `reasoning` field.
+- Because extraction expects strict JSON in `message.content`, those responses produced empty-content failures or partial chunk results.
+- Some terminology chunks did succeed, proving the parser and persistence path can work when the LLM returns normal content.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Chunk-level tolerance and diagnostics | Deployed | `8934134` keeps later chunks/steps running when one LLM response is empty or malformed, and logs extracted `terms=` / `phrases=` samples when chunks succeed. |
+| Dedicated extraction model | Implemented, pending server deployment | Added `OPENAI_EXTRACTION_MODEL`, defaulting to `anthropic/claude-haiku-4.5`, so extraction no longer has to share the reasoning-heavy summary/compression model. |
+| OpenRouter no-reasoning request options | Implemented, pending server deployment | Added `OPENAI_EXTRACTION_DISABLE_REASONING=true` and sends `reasoning.effort=none`, `reasoning.exclude=true`, and `include_reasoning=false` for extraction calls when using OpenRouter. |
+| Deployment template update | Implemented | `deploy/linux/env/backend.env.example` now documents the extraction model and reasoning-disable settings. |
+| Regression tests | Done locally | Added request-option tests and reran focused extraction tests plus the full backend test suite. |
+
+### Affected Modules
+
+- Backend config: `OpenAiProperties`.
+- LLM integration: `LlmIntegration` request construction for meeting knowledge, terminology, and hotword extraction.
+- Deployment env example: `deploy/linux/env/backend.env.example`.
+- Backend tests: `LlmRequestOptionsTest` plus existing extraction repair/chunking coverage.
+
+### Acceptance Criteria
+
+- After the next server deployment, extraction logs should show `model=anthropic/claude-haiku-4.5` or the explicitly configured `OPENAI_EXTRACTION_MODEL` for meeting knowledge, terminology, and hotword extraction.
+- Re-uploading the three bilingual PDFs should no longer produce repeated extraction failures with `finishReason=length` and `content=null`.
+- Logs should show successful chunk samples such as `chunk extracted ... terms=` and `chunk extracted ... phrases=`.
+- The database should receive new `terminology` rows with `source_sheet='AUTO_DOC'` and new `asr_hotword` rows with `source_type='AUTO_EXTRACTED'` when the model returns candidates.
+
+### Residual Issues
+
+- Existing failed uploads, including fileIds `95`, `96`, and `97`, will not automatically reprocess. Operators should re-upload the reports or add a manual reprocess endpoint/job.
+- Extraction quality remains model-dependent; after the no-reasoning model is deployed, the next tuning round should review duplicate terms, cross-language coverage, and noisy domain phrases.
+- The mojibake seen in some terminal output is an encoding/display issue and is separate from extraction correctness.
