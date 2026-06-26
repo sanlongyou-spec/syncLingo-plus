@@ -35,8 +35,10 @@ class TranslationLlmIdZhTest {
         openAiProperties = mock(OpenAiProperties.class);
         terminologyService = mock(TerminologyService.class);
         AsrCorrectionService asrCorrectionService = mock(AsrCorrectionService.class);
+        MeetingKnowledgeService meetingKnowledgeService = mock(MeetingKnowledgeService.class);
         translationService = new TranslationService(
-                translator, llmIntegration, openAiProperties, terminologyService, asrCorrectionService);
+                translator, llmIntegration, openAiProperties, terminologyService,
+                asrCorrectionService, meetingKnowledgeService);
 
         // 术语层透传(动态术语表为空 + Google 回退路径都需要)
         when(terminologyService.applyBeforeTranslate(any(), any(), any(), any()))
@@ -51,7 +53,7 @@ class TranslationLlmIdZhTest {
     @Test
     void idToZhUsesLlmWhenEnabled() throws IOException {
         when(openAiProperties.isIdZhLlmTranslateEnabled()).thenReturn(true);
-        when(llmIntegration.correctAndTranslateIndonesianToChinese(any(), any(), any()))
+        when(llmIntegration.correctAndTranslateIndonesianToChinese(any(), any(), any(), any()))
                 .thenReturn("纠错后的中文");
 
         String result = translationService.translate(
@@ -64,7 +66,7 @@ class TranslationLlmIdZhTest {
     @Test
     void idToZhFallsBackToGoogleWhenLlmFails() throws IOException {
         when(openAiProperties.isIdZhLlmTranslateEnabled()).thenReturn(true);
-        when(llmIntegration.correctAndTranslateIndonesianToChinese(any(), any(), any()))
+        when(llmIntegration.correctAndTranslateIndonesianToChinese(any(), any(), any(), any()))
                 .thenThrow(new IOException("llm timeout"));
         when(translator.translate(any(), any(), any(), anyLong())).thenReturn("谷歌中文");
 
@@ -83,7 +85,7 @@ class TranslationLlmIdZhTest {
         String result = translationService.translate("apa kabar", "id-ID", "zh", 1L, false, "上文");
 
         assertEquals("谷歌中文", result);
-        verify(llmIntegration, never()).correctAndTranslateIndonesianToChinese(any(), any(), any());
+        verify(llmIntegration, never()).correctAndTranslateIndonesianToChinese(any(), any(), any(), any());
     }
 
     @Test
@@ -94,6 +96,6 @@ class TranslationLlmIdZhTest {
         String result = translationService.translate("你好", "zh", "id", 1L, false, null);
 
         assertEquals("apa kabar", result);
-        verify(llmIntegration, never()).correctAndTranslateIndonesianToChinese(any(), any(), any());
+        verify(llmIntegration, never()).correctAndTranslateIndonesianToChinese(any(), any(), any(), any());
     }
 }

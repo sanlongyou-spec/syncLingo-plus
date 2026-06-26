@@ -43,6 +43,7 @@ public class TranslationService {
     private final OpenAiProperties openAiProperties;
     private final TerminologyService terminologyService;
     private final AsrCorrectionService asrCorrectionService;
+    private final MeetingKnowledgeService meetingKnowledgeService;
 
     public String detectLanguage(String text) {
         log.info("[TranslationService] detectLanguage start, textLen={}", text != null ? text.length() : 0);
@@ -273,7 +274,8 @@ public class TranslationService {
                                           String recentContext) {
         try {
             String glossary = buildDynamicGlossary(userId, text, sourceLang, targetLang);
-            return llmIntegration.correctAndTranslateIndonesianToChinese(text, recentContext, glossary);
+            String knowledgePack = meetingKnowledgeService.getForInject(userId);
+            return llmIntegration.correctAndTranslateIndonesianToChinese(text, recentContext, glossary, knowledgePack);
         } catch (Exception e) {
             log.warn("[TranslationService] llm id->zh failed, userId={}, textHash={}, reason={}",
                     userId, diagnosticHash(text), e.getMessage());

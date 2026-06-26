@@ -237,13 +237,18 @@ public class LlmIntegration {
     public String correctAndTranslateIndonesianToChinese(
             String currentText,
             String recentContext,
-            String dynamicGlossary
+            String dynamicGlossary,
+            String knowledgePack
     ) throws IOException {
         if (currentText == null || currentText.isBlank()) {
             return "";
         }
         String model = openAiProperties.getIdZhLlmTranslateModel();
         StringBuilder userMessage = new StringBuilder();
+        if (knowledgePack != null && !knowledgePack.isBlank()) {
+            userMessage.append("[本场会议背景知识(来自会议文件;仅用于纠正听错的人名/术语/数字,不得据此增添内容)]\n")
+                    .append(knowledgePack.trim()).append("\n\n");
+        }
         if (recentContext != null && !recentContext.isBlank()) {
             userMessage.append("[上文(仅供消歧,不要翻译)]\n").append(recentContext.trim()).append("\n\n");
         }
@@ -258,9 +263,10 @@ public class LlmIntegration {
                 ? ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT + ID_ZH_CONCISE_CLAUSE
                 : ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT;
         long start = System.currentTimeMillis();
-        log.info("[LlmIntegration] idZhCorrectTranslate start, model={}, curLen={}, ctxLen={}, glossaryLines={}, concise={}",
+        log.info("[LlmIntegration] idZhCorrectTranslate start, model={}, curLen={}, ctxLen={}, glossaryLines={}, packLen={}, concise={}",
                 model, currentText.length(), recentContext != null ? recentContext.length() : 0,
-                dynamicGlossary != null && !dynamicGlossary.isBlank() ? dynamicGlossary.split("\n").length : 0, concise);
+                dynamicGlossary != null && !dynamicGlossary.isBlank() ? dynamicGlossary.split("\n").length : 0,
+                knowledgePack != null ? knowledgePack.length() : 0, concise);
         String result = createTextResponse(
                 model,
                 systemPrompt,
@@ -335,6 +341,36 @@ public class LlmIntegration {
                 1200L
         );
         log.info("[LlmIntegration] mineAsrCorrections end, resultLen={}", result.length());
+        return result;
+    }
+
+    private static final String MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT =
+            "你是会议同传的资料整理助手。从会议文件中提取用于「实时纠错翻译」的紧凑背景知识,帮助把"
+            + "ASR 听错的专有名词纠正回来。只提取、不展开,输出紧凑文本(尽量 ≤20 行):\n"
+            + "1. 人名/公司/园区/项目/部门:中文规范写法(后附印尼或英文原名,如 聚龙(Julong)、董事长(Pak Chairman))\n"
+            + "2. 关键专业术语与缩写:原文 = 中文(如 LSU = 叶片分析、Starlink = 星链)\n"
+            + "3. 重要数字/单位/目标(如 70000 公顷、8 年战略)\n"
+            + "4. 末尾一行用「主题:」给出本次会议一句话主题。\n"
+            + "只输出上述内容,不要解释、不要 markdown 代码围栏。";
+
+    /**
+     * 把会议文件文本蒸馏成紧凑"知识包"(人名/术语/数字/主题),供实时 id→zh 纠错翻译作接地上下文。
+     * 用强模型,会前上传时调用一次(非实时)。
+     */
+    public String extractMeetingKnowledgePack(String fileText) throws IOException {
+        if (fileText == null || fileText.isBlank()) {
+            return "";
+        }
+        String input = fileText.length() > 12000 ? fileText.substring(0, 12000) : fileText;
+        log.info("[LlmIntegration] extractMeetingKnowledgePack start, model={}, fileLen={}",
+                openAiProperties.getSummaryModel(), input.length());
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
+                input,
+                1000L
+        );
+        log.info("[LlmIntegration] extractMeetingKnowledgePack end, resultLen={}", result.length());
         return result;
     }
 
