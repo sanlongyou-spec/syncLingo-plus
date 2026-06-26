@@ -86,6 +86,8 @@ azure:
       sentence-segmentation-enabled: ${AZURE_ASR_SENTENCE_SEGMENTATION_ENABLED:true}
       # sentence-punct 触发前中文段的最小字符数；短句不切，等下一个句末标点积累到目标长度再发。0=不限制。
       min-sentence-emit-zh-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ZH_CHARS:45}
+      # 印尼语 wtpsplit 句边界最小字符数：短于此不切,避免 "satu"/"nine" 这类碎片。0=不限制
+      min-sentence-emit-id-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS:24}
       # 长句强切：单调下标 + 稳定前缀 + 安全边界(标点>逗号>词/字) + 留尾余量，不吞句首字、不失控刷段。
       # 默认开启、只切 run-on 长句(中文>60字 / 拉丁>25词);正常短句不切。置 0 可关。
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:60}

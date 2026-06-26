@@ -200,6 +200,8 @@ public class AzureAsrIntegration {
         private final long forceSegmentMs;
         /** sentence-punct 触发前中文段的最小字符数；0 = 不限制 */
         private final int minSentenceEmitZhChars;
+        /** 印尼语 wtpsplit 句边界的最小字符数；短于此值不切，避免碎片；0 = 不限制 */
+        private final int minSentenceEmitIdChars;
         /** 标点还原服务（null = 未启用），用于在 Transcribing 中间结果里推断句末标点位置 */
         private final PunctuationServiceIntegration punctuationSvc;
         /** 句边界检测服务（null = 未启用），用于印尼语等无标点还原模型的语言 */
@@ -245,6 +247,7 @@ public class AzureAsrIntegration {
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
+            this.minSentenceEmitIdChars = asrConfig.getMinSentenceEmitIdChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -265,6 +268,7 @@ public class AzureAsrIntegration {
             this.maxSegmentChars = asrConfig.getMaxSegmentChars();
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
+            this.minSentenceEmitIdChars = asrConfig.getMinSentenceEmitIdChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -499,10 +503,15 @@ public class AzureAsrIntegration {
                         emitText = punctuated.substring(0, ep).trim();
                     }
                 }
-                // 无标点边界：用 wtpsplit 检测到的语义句边界（印尼语）
-                if (end == NO_SEGMENT && wtpBoundary != NO_SEGMENT) {
+                // 无标点边界：用 wtpsplit 检测到的语义句边界（印尼语）。
+                // 加最小句长闸门：太短的边界(如 "satu"/"nine")不切，等累积更长或走逗号/字数兜底，避免碎片。
+                if (end == NO_SEGMENT && wtpBoundary != NO_SEGMENT
+                        && (minSentenceEmitIdChars <= 0 || wtpBoundary >= minSentenceEmitIdChars)) {
                     end = wtpBoundary;
                     reason = "sentence-wtpsplit";
+                } else if (wtpBoundary != NO_SEGMENT && wtpBoundary < minSentenceEmitIdChars) {
+                    log.debug("[AsrSession] wtpsplit boundary skipped (too short), boundary={} < minId={}",
+                            wtpBoundary, minSentenceEmitIdChars);
                 }
             }
             // 2) 逗号/子句标点：同样优先用标点版本

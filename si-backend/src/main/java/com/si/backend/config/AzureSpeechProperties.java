@@ -45,6 +45,12 @@ public class AzureSpeechProperties {
          * 0 = 不限制（旧行为）。
          */
         private int minSentenceEmitZhChars = 45;
+        /**
+         * 印尼语 wtpsplit 句边界的最小字符数：分句模型在该长度之前检测到的句边界不切，
+         * 等累积到足够长度(或走逗号/字数兜底)再切，避免把 "satu"/"nine" 这种短语切成碎片。
+         * 0 = 不限制。
+         */
+        private int minSentenceEmitIdChars = 24;
     }
 
     @Data
