@@ -206,6 +206,67 @@ public class TerminologyService {
         }
     }
 
+    /**
+     * 把"从双语会议文件自动抽取的术语对"入库(强制级,与手动导入同等:exact 命中即"必须遵守")。
+     * 去重:① 完整三元组(中|印|英)已存在 → 跳过;② 同一印尼词已有映射 → 跳过(避免一个 id 对多个 zh 的冲突)。
+     * 只接受至少含中文+印尼语的对。返回新建条数。
+     */
+    public int addExtractedTerms(Long userId, List<Terminology> candidates) {
+        requireUserId(userId);
+        if (candidates == null || candidates.isEmpty()) {
+            return 0;
+        }
+        long uid = userId;
+        Set<String> seenTriple = new HashSet<>();
+        Set<String> seenId = new HashSet<>();
+        for (Terminology existing : terminologyMapper.findAll(uid, null, null)) {
+            seenTriple.add(dedupKey(existing.getTermZh(), existing.getTermId(), existing.getTermEn()));
+            if (existing.getTermId() != null && !existing.getTermId().isBlank()) {
+                seenId.add(norm(existing.getTermId()));
+            }
+        }
+        int created = 0;
+        for (Terminology c : candidates) {
+            String zh = blankToNull(c.getTermZh());
+            String id = blankToNull(c.getTermId());
+            String en = blankToNull(c.getTermEn());
+            if (zh == null || id == null) {
+                continue; // 自动术语需中+印对照才有意义(否则无法支撑 id→zh 精确命中)
+            }
+            if (!seenTriple.add(dedupKey(zh, id, en))) {
+                continue;
+            }
+            if (!seenId.add(norm(id))) {
+                continue; // 该印尼词已有映射,跳过避免冲突译法
+            }
+            Terminology term = new Terminology();
+            term.setUserId(uid);
+            term.setTermZh(zh);
+            term.setTermId(id);
+            term.setTermEn(en);
+            term.setCategory(blankToNull(c.getCategory()));
+            term.setSourceSheet("AUTO_DOC");
+            term.setReviewStatus("APPROVED");
+            term.setEnabled(true);
+            terminologyMapper.insert(term);
+            created++;
+        }
+        if (created > 0) {
+            invalidateTerminologyIndex(uid);
+        }
+        log.info("[TerminologyService] addExtractedTerms end, userId={}, candidates={}, created={}",
+                uid, candidates.size(), created);
+        return created;
+    }
+
+    private String blankToNull(String s) {
+        if (s == null) {
+            return null;
+        }
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
     private Map<String, Integer> resolveTermColumns(Row row, DataFormatter formatter) {
         Map<String, Integer> columns = new HashMap<>();
         if (row == null) return columns;

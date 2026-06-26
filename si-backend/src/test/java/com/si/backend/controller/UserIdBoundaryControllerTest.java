@@ -48,6 +48,7 @@ class UserIdBoundaryControllerTest {
                 mock(HotwordExtractionService.class),
                 mock(AsrHotwordService.class),
                 mock(com.si.backend.service.MeetingKnowledgeService.class),
+                mock(com.si.backend.service.TerminologyExtractionService.class),
                 mock(ResourceOwnershipPolicy.class)
         );
         bindActor(5L);

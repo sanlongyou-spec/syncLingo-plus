@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
 public class MeetingKnowledgeService {
 
     /** 注入实时 prompt 时的知识包字符上限(控制 prompt 体积/延迟) */
-    private static final int MAX_INJECT_CHARS = 1200;
+    private static final int MAX_INJECT_CHARS = 4000;
 
     private final MeetingKnowledgeMapper meetingKnowledgeMapper;
     private final LlmIntegration llmIntegration;

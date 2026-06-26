@@ -26,6 +26,8 @@ public class HotwordExtractionService {
 
     private static final int MAX_RECORDS = 60;
     private static final int MAX_TEXT_CHARS = 4000;
+    /** 会议材料热词抽取的最大分块数(覆盖全文用,控成本) */
+    private static final int MAX_DOC_CHUNKS = 8;
 
     private final LlmIntegration llmIntegration;
     private final InterpretationRecordMapper recordMapper;
@@ -83,17 +85,24 @@ public class HotwordExtractionService {
     public List<AsrHotword> extractAndSaveFromText(String text, Long userId) {
         if (text == null || text.isBlank() || userId == null) return List.of();
         log.info("[HotwordExtractionService] extractAndSaveFromText start, userId={}, textLen={}", userId, text.length());
-        String truncated = text.length() > MAX_TEXT_CHARS ? text.substring(0, MAX_TEXT_CHARS) : text;
-        List<HotwordSuggestion> suggestions = extractSuggestions(truncated);
-        List<AsrHotword> saved = suggestions.stream()
-                .filter(s -> s.getPhrase() != null && !s.getPhrase().isBlank())
-                .filter(s -> hotwordMapper.countByUserIdPhraseAndLanguage(
-                        userId, s.getPhrase(), s.getLanguage() != null ? s.getLanguage() : "") == 0)
-                .map(s -> buildHotword(s, "AUTO_EXTRACTED"))
+        // 覆盖全文:分块抽取(每块 ≤MAX_TEXT_CHARS,最多 MAX_DOC_CHUNKS 块),不再只取前 4000 字。
+        List<String> chunks = com.si.backend.util.TextChunks.split(text, MAX_TEXT_CHARS, MAX_DOC_CHUNKS);
+        // 跨块按 phrase(trim+小写) 去重,合并所有块的抽取结果
+        java.util.Map<String, HotwordSuggestion> uniqueByPhrase = new java.util.LinkedHashMap<>();
+        for (String chunk : chunks) {
+            for (HotwordSuggestion s : extractSuggestions(chunk)) {
+                if (s.getPhrase() == null || s.getPhrase().isBlank()) continue;
+                uniqueByPhrase.putIfAbsent(s.getPhrase().trim().toLowerCase(), s);
+            }
+        }
+        List<AsrHotword> saved = uniqueByPhrase.values().stream()
+                // 文件抽取的热词入库时语言置空(=全局),让三种语言识别路径都生效
+                .filter(s -> hotwordMapper.countByUserIdPhraseAndLanguage(userId, s.getPhrase().trim(), "") == 0)
+                .map(s -> buildGlobalHotword(s, "AUTO_EXTRACTED"))
                 .map(hw -> hotwordService.create(userId, hw))
                 .toList();
-        log.info("[HotwordExtractionService] extractAndSaveFromText end, userId={}, extracted={}, saved={}",
-                userId, suggestions.size(), saved.size());
+        log.info("[HotwordExtractionService] extractAndSaveFromText end, userId={}, chunks={}, extracted={}, saved={}",
+                userId, chunks.size(), uniqueByPhrase.size(), saved.size());
         return saved;
     }
 
@@ -151,6 +160,13 @@ public class HotwordExtractionService {
         hw.setWeight(1.0);
         hw.setSourceType(sourceType);
         hw.setEnabled(true);
+        return hw;
+    }
+
+    /** 与 {@link #buildHotword} 相同,但语言置空(=全局),让该热词对三种语言识别路径都生效。 */
+    private AsrHotword buildGlobalHotword(HotwordSuggestion s, String sourceType) {
+        AsrHotword hw = buildHotword(s, sourceType);
+        hw.setLanguage("");
         return hw;
     }
 }

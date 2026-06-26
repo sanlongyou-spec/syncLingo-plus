@@ -38,7 +38,7 @@ class MeetingKnowledgeServiceTest {
     void getForInjectTruncatesLongContent() {
         when(mapper.findContent(anyLong())).thenReturn("中".repeat(5000));
         String injected = service.getForInject(1L);
-        assertEquals(1200, injected.length(), "注入应截断到 1200 字");
+        assertEquals(4000, injected.length(), "注入应截断到 4000 字");
     }
 
     @Test

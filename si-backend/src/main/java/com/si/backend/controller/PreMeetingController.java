@@ -47,6 +47,7 @@ public class PreMeetingController {
     private final HotwordExtractionService hotwordExtractionService;
     private final com.si.backend.service.AsrHotwordService asrHotwordService;
     private final com.si.backend.service.MeetingKnowledgeService meetingKnowledgeService;
+    private final com.si.backend.service.TerminologyExtractionService terminologyExtractionService;
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @PostMapping("/upload")
@@ -69,6 +70,7 @@ public class PreMeetingController {
                     String text = preMeetingService.getDocText(fileId);
                     hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
                     meetingKnowledgeService.generateAndSaveFromText(finalUserId, text);
+                    terminologyExtractionService.extractAndSaveFromText(finalUserId, text);
                     PreMeetingService.MeetingEntities entities = preMeetingService.extractMeetingEntities(fileId);
                     asrHotwordService.saveMeetingEntities(
                             finalUserId, entities.participantNames(), entities.venue(), "MEETING_AGENDA");

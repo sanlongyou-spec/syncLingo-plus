@@ -138,8 +138,40 @@ public class LlmIntegration {
             + "  phrase: the exact term as it appears in the text\n"
             + "  category: one of 人名 / 地名 / 组织名 / 专业术语\n"
             + "  language: one of zh-CN / id-ID / en-US (the language the term naturally belongs to)\n"
-            + "Rules: maximum 30 items; skip common words and stop words; proper nouns and domain terms only.\n"
+            + "Rules: maximum 100 items; skip common words and stop words; proper nouns and domain terms only.\n"
             + "Output ONLY a valid JSON array with no explanation or markdown fences.";
+
+    /** 从中↔印(或含英)双语会议材料里抽取对齐的专业术语/专有名词对,供自动入术语表(强制级)。 */
+    private static final String TERMINOLOGY_PAIR_EXTRACTION_SYSTEM_PROMPT =
+            "你是术语抽取助手。输入是一份会议材料,通常中文与印尼语(可能含英文)互为译文。"
+            + "请抽取其中【互为翻译的术语对】——人名/公司/机构/园区/项目/部门、专业术语与缩写。\n"
+            + "返回 JSON 数组,每个元素恰好这些字段(字符串):\n"
+            + "  zh: 中文规范写法\n"
+            + "  id: 对应的印尼语写法(没有就空字符串)\n"
+            + "  en: 对应的英文写法(没有就空字符串)\n"
+            + "  category: 人名 / 地名 / 组织名 / 专业术语 之一\n"
+            + "严格规则:\n"
+            + "1. 只收【你有把握确为互译】的对;zh 和 id 至少要有一个非空,且尽量两者都给出。\n"
+            + "2. 不要翻译/编造材料里没有的词;不要收常见词、停用词、整句。\n"
+            + "3. 最多 80 条。\n"
+            + "4. 只输出 JSON 数组,不要解释、不要 markdown 围栏。";
+
+    /** 抽取双语材料中的术语对(中=印[=英]),返回 JSON 数组字符串。失败返回 "[]"。 */
+    public String extractTerminologyPairsJson(String text) throws IOException {
+        if (text == null || text.isBlank()) {
+            return "[]";
+        }
+        log.info("[LlmIntegration] extractTerminologyPairs start, model={}, textLen={}",
+                openAiProperties.getSummaryModel(), text.length());
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                TERMINOLOGY_PAIR_EXTRACTION_SYSTEM_PROMPT,
+                text,
+                1500L
+        );
+        log.info("[LlmIntegration] extractTerminologyPairs end, resultLen={}", result.length());
+        return result;
+    }
 
     private static final String DOCUMENT_SUMMARY_SYSTEM_PROMPT =
             "你是文件总结助手。请根据用户要求和文件内容生成总结。\n"
@@ -395,16 +427,31 @@ public class LlmIntegration {
         if (fileText == null || fileText.isBlank()) {
             return "";
         }
-        String input = fileText.length() > 12000 ? fileText.substring(0, 12000) : fileText;
-        log.info("[LlmIntegration] extractMeetingKnowledgePack start, model={}, fileLen={}",
-                openAiProperties.getSummaryModel(), input.length());
-        String result = createTextResponse(
-                openAiProperties.getSummaryModel(),
-                MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
-                input,
-                1000L
-        );
-        log.info("[LlmIntegration] extractMeetingKnowledgePack end, resultLen={}", result.length());
+        // 覆盖全文:分块蒸馏(每块 ≤12000 字,最多 6 块),逐块合并、按行去重,避免单次截断丢掉后半部分。
+        List<String> chunks = com.si.backend.util.TextChunks.split(fileText, 12000, 6);
+        log.info("[LlmIntegration] extractMeetingKnowledgePack start, model={}, fileLen={}, chunks={}",
+                openAiProperties.getSummaryModel(), fileText.length(), chunks.size());
+        java.util.LinkedHashSet<String> mergedLines = new java.util.LinkedHashSet<>();
+        for (String chunk : chunks) {
+            String part = createTextResponse(
+                    openAiProperties.getSummaryModel(),
+                    MEETING_KNOWLEDGE_PACK_SYSTEM_PROMPT,
+                    chunk,
+                    1500L
+            );
+            if (part == null) {
+                continue;
+            }
+            for (String line : part.split("\n")) {
+                String trimmed = line.strip();
+                if (!trimmed.isEmpty()) {
+                    mergedLines.add(trimmed);
+                }
+            }
+        }
+        String result = String.join("\n", mergedLines);
+        log.info("[LlmIntegration] extractMeetingKnowledgePack end, chunks={}, mergedLines={}, resultLen={}",
+                chunks.size(), mergedLines.size(), result.length());
         return result;
     }
 
