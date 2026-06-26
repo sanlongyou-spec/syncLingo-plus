@@ -37,6 +37,7 @@ public class MeetingService {
     private final PersistentPreMeetingFileMapper fileMapper;
     private final PreMeetingService preMeetingService;
     private final ContentEmbeddingService contentEmbeddingService;
+    private final MeetingMaterialExtractionService meetingMaterialExtractionService;
     private final com.si.backend.mapper.InterpretationSessionMapper sessionMapper;
     private final com.si.backend.mapper.MeetingActionItemMapper actionItemMapper;
     private final com.si.backend.mapper.SpeakerSummaryRecordMapper speakerSummaryMapper;
@@ -117,7 +118,10 @@ public class MeetingService {
         validateReportFileType(meetingId, originalName, ext);
         byte[] rawBytes = file.getBytes();
         String text = preMeetingService.extractFileText(rawBytes, ext, originalName);
-        return persistFile(meetingId, originalName, ext, text, rawBytes);
+        MeetingFileVo uploaded = persistFile(meetingId, originalName, ext, text, rawBytes);
+        meetingMaterialExtractionService.enqueueFromMeetingFile(
+                actor.userId(), meetingId, uploaded.getId(), originalName, text);
+        return uploaded;
     }
 
     public MeetingFileVo savePreMeetingFile(AuthenticatedActor actor, Long meetingId, String fileId) {

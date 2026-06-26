@@ -1535,3 +1535,59 @@ curl -sf http://127.0.0.1:8080/api/health
 - 通过 / 不通过：后端 `mvn test` 通过（339）；线上部署 `c3e0b52`，健康检查 OK；实测转写质量显著改善（pacarmen→董事长、聚龙、术语、断句、数字均正确）。
 - 遗留问题：个别 ASR 偶发听错（bernilai→香草等）文本层无法恢复；术语合并修正总表需运维清空重导。
 - 需回归项：长会议下 LLM 延迟与 `fallback to google` 比例；不同发言人停顿习惯下 `min-sentence-emit-id-chars` / 静音阈值是否需再调。
+
+## Weekly Validation Record: 2026-W26 Meeting File Full-Text Extraction Wiring
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W26 Meeting File Full-Text Extraction Wiring`.
+
+### Validation Goals
+
+- Prove ordinary report uploads through `/api/meetings/{meetingId}/files` enqueue the same full-text extraction pipeline as `/api/pre-meeting/upload`.
+- Prove extraction runs asynchronously and a failed extraction step does not fail the upload or block later steps.
+- Prove file names are included in extraction text so speaker names and domain hints in report names can become hotwords or knowledge hints.
+
+### Log / API / Database Validation First
+
+```bash
+# After uploading one report file from the meeting detail page:
+docker logs --since 10m si-backend 2>&1 | grep -E \
+ "MeetingController.*uploadFile|MeetingService.*uploadFile|MeetingMaterialExtractionService|HotwordExtractionService|extractMeetingKnowledgePack|TerminologyExtractionService"
+
+# Expected: ordinary upload plus extraction start/end lines.
+# For the fertilizer reports, the endpoint should be /api/meetings/<id>/files, not /api/pre-meeting/upload.
+
+# Optional database checks after async extraction has time to finish:
+docker exec -i si-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" sync_lingo -e \
+ "SELECT COUNT(*) AS hotwords FROM asr_hotword WHERE user_id=<USER_ID> AND enabled=1;"
+docker exec -i si-mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" sync_lingo -e \
+ "SELECT COUNT(*) AS terms FROM terminology WHERE user_id=<USER_ID> AND source_sheet='AUTO_DOC' AND enabled=1;"
+```
+
+Pass criteria:
+
+- Logs include `MeetingMaterialExtractionService extract start` with `sourceType=MEETING_FILE` after `MeetingService uploadFile done`.
+- Logs include hotword, knowledge pack, and terminology extraction activity or a step-level warning that does not stop later steps.
+- Upload API still returns success before async extraction completes.
+- Hotword/terminology rows increase when LLM extraction returns valid candidates.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn "-Dtest=MeetingMaterialExtractionServiceTest,MeetingServiceSecurityTest,UserIdBoundaryControllerTest" test
+mvn test
+```
+
+### Manual Validation
+
+- Upload the three bilingual report PDFs from the meeting detail page.
+- Wait for async extraction to finish, then refresh hotword and terminology pages.
+- Confirm extracted items are global/multilingual where expected and that report file names such as Rudi/Joshua/Gomgom are available to extraction.
+
+### Result Record
+
+- Focused tests passed locally for the new orchestrator, meeting file upload wiring, and controller constructor regression.
+- Full backend `mvn test` passed locally: 366 tests, 0 failures, 0 errors.
+- Server validation still requires redeploying this change and re-uploading or reprocessing the report files.

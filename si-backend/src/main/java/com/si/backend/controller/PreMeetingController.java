@@ -6,7 +6,7 @@ import com.si.backend.common.Result;
 import com.si.backend.dto.PreMeetingAttendanceRequest;
 import com.si.backend.dto.PreMeetingChatRequest;
 import com.si.backend.dto.PreMeetingSummarizeRequest;
-import com.si.backend.service.HotwordExtractionService;
+import com.si.backend.service.MeetingMaterialExtractionService;
 import com.si.backend.service.PreMeetingService;
 import com.si.backend.service.ResourceOwnershipPolicy;
 import com.si.backend.security.AuthenticatedActor;
@@ -30,7 +30,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @RestController
@@ -44,10 +43,7 @@ import java.util.concurrent.CompletableFuture;
 public class PreMeetingController {
 
     private final PreMeetingService preMeetingService;
-    private final HotwordExtractionService hotwordExtractionService;
-    private final com.si.backend.service.AsrHotwordService asrHotwordService;
-    private final com.si.backend.service.MeetingKnowledgeService meetingKnowledgeService;
-    private final com.si.backend.service.TerminologyExtractionService terminologyExtractionService;
+    private final MeetingMaterialExtractionService meetingMaterialExtractionService;
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
 
     @PostMapping("/upload")
@@ -62,22 +58,15 @@ public class PreMeetingController {
             if (files.isEmpty()) {
                 throw BizException.of(ErrorCode.BAD_REQUEST, "压缩包中未找到可解析的 Word 或 PDF 文件");
             }
-            // Async hotword extraction from uploaded file content
-            final Long finalUserId = userId;
-            final List<String> fileIds = files.stream().map(PreMeetingFileVo::getFileId).toList();
-            CompletableFuture.runAsync(() -> fileIds.forEach(fileId -> {
-                try {
-                    String text = preMeetingService.getDocText(fileId);
-                    hotwordExtractionService.extractAndSaveFromText(text, finalUserId);
-                    meetingKnowledgeService.generateAndSaveFromText(finalUserId, text);
-                    terminologyExtractionService.extractAndSaveFromText(finalUserId, text);
-                    PreMeetingService.MeetingEntities entities = preMeetingService.extractMeetingEntities(fileId);
-                    asrHotwordService.saveMeetingEntities(
-                            finalUserId, entities.participantNames(), entities.venue(), "MEETING_AGENDA");
-                } catch (Exception e) {
-                    log.warn("[PreMeetingController] hotword extraction failed for fileId={}", fileId, e);
-                }
-            }));
+            for (PreMeetingFileVo uploaded : files) {
+                String fileId = uploaded.getFileId();
+                meetingMaterialExtractionService.enqueueFromPreMeetingFile(
+                        userId,
+                        fileId,
+                        uploaded.getFileName(),
+                        preMeetingService.getDocText(fileId),
+                        preMeetingService.extractMeetingEntities(fileId));
+            }
             return Result.ok(files);
         } catch (BizException e) {
             throw e;

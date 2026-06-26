@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -37,6 +38,8 @@ class MeetingServiceSecurityTest {
     private final PersistentPreMeetingFileMapper fileMapper = mock(PersistentPreMeetingFileMapper.class);
     private final PreMeetingService preMeetingService = mock(PreMeetingService.class);
     private final ContentEmbeddingService embeddingService = mock(ContentEmbeddingService.class);
+    private final MeetingMaterialExtractionService materialExtractionService =
+            mock(MeetingMaterialExtractionService.class);
     private final InterpretationSessionMapper sessionMapper = mock(InterpretationSessionMapper.class);
     private final MeetingActionItemMapper actionItemMapper = mock(MeetingActionItemMapper.class);
     private final SpeakerSummaryRecordMapper speakerSummaryMapper = mock(SpeakerSummaryRecordMapper.class);
@@ -61,6 +64,7 @@ class MeetingServiceSecurityTest {
                 fileMapper,
                 preMeetingService,
                 embeddingService,
+                materialExtractionService,
                 sessionMapper,
                 actionItemMapper,
                 speakerSummaryMapper,
@@ -137,6 +141,11 @@ class MeetingServiceSecurityTest {
                 "file", "report.pdf", "application/pdf", content);
         when(preMeetingService.extractFileText(any(byte[].class), eq("pdf"), eq("report.pdf")))
                 .thenReturn("extracted report");
+        doAnswer(invocation -> {
+            PersistentPreMeetingFile saved = invocation.getArgument(0);
+            saved.setId(77L);
+            return 1;
+        }).when(fileMapper).insert(any(PersistentPreMeetingFile.class));
 
         MeetingFileVo uploaded = service.uploadFile(new AuthenticatedActor(1L), 10L, file);
 
@@ -147,6 +156,8 @@ class MeetingServiceSecurityTest {
         assertEquals("report.pdf", captor.getValue().getFileName());
         assertEquals("pdf", captor.getValue().getFileType());
         assertEquals("extracted report", captor.getValue().getFileContent());
+        verify(materialExtractionService).enqueueFromMeetingFile(
+                1L, 10L, 77L, "report.pdf", "extracted report");
     }
 
     @Test
@@ -168,6 +179,7 @@ class MeetingServiceSecurityTest {
         assertEquals("pdf", uploaded.getFileType());
         assertEquals("already extracted", captor.getValue().getFileContent());
         verify(preMeetingService, never()).extractFileText(any(byte[].class), eq("pdf"), eq("notice.pdf"));
+        verifyNoInteractions(materialExtractionService);
     }
 
     @Test
@@ -185,6 +197,6 @@ class MeetingServiceSecurityTest {
         );
 
         assertEquals(400, error.getCode());
-        verifyNoInteractions(preMeetingService, embeddingService);
+        verifyNoInteractions(preMeetingService, embeddingService, materialExtractionService);
     }
 }

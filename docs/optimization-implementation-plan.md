@@ -1517,3 +1517,38 @@ GET    /api/admin/audit-logs
 - 个别 ASR 听错无法靠文本恢复（bernilai→香草、akre→等）；后续可考虑印尼语 Azure 自定义语音模型（Custom Speech）。
 - LLM 纠错翻译比 Google 多约 1~2.5s/句延迟（并发执行、不累加）；按需用 timeout/context 调。
 - 合并修正总表需运维手动清空重导；后续可考虑内置默认术语种子。
+
+## Weekly Optimization Record: 2026-W26 Meeting File Full-Text Extraction Wiring
+
+### Goal
+
+- Fix the gap where "upload meeting report file" used `/api/meetings/{meetingId}/files` and only saved/vectorized content, while full-text hotword, terminology, and meeting knowledge extraction only ran for `/api/pre-meeting/upload`.
+- Ensure uploaded report PDFs such as the three bilingual fertilizer budget documents feed the same extraction pipeline as pre-meeting materials.
+- Keep extraction asynchronous and best-effort so upload latency and success are not blocked by LLM or parsing failures.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Shared extraction orchestrator | Done | Added `MeetingMaterialExtractionService` to run hotword extraction, meeting knowledge pack generation, terminology extraction, and agenda entity hotwords with isolated step-level failures. |
+| Ordinary meeting file upload wiring | Done | `MeetingService.uploadFile` now enqueues full-text extraction after persisting `/api/meetings/{meetingId}/files`; the extraction input includes both file name and parsed text. |
+| Pre-meeting upload reuse | Done | `PreMeetingController.upload` now delegates to the shared orchestrator instead of duplicating async extraction logic. |
+| Tests | Done | Added focused orchestrator tests and updated meeting upload tests to assert extraction is enqueued for ordinary report uploads. |
+
+### Affected Modules
+
+- Backend services: `MeetingService`, `MeetingMaterialExtractionService`, `PreMeetingController`.
+- Existing extraction services remain unchanged: `HotwordExtractionService`, `MeetingKnowledgeService`, `TerminologyExtractionService`.
+- No frontend API contract change; the existing upload buttons keep their current endpoints.
+
+### Acceptance Criteria
+
+- Uploading via `/api/meetings/{meetingId}/files` logs `MeetingService uploadFile done` followed by `MeetingMaterialExtractionService extract start`.
+- The same upload produces downstream logs from `HotwordExtractionService`, `LlmIntegration extractMeetingKnowledgePack`, and `TerminologyExtractionService`.
+- Upload response is not blocked by extraction failures; a failed step logs `MeetingMaterialExtractionService step failed` and later steps still run.
+- Focused backend tests pass, then full `mvn test` passes.
+
+### Residual Issues
+
+- Real extraction still depends on configured LLM credentials and runtime quota.
+- Large files trigger multiple asynchronous LLM calls; operators should leave processing time after upload before checking hotword/terminology pages.

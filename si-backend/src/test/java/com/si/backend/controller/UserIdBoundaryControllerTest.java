@@ -2,8 +2,7 @@ package com.si.backend.controller;
 
 import com.si.backend.dto.TranslateTextRequest;
 import com.si.backend.facade.TranslateFacade;
-import com.si.backend.service.AsrHotwordService;
-import com.si.backend.service.HotwordExtractionService;
+import com.si.backend.service.MeetingMaterialExtractionService;
 import com.si.backend.service.PreMeetingService;
 import com.si.backend.service.ResourceOwnershipPolicy;
 import org.junit.jupiter.api.AfterEach;
@@ -45,10 +44,7 @@ class UserIdBoundaryControllerTest {
         PreMeetingService preMeetingService = mock(PreMeetingService.class);
         PreMeetingController controller = new PreMeetingController(
                 preMeetingService,
-                mock(HotwordExtractionService.class),
-                mock(AsrHotwordService.class),
-                mock(com.si.backend.service.MeetingKnowledgeService.class),
-                mock(com.si.backend.service.TerminologyExtractionService.class),
+                mock(MeetingMaterialExtractionService.class),
                 mock(ResourceOwnershipPolicy.class)
         );
         bindActor(5L);
