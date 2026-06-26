@@ -86,15 +86,22 @@ public class LlmIntegration {
             + "- analisa daun = 叶片分析；LSU = 叶片分析；blok = 区块/地块；kebun = 园区/种植园；pokok = 株/棵\n"
             + "- kg per pokok = 每株公斤数；curah hujan = 降雨量；lahan gambut = 泥炭地；agronomi = 农艺\n"
             + "- kondisi lapangan = 现场/田间情况；waterlogging = 渍水；topografi = 地形\n\n"
+            + "[专有名词(固定译法)]\n"
+            + "- Starship/starship = Starship；Starlink(常被识别为 starling) = 星链；satelit = 卫星\n"
+            + "- Pak Armen(常被识别为 pacarmen/pacar man) = 阿门先生\n\n"
             + "[纠错规则]\n"
             + "1. ASR 把 K 听成 kang、pupuk 听成 kupu/pukul、blok 听成 blog/peluk、boron 听成 buron、"
             + "pH 听成 PHK、efisiensi 听成 episensi、konteks 听成 kontes、tonase 听成 tonas、LSU 听成 RSU、"
             + "unsur Zn 听成 unsumsi zin 等，请按上下文纠正回正确术语。\n"
             + "2. dari = “从…来看/的”，绝不是“发件人”。\n"
-            + "3. 文本不完整时按上下文译成最可能的意思，但绝不编造具体数值；数字、单位、元素符号按原文保留。\n"
-            + "4. 完全无法判断的词保留原词，并在其后用（疑似识别错误）标注。\n"
-            + "5. 只翻译【当前句】，上文仅用于消歧，不要翻译上文、不要复述上文。\n\n"
-            + "只输出当前句的中文译文，不要输出印尼语、解释或任何前后缀。";
+            + "3. 文本不完整时按上下文译成最可能的意思，但绝不编造具体数值、绝不添加原文没有的信息；"
+            + "数字、单位、元素符号按原文保留。\n"
+            + "4. 遇到人名/地名/听不懂的词：直接音译或原样保留该词，不要解释、不要拒绝。\n"
+            + "5. 只翻译【当前句】，上文仅用于消歧，不要翻译或复述上文。\n\n"
+            + "[输出铁律] 无论输入多碎、多难，只输出当前句的中文译文本身。"
+            + "严禁输出任何解释、说明、备注、括号注释、铺垫、反问或对话"
+            + "(例如“无法判断”“无法确定”“疑似识别错误”“按您的要求”“建议补充”“我注意到”“说明：”等)，"
+            + "严禁提及上文、语境、音频或翻译过程。只给译文，不要任何前后缀。";
 
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
             "你是会议总结助手。请根据用户要求和会议记录生成会议总结。\n"
@@ -232,9 +239,44 @@ public class LlmIntegration {
                 openAiProperties.getIdZhLlmTranslateMaxOutputTokens(),
                 Duration.ofMillis(openAiProperties.getIdZhLlmTranslateTimeoutMs())
         );
+        String cleaned = sanitizeIdZhTranslation(result);
+        if (looksLikeMetaCommentary(cleaned)) {
+            // LLM 吐出了解释/拒绝而非译文,判为无效 → 返回空,由上层回退普通翻译,绝不让元话语进入译文/TTS
+            log.warn("[LlmIntegration] idZhCorrectTranslate meta-commentary detected, discard & fallback, costMs={}, raw='{}'",
+                    System.currentTimeMillis() - start,
+                    result.length() <= 120 ? result : result.substring(0, 117) + "...");
+            return "";
+        }
         log.info("[LlmIntegration] idZhCorrectTranslate end, costMs={}, outputLen={}",
-                System.currentTimeMillis() - start, result.length());
-        return result;
+                System.currentTimeMillis() - start, cleaned.length());
+        return cleaned;
+    }
+
+    /** 元话语标记:LLM 偶尔输出"解释/拒绝/说明"而非译文,命中即判无效(回退普通翻译)。 */
+    private static final String[] ID_ZH_META_MARKERS = {
+            "无法判断", "无法确定", "疑似识别错误", "按您的要求", "建议补充", "重新听取",
+            "我注意到", "逻辑不完整", "原文结构", "说明：", "说明:", "【说明】", "**说明**"
+    };
+
+    /** 去掉译文里残留的(疑似…)括号注释与首尾空白。 */
+    static String sanitizeIdZhTranslation(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("[（(][^（()）]*疑似[^（()）]*[)）]", "").trim();
+    }
+
+    /** 判断输出是否是"解释/拒绝"等元话语,而非干净译文。 */
+    static boolean looksLikeMetaCommentary(String text) {
+        if (text == null || text.isBlank()) {
+            return true;
+        }
+        for (String marker : ID_ZH_META_MARKERS) {
+            if (text.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
