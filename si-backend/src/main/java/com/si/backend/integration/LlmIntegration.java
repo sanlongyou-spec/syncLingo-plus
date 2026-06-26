@@ -105,6 +105,12 @@ public class LlmIntegration {
             + "(例如“无法判断”“无法确定”“疑似识别错误”“按您的要求”“建议补充”“我注意到”“说明：”等)，"
             + "严禁提及上文、语境、音频或翻译过程。只给译文，不要任何前后缀。";
 
+    /** 可选的“实时口译精简”附加条款：忠实前提下轻度精简，绝不丢信息。 */
+    private static final String ID_ZH_CONCISE_CLAUSE =
+            "\n\n[实时口译精简] 在忠实翻译的同时做轻度口译式精简：删除口头语、语气词、明显重复与啰嗦；"
+            + "但必须保留全部事实、数字、专有名词、结论与因果关系，绝不遗漏信息或改变原意。"
+            + "把内容整理成自然、断句清晰、可直接朗读的中文。";
+
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
             "你是会议总结助手。请根据用户要求和会议记录生成会议总结。\n"
             + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
@@ -231,13 +237,17 @@ public class LlmIntegration {
         }
         userMessage.append("[当前句(请纠错后翻成中文)]\n").append(currentText.trim());
 
+        boolean concise = openAiProperties.isIdZhLlmTranslateConcise();
+        String systemPrompt = concise
+                ? ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT + ID_ZH_CONCISE_CLAUSE
+                : ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT;
         long start = System.currentTimeMillis();
-        log.info("[LlmIntegration] idZhCorrectTranslate start, model={}, curLen={}, ctxLen={}, glossaryLines={}",
+        log.info("[LlmIntegration] idZhCorrectTranslate start, model={}, curLen={}, ctxLen={}, glossaryLines={}, concise={}",
                 model, currentText.length(), recentContext != null ? recentContext.length() : 0,
-                dynamicGlossary != null && !dynamicGlossary.isBlank() ? dynamicGlossary.split("\n").length : 0);
+                dynamicGlossary != null && !dynamicGlossary.isBlank() ? dynamicGlossary.split("\n").length : 0, concise);
         String result = createTextResponse(
                 model,
-                ID_ZH_CORRECT_TRANSLATE_SYSTEM_PROMPT,
+                systemPrompt,
                 userMessage.toString(),
                 openAiProperties.getIdZhLlmTranslateMaxOutputTokens(),
                 Duration.ofMillis(openAiProperties.getIdZhLlmTranslateTimeoutMs())

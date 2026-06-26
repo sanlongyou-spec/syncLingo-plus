@@ -51,6 +51,9 @@ public class OpenAiProperties {
     /** 滑动上下文窗口字符数:把最近若干印尼语原文作为上下文给 LLM 消歧 */
     private int idZhLlmTranslateContextChars = 600;
 
+    /** id→zh 时让 LLM 在同一次调用里做轻度口译式精简(去口头语/重复,不丢事实/数字/专名) */
+    private boolean idZhLlmTranslateConcise = true;
+
     // Summaries / Q&A / RAG helper — DeepSeek V4 (good Chinese, low cost).
     private String summaryModel = "deepseek/deepseek-v4-pro";
 
