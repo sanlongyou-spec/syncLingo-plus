@@ -42,6 +42,7 @@ public class TranslationService {
     private final LlmIntegration llmIntegration;
     private final OpenAiProperties openAiProperties;
     private final TerminologyService terminologyService;
+    private final AsrCorrectionService asrCorrectionService;
 
     public String detectLanguage(String text) {
         log.info("[TranslationService] detectLanguage start, textLen={}", text != null ? text.length() : 0);
@@ -335,6 +336,22 @@ public class TranslationService {
             }
         } catch (Exception e) {
             log.debug("[TranslationService] buildDynamicGlossary fuzzy skipped, reason={}", e.getMessage());
+        }
+        // ③ 错词库命中(跨会议累积的"听错→正确")
+        try {
+            Map<String, String> corrections = asrCorrectionService.matchInText(userId, text);
+            if (corrections != null && !corrections.isEmpty()) {
+                StringBuilder fixes = new StringBuilder();
+                for (Map.Entry<String, String> entry : corrections.entrySet()) {
+                    fixes.append(entry.getKey()).append(" → ").append(entry.getValue()).append("\n");
+                }
+                if (glossary.length() > 0) {
+                    glossary.append("\n");
+                }
+                glossary.append("[已知 ASR 易错词(本句若出现左侧写法,应纠正为右侧)]\n").append(fixes);
+            }
+        } catch (Exception e) {
+            log.debug("[TranslationService] buildDynamicGlossary corrections skipped, reason={}", e.getMessage());
         }
         return glossary.length() == 0 ? null : glossary.toString();
     }

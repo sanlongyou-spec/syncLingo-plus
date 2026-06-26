@@ -32,8 +32,9 @@ class TranslationNumberNormalizationTest {
         LlmIntegration llmIntegration = mock(LlmIntegration.class);
         openAiProperties = mock(OpenAiProperties.class);
         terminologyService = mock(TerminologyService.class);
+        AsrCorrectionService asrCorrectionService = mock(AsrCorrectionService.class);
         translationService = new TranslationService(
-                translator, llmIntegration, openAiProperties, terminologyService);
+                translator, llmIntegration, openAiProperties, terminologyService, asrCorrectionService);
 
         // 术语层透传：保护=原样、还原=原样，便于断言纯数字归一化效果
         when(terminologyService.applyBeforeTranslate(any(), any(), any(), any()))

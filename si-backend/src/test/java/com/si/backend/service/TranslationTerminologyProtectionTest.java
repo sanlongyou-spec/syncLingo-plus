@@ -44,7 +44,8 @@ class TranslationTerminologyProtectionTest {
                 translator,
                 llmIntegration,
                 openAiProperties,
-                terminologyService
+                terminologyService,
+                mock(AsrCorrectionService.class)
         );
 
         String result = service.translate(

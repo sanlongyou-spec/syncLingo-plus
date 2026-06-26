@@ -34,8 +34,9 @@ class TranslationLlmIdZhTest {
         llmIntegration = mock(LlmIntegration.class);
         openAiProperties = mock(OpenAiProperties.class);
         terminologyService = mock(TerminologyService.class);
+        AsrCorrectionService asrCorrectionService = mock(AsrCorrectionService.class);
         translationService = new TranslationService(
-                translator, llmIntegration, openAiProperties, terminologyService);
+                translator, llmIntegration, openAiProperties, terminologyService, asrCorrectionService);
 
         // 术语层透传(动态术语表为空 + Google 回退路径都需要)
         when(terminologyService.applyBeforeTranslate(any(), any(), any(), any()))

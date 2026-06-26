@@ -111,6 +111,22 @@ public class LlmIntegration {
             + "但必须保留全部事实、数字、专有名词、结论与因果关系，绝不遗漏信息或改变原意。"
             + "把内容整理成自然、断句清晰、可直接朗读的中文。";
 
+    /**
+     * 会后"文档×ASR 对比挖错词"提示词：以上传文件为标准答案，找出 ASR 转写里被听错、
+     * 而文件中有正确写法的"术语/人名/公司名/数字单位"。只输出 JSON 数组，供自动入错词库。
+     */
+    private static final String ASR_CORRECTION_MINING_SYSTEM_PROMPT =
+            "你是 ASR 纠错挖掘助手。给你两份文本：①会议转写(ASR 识别，可能有听错)；②会议参考文件(标准答案)。\n"
+            + "任务：找出【转写里被识别错、而文件中有对应正确写法】的词(主要是专有名词、人名、公司名、园区/项目名、"
+            + "专业术语、数字单位)，输出从错误写法到正确写法的映射。\n"
+            + "规则：\n"
+            + "1. 只输出有文件依据的纠正；文件里找不到对应正确词的，不要输出(绝不编造)。\n"
+            + "2. variant 用转写中实际出现的错误写法；canonical 用文件中的正确写法。\n"
+            + "3. 普通虚词、常见词、正确的词不要输出。\n"
+            + "4. confidence 取 0~1，依据是错误词与正确词的相似度及上下文吻合度。\n"
+            + "只输出 JSON 数组，每个元素恰好三个字段：variant(string)、canonical(string)、confidence(number)。"
+            + "不要输出任何解释或 markdown 代码围栏。";
+
     private static final String MEETING_SUMMARY_SYSTEM_PROMPT =
             "你是会议总结助手。请根据用户要求和会议记录生成会议总结。\n"
             + "如果用户没有提供额外要求，输出简洁、准确的中文总结。\n"
@@ -299,6 +315,29 @@ public class LlmIntegration {
      * @return meeting summary
      * @throws IOException when OpenAI does not return usable text
      */
+    /**
+     * 会后用强模型对比"会议转写 × 参考文件"，挖掘 ASR 错词，返回 JSON 数组字符串
+     * (每元素 {variant, canonical, confidence})。供错词库自动入库。
+     */
+    public String mineAsrCorrectionsJson(String transcript, String documentText) throws IOException {
+        if (transcript == null || transcript.isBlank() || documentText == null || documentText.isBlank()) {
+            return "[]";
+        }
+        String t = transcript.length() > 12000 ? transcript.substring(0, 12000) : transcript;
+        String d = documentText.length() > 12000 ? documentText.substring(0, 12000) : documentText;
+        String input = "①会议转写(ASR):\n" + t + "\n\n②会议参考文件(标准答案):\n" + d;
+        log.info("[LlmIntegration] mineAsrCorrections start, model={}, transcriptLen={}, docLen={}",
+                openAiProperties.getSummaryModel(), t.length(), d.length());
+        String result = createTextResponse(
+                openAiProperties.getSummaryModel(),
+                ASR_CORRECTION_MINING_SYSTEM_PROMPT,
+                input,
+                1200L
+        );
+        log.info("[LlmIntegration] mineAsrCorrections end, resultLen={}", result.length());
+        return result;
+    }
+
     public String extractHotwordsJson(String text) throws IOException {
         log.info("[LlmIntegration] extractHotwordsJson start, model={}, textLen={}",
                 openAiProperties.getSummaryModel(), text != null ? text.length() : 0);
