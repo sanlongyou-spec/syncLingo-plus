@@ -37,7 +37,7 @@ public class OpenAiProperties {
     // 印尼语 ASR 把专业词/缩写听错(pupuk→kupu、boron→buron、pH→PHK 等),普通翻译会照错直翻。
     // 开启后,id→zh 改走 LLM:先按棕榈种植园施肥/缺素语境纠错 ASR 文本,再翻成自然中文。
     // 失败/超时自动回退到原 Google 翻译路径,绝不阻断同传。
-    private boolean idZhLlmTranslateEnabled = false;
+    private boolean idZhLlmTranslateEnabled = true;
 
     /** 纠错翻译用的快模型(非推理),与实时压缩同档,控延迟 */
     private String idZhLlmTranslateModel = "anthropic/claude-haiku-4.5";
