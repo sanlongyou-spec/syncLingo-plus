@@ -96,6 +96,11 @@ public interface TerminologyMapper {
     @Update("DELETE FROM terminology WHERE user_id = #{userId}")
     int deleteAllByUserId(@Param("userId") Long userId);
 
+    /** 删除指定来源(如自动抽取 AUTO_DOC)且创建时间早于 cutoff 的术语(3 天 TTL 清理用)。 */
+    @Update("DELETE FROM terminology WHERE source_sheet = #{sourceSheet} AND create_time < #{cutoff}")
+    int deleteBySourceOlderThan(@Param("sourceSheet") String sourceSheet,
+                                @Param("cutoff") java.time.LocalDateTime cutoff);
+
     @Update("ALTER TABLE terminology ADD COLUMN user_id BIGINT DEFAULT 1 AFTER id")
     void addUserIdColumnIfNotExists();
 

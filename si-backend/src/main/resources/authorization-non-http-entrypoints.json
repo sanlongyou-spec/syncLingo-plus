@@ -128,5 +128,15 @@
     "scope": "ALL",
     "expectedStatuses": [200],
     "source": "com.si.backend.service.AuditOutboxDispatcher"
+  },
+  {
+    "kind": "SCHEDULED",
+    "method": "TASK",
+    "path": "com.si.backend.service.AutoExtractedCleanupService#purgeExpired",
+    "identity": "SYSTEM",
+    "permission": "INTERNAL_ASYNC",
+    "scope": "ALL",
+    "expectedStatuses": [200],
+    "source": "com.si.backend.service.AutoExtractedCleanupService"
   }
 ]

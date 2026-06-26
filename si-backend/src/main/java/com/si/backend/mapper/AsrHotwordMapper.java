@@ -91,6 +91,11 @@ public interface AsrHotwordMapper {
     @Delete("DELETE FROM asr_hotword WHERE id = #{id} AND user_id = #{userId}")
     int deleteById(@Param("id") Long id, @Param("userId") Long userId);
 
+    /** 删除指定来源(如自动抽取 AUTO_EXTRACTED)且创建时间早于 cutoff 的热词(3 天 TTL 清理用)。 */
+    @Delete("DELETE FROM asr_hotword WHERE source_type = #{sourceType} AND create_time < #{cutoff}")
+    int deleteBySourceTypeOlderThan(@Param("sourceType") String sourceType,
+                                    @Param("cutoff") java.time.LocalDateTime cutoff);
+
     @Update("""
             <script>
             UPDATE asr_hotword
