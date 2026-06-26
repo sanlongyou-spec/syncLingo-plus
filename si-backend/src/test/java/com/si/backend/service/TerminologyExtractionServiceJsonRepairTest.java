@@ -29,6 +29,9 @@ class TerminologyExtractionServiceJsonRepairTest {
         when(llmIntegration.extractTerminologyPairsJson(anyString())).thenReturn("""
                 [{"zh":"硼肥","id":"pupuk boron","en":"boron fertilizer","category":"term"},{"zh":"坏"
                 """);
+        // 校验步骤:回显候选(=全部确认正确),保留 JSON-repair 救回的那条
+        when(llmIntegration.verifyTerminologyPairsJson(anyString(), anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         when(terminologyService.addExtractedTerms(eq(4L), anyList())).thenReturn(1);
 
         int created = service.extractAndSaveFromText(4L, "meeting material");

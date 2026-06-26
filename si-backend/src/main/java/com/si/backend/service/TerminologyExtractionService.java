@@ -41,9 +41,11 @@ public class TerminologyExtractionService {
         for (int i = 0; i < chunks.size(); i++) {
             try {
                 List<Terminology> parsed = parsePairs(llmIntegration.extractTerminologyPairsJson(chunks.get(i)));
-                candidates.addAll(parsed);
-                log.info("[TerminologyExtractionService] chunk extracted, userId={}, chunk={}/{}, candidates={}, terms={}",
-                        userId, i + 1, chunks.size(), parsed.size(), summarizeTerms(parsed));
+                // 第二步:让 LLM 逐条校验"是否为正确互译",剔除语义错(等离子体=Plasma、乔布斯=Joshua、LSU 对齐错等)。
+                List<Terminology> confirmed = verify(parsed, chunks.get(i));
+                candidates.addAll(confirmed);
+                log.info("[TerminologyExtractionService] chunk extracted, userId={}, chunk={}/{}, parsed={}, confirmed={}, terms={}",
+                        userId, i + 1, chunks.size(), parsed.size(), confirmed.size(), summarizeTerms(confirmed));
             } catch (Exception e) {
                 log.warn("[TerminologyExtractionService] chunk extract failed, userId={}, chunk={}/{}, reason={}",
                         userId, i + 1, chunks.size(), e.getMessage());
@@ -57,6 +59,39 @@ public class TerminologyExtractionService {
         log.info("[TerminologyExtractionService] end, userId={}, chunks={}, candidates={}, created={}, terms={}",
                 userId, chunks.size(), candidates.size(), created, summarizeTerms(candidates));
         return created;
+    }
+
+    /**
+     * 让 LLM 逐条校验候选对是否为正确互译,只保留确认正确的。
+     * 校验失败(异常/解析不出)时返回原候选,避免误删——退化为"仅抽取"的旧行为。
+     */
+    private List<Terminology> verify(List<Terminology> parsed, String sourceChunk) {
+        if (parsed.isEmpty()) {
+            return parsed;
+        }
+        try {
+            String candidatesJson = toCandidatesJson(parsed);
+            String verifiedJson = llmIntegration.verifyTerminologyPairsJson(candidatesJson, sourceChunk);
+            // 信任校验结果:返回有效 JSON(即便全部被否决=空)就照单全收,宁缺毋滥。
+            // 只有解析抛异常(模型没按格式返回)才退化为保留原候选,避免因校验环节故障误删。
+            return parsePairs(verifiedJson);
+        } catch (Exception e) {
+            log.warn("[TerminologyExtractionService] verify failed, keep unverified, reason={}", e.getMessage());
+            return parsed;
+        }
+    }
+
+    /** 把候选术语对序列化成给校验提示词用的紧凑 JSON 数组。 */
+    private String toCandidatesJson(List<Terminology> terms) {
+        com.fasterxml.jackson.databind.node.ArrayNode arr = objectMapper.createArrayNode();
+        for (Terminology t : terms) {
+            com.fasterxml.jackson.databind.node.ObjectNode o = arr.addObject();
+            o.put("zh", t.getTermZh());
+            o.put("id", t.getTermId());
+            o.put("en", t.getTermEn() == null ? "" : t.getTermEn());
+            o.put("category", t.getCategory() == null ? "" : t.getCategory());
+        }
+        return arr.toString();
     }
 
     private List<Terminology> parsePairs(String json) throws IOException {

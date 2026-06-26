@@ -149,18 +149,22 @@ public class LlmIntegration {
 
     /** 从中↔印(或含英)双语会议材料里抽取对齐的专业术语/专有名词对,供自动入术语表(强制级)。 */
     private static final String TERMINOLOGY_PAIR_EXTRACTION_SYSTEM_PROMPT =
-            "你是术语抽取助手。输入是一份会议材料,通常中文与印尼语(可能含英文)互为译文。"
-            + "请抽取其中【互为翻译的术语对】——人名/公司/机构/园区/项目/部门、专业术语与缩写。\n"
+            "你是术语抽取助手。输入是一份会议材料,中文与印尼语(可能含英文)穿插出现。"
+            + "请只抽取其中【在文中确实互为译文】的术语对——人名/公司/机构/园区/项目/部门、专业术语与缩写。\n"
             + "返回 JSON 数组,每个元素恰好这些字段(字符串):\n"
             + "  zh: 中文规范写法\n"
-            + "  id: 对应的印尼语写法(没有就空字符串)\n"
+            + "  id: 对应的印尼语写法\n"
             + "  en: 对应的英文写法(没有就空字符串)\n"
             + "  category: 人名 / 地名 / 组织名 / 专业术语 之一\n"
-            + "严格规则:\n"
-            + "1. 只收【你有把握确为互译】的对;zh 和 id 至少要有一个非空,且尽量两者都给出。\n"
-            + "2. 不要翻译/编造材料里没有的词;不要收常见词、停用词、整句。\n"
-            + "3. 最多 80 条。\n"
-            + "4. 只输出 JSON 数组,不要解释、不要 markdown 围栏。";
+            + "【宁缺毋滥】质量远比数量重要,拿不准就不要收。严格规则:\n"
+            + "1. 只在【zh 与 id 两侧都在文中明确作为彼此译文出现】时才输出一条;两者必须都非空。\n"
+            + "   只在一侧出现的词【不要】臆造另一侧——尤其人名:看不到对应中文名就【不要】编一个音近的中文名"
+            + "(如把 Joshua 写成“乔布斯”、把 Rudi 写成别的名字),这类一律丢弃。\n"
+            + "2. 行业借词/专名【保持原文,绝不按字面直译】:如 Plasma(指合作种植/小农户,不是“等离子体”)、"
+            + "Estate、Region、Kebun、Blok 等;拿不准词义就不要收,绝不照字面翻。\n"
+            + "3. 缩写只在文中能明确对应到全称/含义时才收;对应不确定(如 LSU/SSU 等)就【不要】猜一个意思。\n"
+            + "4. 不要收:通用量纲/单位/符号/数字/货币(%、ppm、Ha、kg、ton、Rp 等)、常见词、停用词、整句。\n"
+            + "5. 最多 80 条。只输出 JSON 数组,不要解释、不要 markdown 围栏。";
 
     /** 抽取双语材料中的术语对(中=印[=英]),返回 JSON 数组字符串。失败返回 "[]"。 */
     public String extractTerminologyPairsJson(String text) throws IOException {
@@ -177,6 +181,45 @@ public class LlmIntegration {
                 extractionChatOptions()
         );
         log.info("[LlmIntegration] extractTerminologyPairs end, resultLen={}", result.length());
+        return result;
+    }
+
+    /** 术语对【校验】系统提示词:逐条判断是否为该材料语境下的正确互译,只保留确认正确的,错的剔除。 */
+    private static final String TERMINOLOGY_PAIR_VERIFY_SYSTEM_PROMPT =
+            "你是术语校对员。下面给你【原材料片段】和一组【候选术语对】(从该材料抽出的 zh↔id 互译)。"
+            + "请逐条核对每一对是否为【该材料语境下确实正确的互译】,只保留你确认正确的,其余一律剔除。\n"
+            + "必须剔除的情形:\n"
+            + "1. zh 与 id 含义不一致 / 不是互译(如 等离子体↔Plasma:这里 Plasma 指合作种植/小农户,非物理等离子体)。\n"
+            + "2. 把行业借词/专名按字面错译(Estate、Region、Kebun、Plasma 等应保留原文含义)。\n"
+            + "3. 给只在一种语言出现的人名臆造的另一种语言名(如 Joshua↔乔布斯)。\n"
+            + "4. 缩写对应的含义是猜的、材料里无依据(如 LSU↔土壤样品 实为叶片取样)。\n"
+            + "5. 通用单位/符号/数字/常见词。\n"
+            + "判断不确定的也剔除(宁缺毋滥)。\n"
+            + "只输出保留下来的术语对 JSON 数组,字段与输入相同(zh,id,en,category),"
+            + "不要修改保留项的写法,不要解释,不要 markdown 围栏。";
+
+    /**
+     * 让 LLM 对已抽取的候选术语对逐条【校验】,只返回确认为正确互译的那些(JSON 数组)。
+     * 抽取是"生成"任务易错,校验是"判断"任务更准——用它拦掉正则拦不掉的语义错。失败时返回原候选(不误删)。
+     */
+    public String verifyTerminologyPairsJson(String candidatesJson, String sourceText) throws IOException {
+        if (candidatesJson == null || candidatesJson.isBlank() || "[]".equals(candidatesJson.trim())) {
+            return "[]";
+        }
+        String user = "【原材料片段】\n"
+                + (sourceText == null ? "" : sourceText.trim())
+                + "\n\n【候选术语对】\n" + candidatesJson.trim();
+        log.info("[LlmIntegration] verifyTerminologyPairs start, model={}, candLen={}, srcLen={}",
+                openAiProperties.effectiveExtractionModel(), candidatesJson.length(),
+                sourceText != null ? sourceText.length() : 0);
+        String result = createTextResponse(
+                openAiProperties.effectiveExtractionModel(),
+                TERMINOLOGY_PAIR_VERIFY_SYSTEM_PROMPT,
+                user,
+                TERMINOLOGY_EXTRACTION_MAX_OUTPUT_TOKENS,
+                extractionChatOptions()
+        );
+        log.info("[LlmIntegration] verifyTerminologyPairs end, resultLen={}", result.length());
         return result;
     }
 
