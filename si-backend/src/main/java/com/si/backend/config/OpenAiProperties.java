@@ -55,8 +55,9 @@ public class OpenAiProperties {
     private boolean idZhLlmTranslateConcise = true;
 
     // ── 方案2:LLM 实时分句(让 LLM 在句子边界切,异步,不阻塞 ASR) ──────────
-    /** 开启后印尼语改由 LLM 异步判断"已说完的整句"再切;关闭则回到现有(Azure/词数/wtpsplit)分句 */
-    private boolean idZhLlmSegmentEnabled = true;
+    /** 开启后印尼语改由 LLM 异步判断"已说完的整句"再切;关闭则回到 wtpsplit 小模型/Azure 分句。
+     *  实测 LLM 边界分句效果不佳(切点错乱),默认关闭,生产用 wtpsplit;保留开关以便后续调优。 */
+    private boolean idZhLlmSegmentEnabled = false;
     /** 分句用的快模型 */
     private String idZhLlmSegmentModel = "anthropic/claude-haiku-4.5";
     /** 分句调用超时(ms) */

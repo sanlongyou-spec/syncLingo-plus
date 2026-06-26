@@ -148,8 +148,8 @@ openai:
   id-zh-llm-translate-context-chars: ${OPENAI_ID_ZH_LLM_TRANSLATE_CONTEXT_CHARS:600}
   # id→zh 同一次 LLM 调用里做轻度口译式精简(去口头语/重复,不丢事实/数字/专名);false 则只纠错翻译不精简
   id-zh-llm-translate-concise: ${OPENAI_ID_ZH_LLM_TRANSLATE_CONCISE:true}
-  # 方案2:LLM 实时分句(让 LLM 在句子边界切;默认开启,关闭回到 Azure/词数分句)
-  id-zh-llm-segment-enabled: ${OPENAI_ID_ZH_LLM_SEGMENT_ENABLED:true}
+  # 方案2:LLM 实时分句(让 LLM 在句子边界切)。实测效果不佳,默认关闭,生产用 wtpsplit 小模型分段;保留开关备调优
+  id-zh-llm-segment-enabled: ${OPENAI_ID_ZH_LLM_SEGMENT_ENABLED:false}
   id-zh-llm-segment-model: ${OPENAI_ID_ZH_LLM_SEGMENT_MODEL:anthropic/claude-haiku-4.5}
   id-zh-llm-segment-timeout-ms: ${OPENAI_ID_ZH_LLM_SEGMENT_TIMEOUT_MS:4000}
   id-zh-llm-segment-min-chars: ${OPENAI_ID_ZH_LLM_SEGMENT_MIN_CHARS:40}
