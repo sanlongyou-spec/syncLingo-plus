@@ -94,13 +94,8 @@ public class IndonesianIncompleteGuard {
 
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{Nd}]+");
 
-    /** 短应答白名单：这些即便短于门槛也可直接 final（真·短句，无需等并句）。 */
-    private static final Set<String> SHORT_REPLY_WHITELIST = Set.of(
-            "ya", "iya", "tidak", "baik", "setuju", "oke", "ok", "sudah", "silakan", "lanjut",
-            "mohon", "maaf", "betul", "benar", "terima kasih", "selamat pagi", "selamat siang", "selamat sore");
-
     private final boolean enabled;
-    /** sentence-wtpsplit 短段门槛（可见字符数）：短于此且非白名单 → HOLD 退回下一轮并句。 */
+    /** 印尼语输出地板（可见字符数）：短于此 → HOLD 退回下一轮并句。 */
     private final int minIdChars;
 
     public IndonesianIncompleteGuard(AzureSpeechProperties properties) {
@@ -265,7 +260,7 @@ public class IndonesianIncompleteGuard {
      *   <li>切点被否决 → HOLD；</li>
      *   <li>段文本不完整 → HOLD/DROP；</li>
      *   <li>弱边界 → DOWNGRADE_PARTIAL（去掉盲切：不发 final）；</li>
-     *   <li>sentence-wtpsplit 短于门槛且非白名单 → HOLD（退回下一轮并句，避免短碎片直接 final）；</li>
+     *   <li>所有边界来源的短段低于输出地板 → HOLD（退回下一轮并句，避免短碎片直接 final）；</li>
      *   <li>强边界且完整、长度达标 → EMIT_FINAL。</li>
      * </ul>
      */
@@ -284,18 +279,17 @@ public class IndonesianIncompleteGuard {
         if (result.decision() == Decision.HOLD) {
             return EmitAction.HOLD;
         }
+        if (shouldHoldForOutputFloor(segment)) {
+            return EmitAction.HOLD;
+        }
         if (!isStrongBoundary(reason)) {
             return EmitAction.DOWNGRADE_PARTIAL;
         }
-        // 短句门槛：wtpsplit 在足量上下文里仍可能在很早处结句(如 "ke depan"/"8 tahun")。
-        // 这类短段 HOLD 退回下一轮并句，不直接 final；真·短应答(ya/baik/terima kasih)走白名单放行。
-        if ("sentence-wtpsplit".equals(reason)
-                && minIdChars > 0
-                && visibleCharCount(segment) < minIdChars
-                && !isWhitelistedShortReply(segment)) {
-            return EmitAction.HOLD;
-        }
         return EmitAction.EMIT_FINAL;
+    }
+
+    public boolean shouldHoldForOutputFloor(String segment) {
+        return segment != null && minIdChars > 0 && visibleCharCount(segment) < minIdChars;
     }
 
     /** 强边界：明确句末标点、wtpsplit 可信句边界、编号标题前。其余（逗号/词边界/超长/超时 backstop）为弱边界。 */
@@ -356,22 +350,6 @@ public class IndonesianIncompleteGuard {
             }
         }
         return count;
-    }
-
-    /** 整段(忽略标点/空白后)是否就是一个白名单短应答，如 "Ya."、"Terima kasih."。 */
-    private boolean isWhitelistedShortReply(String segment) {
-        if (segment == null) {
-            return false;
-        }
-        StringBuilder sb = new StringBuilder();
-        Matcher matcher = TOKEN_PATTERN.matcher(segment.toLowerCase(Locale.ROOT));
-        while (matcher.find()) {
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append(matcher.group());
-        }
-        return SHORT_REPLY_WHITELIST.contains(sb.toString());
     }
 
     /**

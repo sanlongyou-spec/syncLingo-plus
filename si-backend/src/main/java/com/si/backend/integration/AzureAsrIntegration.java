@@ -239,6 +239,10 @@ public class AzureAsrIntegration {
         private String emittedSuffix = "";
         /** 已提前发出的完整文本，用于 final 结果到达后重新对齐真实 remainder 边界 */
         private final StringBuilder emittedTextBuffer = new StringBuilder();
+        /** 印尼语 final remainder 短于输出地板时先暂存，等待下一段合并后再发 final。 */
+        private String pendingIdFloorText = "";
+        private String pendingIdFloorLang = "";
+        private String pendingIdFloorSpeakerId = "";
         private static final int EMIT_SUFFIX_LEN = 16;
         /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
         private String prevText = "";
@@ -428,26 +432,37 @@ public class AzureAsrIntegration {
                 long lastInterim = lastInterimAtMs.getAndSet(0);
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
                 if (!remainder.isBlank()) {
+                    String finalReason = hadForced ? "final-remainder" : "final-full";
                     // 终稿外科式：只剥结尾半词/连接词，绝不整段丢、不看词头(终稿是 Azure 权威文本)。
-                    if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                    if (isIdGuardActiveFor(lang)) {
+                        synchronized (segLock) {
+                            remainder = mergePendingIdFloorText(remainder, lang, speakerId, finalReason);
+                        }
+                        String beforeTrim = remainder;
                         String trimmed = idGuard.trimIncompleteTail(remainder);
                         if (trimmed.isBlank()) {
-                            log.info("[IdGuard] final remainder fully incomplete, suppressed, len={} text='{}'",
-                                    remainder.length(),
-                                    remainder.length() <= 120 ? remainder : remainder.substring(0, 117) + "...");
+                            synchronized (segLock) {
+                                storePendingIdFloorText(beforeTrim, lang, speakerId, finalReason + "-incomplete");
+                            }
+                            log.info("[IdGuard] final remainder fully incomplete, held for output-floor, len={} text='{}'",
+                                    beforeTrim.length(), previewText(beforeTrim));
                             return;
                         }
                         if (trimmed.length() != remainder.length()) {
                             log.info("[IdGuard] final remainder tail trimmed, fromLen={} toLen={} text='{}'",
-                                    remainder.length(), trimmed.length(),
-                                    trimmed.length() <= 120 ? trimmed : trimmed.substring(0, 117) + "...");
+                                    remainder.length(), trimmed.length(), previewText(trimmed));
                             remainder = trimmed;
+                        }
+                        synchronized (segLock) {
+                            if (holdPendingIdFloorText(remainder, lang, speakerId, finalReason)) {
+                                return;
+                            }
                         }
                     }
                     callback.onRecognizing(remainder, lang, speakerId, true);
                     log.info("[AsrSession] asr-segment final={} costMs={} len={} speakerId={} text='{}'",
                             hadForced ? "remainder" : "full", asrTailMs, remainder.length(), speakerId,
-                            remainder.length() <= 120 ? remainder : remainder.substring(0, 117) + "...");
+                            previewText(remainder));
                 }
             });
 
@@ -535,10 +550,10 @@ public class AzureAsrIntegration {
                                 rememberEmittedSegment(segment);
                                 segmentStartMs.set(System.currentTimeMillis());
                                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                                String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, "force-backstop");
                                 log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
-                                        segment.length(), lang, resolvedSpeakerId,
-                                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
-                                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                                        outputSegment.length(), lang, resolvedSpeakerId, previewText(outputSegment));
+                                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
                             } else {
                                 log.info("[IdGuard] {} boundary reason=force-backstop len={} text='{}'", action, segment.length(),
                                         segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
@@ -696,10 +711,11 @@ public class AzureAsrIntegration {
             segmentStartMs.set(System.currentTimeMillis());
             if (!segment.isBlank()) {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, reason);
                 log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
-                        reason, segment.length(), lang, resolvedSpeakerId, punctuated != null,
-                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
-                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                        reason, outputSegment.length(), lang, resolvedSpeakerId, punctuated != null,
+                        previewText(outputSegment));
+                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
             }
         }
 
@@ -764,10 +780,10 @@ public class AzureAsrIntegration {
                 rememberEmittedSegment(segment);
                 segmentStartMs.set(System.currentTimeMillis());
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, "llm-boundary");
                 log.info("[AsrSession] force-segment by=llm-boundary len={} lang={} speakerId={} text='{}'",
-                        segment.length(), lang, resolvedSpeakerId,
-                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
-                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                        outputSegment.length(), lang, resolvedSpeakerId, previewText(outputSegment));
+                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
             }
         }
 
@@ -779,6 +795,60 @@ public class AzureAsrIntegration {
                 emittedTextBuffer.append(' ');
             }
             emittedTextBuffer.append(segment.trim());
+        }
+
+        private boolean isIdGuardActiveFor(String lang) {
+            return idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id");
+        }
+
+        private String mergePendingIdFloorText(String segment, String lang, String speakerId, String reason) {
+            String cleanSegment = segment == null ? "" : segment.trim();
+            if (!isIdGuardActiveFor(lang) || pendingIdFloorText.isBlank()) {
+                return cleanSegment;
+            }
+            String pending = pendingIdFloorText.trim();
+            String merged = cleanSegment.isBlank() ? pending : pending + " " + cleanSegment;
+            log.info("[IdGuard] pending output-floor merged, reason={}, pendingLen={}, segmentLen={}, mergedLen={}, pendingLang={}, lang={}, pendingSpeakerId={}, speakerId={}, text='{}'",
+                    reason, pending.length(), cleanSegment.length(), merged.length(),
+                    pendingIdFloorLang, lang, pendingIdFloorSpeakerId, speakerId, previewText(merged));
+            pendingIdFloorText = "";
+            pendingIdFloorLang = "";
+            pendingIdFloorSpeakerId = "";
+            return merged.trim();
+        }
+
+        private boolean holdPendingIdFloorText(String segment, String lang, String speakerId, String reason) {
+            if (!isIdGuardActiveFor(lang)) {
+                return false;
+            }
+            String cleanSegment = segment == null ? "" : segment.trim();
+            if (cleanSegment.isBlank()) {
+                return false;
+            }
+            if (!pendingIdFloorText.isBlank()) {
+                cleanSegment = pendingIdFloorText.trim() + " " + cleanSegment;
+            }
+            if (!idGuard.shouldHoldForOutputFloor(cleanSegment)) {
+                return false;
+            }
+            storePendingIdFloorText(segment, lang, speakerId, reason);
+            return true;
+        }
+
+        private void storePendingIdFloorText(String segment, String lang, String speakerId, String reason) {
+            String cleanSegment = segment == null ? "" : segment.trim();
+            if (cleanSegment.isBlank()) {
+                return;
+            }
+            if (!pendingIdFloorText.isBlank()) {
+                cleanSegment = pendingIdFloorText.trim() + " " + cleanSegment;
+            }
+            pendingIdFloorText = cleanSegment.trim();
+            pendingIdFloorLang = lang == null ? "" : lang;
+            pendingIdFloorSpeakerId = speakerId == null ? "" : speakerId;
+            log.info("[IdGuard] HOLD output-floor reason={} len={} minId={} lang={} speakerId={} text='{}'",
+                    reason, visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars, lang, speakerId,
+                    previewText(pendingIdFloorText));
         }
 
         /**
@@ -821,8 +891,9 @@ public class AzureAsrIntegration {
                 return false;
             }
             return switch (reason) {
-                case "sentence-wtpsplit", "force-boundary", "force-comma", "force-comma-punct",
-                     "force-backstop", "llm-boundary" -> true;
+                case "sentence", "sentence-punct", "sentence-wtpsplit", "numbered-title",
+                     "force-boundary", "force-comma", "force-comma-punct", "force-backstop",
+                     "llm-boundary" -> true;
                 default -> false;
             };
         }
@@ -885,6 +956,13 @@ public class AzureAsrIntegration {
                 i += Character.charCount(cp);
             }
             return count;
+        }
+
+        private String previewText(String text) {
+            if (text == null) {
+                return "";
+            }
+            return text.length() <= 120 ? text : text.substring(0, 117) + "...";
         }
 
         private int wordCount(String text) {
@@ -1201,6 +1279,11 @@ public class AzureAsrIntegration {
 
         @Override
         public void close() {
+            if (!pendingIdFloorText.isBlank()) {
+                log.warn("[IdGuard] pending output-floor not emitted on close, len={} minId={} lang={} speakerId={} text='{}'",
+                        visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars,
+                        pendingIdFloorLang, pendingIdFloorSpeakerId, previewText(pendingIdFloorText));
+            }
             try {
                 if (conversationTranscriber != null) {
                     conversationTranscriber.stopTranscribingAsync().get(5, TimeUnit.SECONDS);

@@ -90,7 +90,7 @@ class IndonesianIncompleteGuardTest {
         assertEquals(numberStart, boundary);
     }
 
-    // 8. wtpsplit 短段(<门槛)且非白名单 → HOLD 退回下一轮(不直接 final)
+    // 8. wtpsplit 短段(<门槛) → HOLD 退回下一轮(不直接 final)
     @Test
     void shortWtpsplitSegmentHeld() {
         for (String working : new String[]{"ke depan", "8 tahun", "3 satelit", "dari sisi"}) {
@@ -99,11 +99,11 @@ class IndonesianIncompleteGuardTest {
         }
     }
 
-    // 8b. 真·短应答在白名单里 → 即使短也 EMIT_FINAL
+    // 8b. 所有短应答也必须走短句地板，不再有例外放行。
     @Test
-    void whitelistedShortReplyEmits() {
-        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit("Ya.", "Ya.".length(), "sentence-wtpsplit"));
-        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit("terima kasih", "terima kasih".length(), "sentence-wtpsplit"));
+    void shortRepliesHeldByFloor() {
+        assertEquals(EmitAction.HOLD, guard().decideEmit("Ya.", "Ya.".length(), "sentence-wtpsplit"));
+        assertEquals(EmitAction.HOLD, guard().decideEmit("terima kasih", "terima kasih".length(), "sentence-wtpsplit"));
     }
 
     // 8c. 长度达标的强边界整句 → EMIT_FINAL
@@ -114,11 +114,30 @@ class IndonesianIncompleteGuardTest {
         assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit(working, working.length(), "sentence-wtpsplit"));
     }
 
-    // 8d. 编号标题不受短句门槛限制(标题本就短)
+    // 8d. 编号标题也必须走短句地板。
     @Test
-    void numberedTitleNotHeldByFloor() {
+    void shortNumberedTitleHeldByFloor() {
         String working = "14 kesimpulan";
+        assertEquals(EmitAction.HOLD, guard().decideEmit(working, working.length(), "numbered-title"));
+    }
+
+    @Test
+    void longNumberedTitleEmits() {
+        String working = "14 kesimpulan penting untuk membangun sistem industri masa depan yang terintegrasi";
+        assertTrue(working.replace(" ", "").length() >= 48);
         assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit(working, working.length(), "numbered-title"));
+    }
+
+    @Test
+    void shortSegmentsFromAllBoundaryReasonsHeld() {
+        String working = "baik sekali";
+        for (String reason : new String[]{
+                "sentence", "sentence-punct", "sentence-wtpsplit", "numbered-title",
+                "force-boundary", "force-comma", "force-comma-punct", "force-backstop",
+                "llm-boundary"}) {
+            assertEquals(EmitAction.HOLD, guard().decideEmit(working, working.length(), reason),
+                    "reason=" + reason);
+        }
     }
 
     // 9. 弱边界即使长度够，也必须降级（不直接作为 final）
