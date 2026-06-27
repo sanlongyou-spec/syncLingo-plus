@@ -28,7 +28,7 @@ class AutoExtractedCleanupServiceTest {
         when(hm.deleteBySourceTypeOlderThan(eq("AUTO_EXTRACTED"), any())).thenReturn(5);
 
         AutoExtractedCleanupService svc = new AutoExtractedCleanupService(tm, hm);
-        svc.retentionDays = 3;
+        svc.retentionHours = 18;
 
         svc.purgeExpired();
 
@@ -36,23 +36,23 @@ class AutoExtractedCleanupServiceTest {
         verify(tm).deleteBySourceOlderThan(eq("AUTO_DOC"), cutoff.capture());
         verify(hm).deleteBySourceTypeOlderThan(eq("AUTO_EXTRACTED"), any());
 
-        LocalDateTime expected = LocalDateTime.now().minusDays(3);
+        LocalDateTime expected = LocalDateTime.now().minusHours(18);
         long driftSec = Math.abs(Duration.between(cutoff.getValue(), expected).toSeconds());
-        assertTrue(driftSec < 60, "cutoff 应约为 now-3天, 实际偏差秒=" + driftSec);
+        assertTrue(driftSec < 60, "cutoff 应约为 now-18小时, 实际偏差秒=" + driftSec);
     }
 
     @Test
-    void retentionFloorAtOneDay() {
+    void retentionFloorAtOneHour() {
         TerminologyMapper tm = mock(TerminologyMapper.class);
         AsrHotwordMapper hm = mock(AsrHotwordMapper.class);
         AutoExtractedCleanupService svc = new AutoExtractedCleanupService(tm, hm);
-        svc.retentionDays = 0; // 异常配置,应被钳到至少 1 天
+        svc.retentionHours = 0; // 异常配置,应被钳到至少 1 小时
 
         svc.purgeExpired();
 
         ArgumentCaptor<LocalDateTime> cutoff = ArgumentCaptor.forClass(LocalDateTime.class);
         verify(tm).deleteBySourceOlderThan(eq("AUTO_DOC"), cutoff.capture());
-        LocalDateTime expected = LocalDateTime.now().minusDays(1);
+        LocalDateTime expected = LocalDateTime.now().minusHours(1);
         assertTrue(Math.abs(Duration.between(cutoff.getValue(), expected).toSeconds()) < 60);
     }
 }
