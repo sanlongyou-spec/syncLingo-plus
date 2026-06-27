@@ -39,16 +39,19 @@ public class AzureAsrIntegration {
     private final PunctuationServiceIntegration punctuationService;
     private final SegmentationServiceIntegration segmentationService;
     private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
+    private final com.si.backend.service.IndonesianIncompleteGuard idGuard;
     private final Map<String, AsrSession> sessions = new ConcurrentHashMap<>();
 
     public AzureAsrIntegration(AzureSpeechProperties asrProperties,
                                 PunctuationServiceIntegration punctuationService,
                                 SegmentationServiceIntegration segmentationService,
-                                com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
+                                com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
+                                com.si.backend.service.IndonesianIncompleteGuard idGuard) {
         this.asrProperties = asrProperties;
         this.punctuationService = punctuationService;
         this.segmentationService = segmentationService;
         this.idSegmenter = idSegmenter;
+        this.idGuard = idGuard;
     }
 
     /**
@@ -117,12 +120,12 @@ public class AzureAsrIntegration {
             );
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
-            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter);
+            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard);
         } else {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber, specified lang={}, sessionId={}", sourceLang, sessionId);
             config.setSpeechRecognitionLanguage(sourceLang);
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
-            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter);
+            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard);
         }
 
         sessions.put(sessionId, session);
@@ -216,6 +219,8 @@ public class AzureAsrIntegration {
         private final SegmentationServiceIntegration segmentationSvc;
         /** 方案2:LLM 实时分句器(null = 未启用)。开启后印尼语改由它在句子边界异步切句 */
         private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
+        /** 印尼语完整性 Guard(null 或 disabled = 不启用):发段前一票否决 + 弱边界降级 partial。 */
+        private final com.si.backend.service.IndonesianIncompleteGuard idGuard;
         /** 方案2:是否有一次分句 LLM 调用在途(同一会话同一时刻最多一次,省成本/防乱序);仅在 segLock 内读写 */
         private boolean idSegInFlight = false;
         /** 方案2:上次触发分句调用时的 working 长度,用于节流(只在 segLock 内读写) */
@@ -252,7 +257,8 @@ public class AzureAsrIntegration {
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
                           PunctuationServiceIntegration punctuationService,
                           SegmentationServiceIntegration segmentationService,
-                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
+                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
+                          com.si.backend.service.IndonesianIncompleteGuard idGuard) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = false;
@@ -269,6 +275,7 @@ public class AzureAsrIntegration {
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
             this.idSegmenter = idSegmenter;
+            this.idGuard = idGuard;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
 
@@ -276,7 +283,8 @@ public class AzureAsrIntegration {
                           AzureSpeechProperties.AsrProperties asrConfig, List<String> hotwords,
                           PunctuationServiceIntegration punctuationService,
                           SegmentationServiceIntegration segmentationService,
-                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter) {
+                          com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
+                          com.si.backend.service.IndonesianIncompleteGuard idGuard) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = true;
@@ -292,6 +300,7 @@ public class AzureAsrIntegration {
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
             this.idSegmenter = idSegmenter;
+            this.idGuard = idGuard;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
             this.conversationTranscriber = new ConversationTranscriber(config, autoConfig, audioConfig);
@@ -413,6 +422,15 @@ public class AzureAsrIntegration {
                 long lastInterim = lastInterimAtMs.getAndSet(0);
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
                 if (!remainder.isBlank()) {
+                    if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                        com.si.backend.service.IndonesianIncompleteGuard.GuardResult guardResult = idGuard.check(remainder);
+                        if (!guardResult.isPass()) {
+                            log.info("[IdGuard] final remainder suppressed decision={} reason={} len={} text='{}'",
+                                    guardResult.decision(), guardResult.reason(), remainder.length(),
+                                    remainder.length() <= 120 ? remainder : remainder.substring(0, 117) + "...");
+                            return;
+                        }
+                    }
                     callback.onRecognizing(remainder, lang, speakerId, true);
                     log.info("[AsrSession] asr-segment final={} costMs={} len={} speakerId={} text='{}'",
                             hadForced ? "remainder" : "full", asrTailMs, remainder.length(), speakerId,
@@ -495,7 +513,24 @@ public class AzureAsrIntegration {
                     int b = hardBackstopBoundary(working, lang);
                     if (b > 0) {
                         String segment = working.substring(0, b).trim();
-                        if (!shouldDeferShortSegment("force-backstop", segment, lang) && segment.length() >= 8 && !segment.isBlank()) {
+                        if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                            com.si.backend.service.IndonesianIncompleteGuard.EmitAction action =
+                                    idGuard.decideEmit(working, b, "force-backstop");
+                            if (action == com.si.backend.service.IndonesianIncompleteGuard.EmitAction.EMIT_FINAL) {
+                                emittedLen = start + b;
+                                emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
+                                rememberEmittedSegment(segment);
+                                segmentStartMs.set(System.currentTimeMillis());
+                                String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                                log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
+                                        segment.length(), lang, resolvedSpeakerId,
+                                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                                callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                            } else {
+                                log.info("[IdGuard] {} boundary reason=force-backstop len={} text='{}'", action, segment.length(),
+                                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                            }
+                        } else if (!shouldDeferShortSegment("force-backstop", segment, lang) && segment.length() >= 8 && !segment.isBlank()) {
                             emittedLen = start + b;
                             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
                             rememberEmittedSegment(segment);
@@ -573,13 +608,23 @@ public class AzureAsrIntegration {
                 }
                 // 无标点边界：用 wtpsplit 检测到的语义句边界（印尼语）。
                 // 加最小句长闸门：太短的边界(如 "satu"/"nine")不切，等累积更长或走逗号/字数兜底，避免碎片。
+                boolean idGuardActive = idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id");
                 if (end == NO_SEGMENT && wtpBoundary != NO_SEGMENT
-                        && (minSentenceEmitIdChars <= 0 || wtpBoundary >= minSentenceEmitIdChars)) {
+                        && (idGuardActive || minSentenceEmitIdChars <= 0 || wtpBoundary >= minSentenceEmitIdChars)) {
+                    // Guard 开启时不再用 minId 死卡 wtpsplit 强边界：短边界交给 decideEmit(强边界+完整性检查)放行/扣回。
                     end = wtpBoundary;
                     reason = "sentence-wtpsplit";
                 } else if (wtpBoundary != NO_SEGMENT && wtpBoundary < minSentenceEmitIdChars) {
                     log.debug("[AsrSession] wtpsplit boundary skipped (too short), boundary={} < minId={}",
                             wtpBoundary, minSentenceEmitIdChars);
+                }
+                // 编号标题强边界：在 "13 pemikiran" 这类列表编号前切（编号+标题进入下一段）。
+                if (end == NO_SEGMENT && idGuardActive) {
+                    int nt = idGuard.findNumberedTitleBoundary(working, safe);
+                    if (nt > 0) {
+                        end = nt;
+                        reason = "numbered-title";
+                    }
                 }
             }
             // 2) 逗号/子句标点：同样优先用标点版本
@@ -619,7 +664,14 @@ public class AzureAsrIntegration {
                 log.debug("[AsrSession] force-boundary segment too short ({}), deferred: '{}'", segment.length(), segment);
                 return;
             }
-            if (shouldDeferShortSegment(reason, segment, lang)) {
+            if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                com.si.backend.service.IndonesianIncompleteGuard.EmitAction action = idGuard.decideEmit(working, end, reason);
+                if (action != com.si.backend.service.IndonesianIncompleteGuard.EmitAction.EMIT_FINAL) {
+                    log.info("[IdGuard] {} boundary reason={} len={} text='{}'", action, reason, segment.length(),
+                            segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                    return;
+                }
+            } else if (shouldDeferShortSegment(reason, segment, lang)) {
                 log.debug("[AsrSession] force-segment deferred by min length, reason={}, len={}, minId={}, lang={}, text='{}'",
                         reason, segment.length(), minSentenceEmitIdChars, lang,
                         segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
@@ -683,7 +735,15 @@ public class AzureAsrIntegration {
                 if (segment.isBlank()) {
                     return;
                 }
-                if (shouldDeferShortSegment("llm-boundary", segment, lang)) {
+                if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
+                    com.si.backend.service.IndonesianIncompleteGuard.EmitAction action =
+                            idGuard.decideEmit(snapshot, end, "llm-boundary");
+                    if (action != com.si.backend.service.IndonesianIncompleteGuard.EmitAction.EMIT_FINAL) {
+                        log.info("[IdGuard] {} boundary reason=llm-boundary len={} text='{}'", action, segment.length(),
+                                segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                        return;
+                    }
+                } else if (shouldDeferShortSegment("llm-boundary", segment, lang)) {
                     return;
                 }
                 emittedLen = start + end;

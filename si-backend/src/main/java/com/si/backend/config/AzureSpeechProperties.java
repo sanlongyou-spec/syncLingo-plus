@@ -51,6 +51,13 @@ public class AzureSpeechProperties {
          * 0 = 不限制。
          */
         private int minSentenceEmitIdChars = 48;
+        /**
+         * 印尼语完整性 Guard 开关（id-ID 专用）：
+         * 半词尾/连接词尾/可疑词头拦截、固定短语保护、编号/金额消歧，
+         * 弱边界(逗号/词边界/超长/超时 backstop)强切降级为 partial（不进翻译/入库/TTS）。
+         * true = 开启（准确率优先）；false = 回退到旧的强切行为。
+         */
+        private boolean idSegmentGuardEnabled = true;
     }
 
     @Data

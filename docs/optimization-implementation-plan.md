@@ -1696,3 +1696,63 @@ GET    /api/admin/audit-logs
 - Skipping unsynthesized TTS reduces backlog but may omit late, not-yet-audible translations when the meeting is already too far behind. This is an explicit trade-off requested for long-waiting unsynthesized audio.
 - The frontend playback speed was still `playbackRateMilli=1000` in the long test. If 1.35x playback remains required, the frontend/runtime setting must be verified separately.
 - Cartesia source audio quality or provider-side artifacts can still produce odd sound even after failed connection invalidation; future tests should compare default voice vs cloned voice and inspect provider context errors.
+
+## 周度优化记录：2026-W26 印尼语流式分段完整性 Guard（去掉盲切 + 弱边界降级 partial）
+
+### 本周目标
+
+- 解决印尼语 id-ID → 中文链路中「中途强切」把半词/残句当 final 送翻译，导致中文乱码的问题。
+- 准确率优先：宁可延迟略升，也不让半词/残句进入翻译、入库、TTS。
+- 采用增量改造，不重写分段：保留现有 `emittedLen`、`emittedSuffix` 指纹、`finalRemainderAfterForcedSegments`、`comparableText`、final remainder 重对齐、`TranscriptOverlapTrimmer`。
+- 取舍采用「折中策略」：强边界（句末标点 / wtpsplit 可信边界 / 编号标题前）且通过 Guard 才作为 final；弱边界（逗号 / 词边界 / 超长 / 超时 backstop）一律降级为 partial。
+
+### 现状核查（生产，2026-06-27）
+
+- `SEGMENTATION_SERVICE_ENABLED=true`、`sat_model_loaded:true`、端点延迟约 7ms：wtpsplit 真在工作且是主力切法（实测 `sentence-wtpsplit` 占约 59%）。
+- 但 `force-boundary` 盲切约占 35%（6 秒超时后无语言学判断的词边界硬切），叠加 `MIN_SENTENCE_EMIT_ID_CHARS` 默认 48 把短 wtpsplit 强边界推给盲切 —— 这是半词/残句的根因。
+- `OPENAI_ID_ZH_LLM_SEGMENT_ENABLED=false` 保持（实测效果不佳，方案明确不启用）。
+
+### 优化项
+
+| 优化项 | 状态 | 说明 |
+|---|---|---|
+| `IndonesianIncompleteGuard`（新类，纯逻辑可单测） | 已完成 | `check`（半词尾/连接词尾/可疑词头/纯噪声）、`boundaryVeto`（切断固定短语/数字↔单位词/制造可疑词头）、`isNumberedTitle`/`findNumberedTitleBoundary`、`decideEmit`（综合给出 EMIT_FINAL/DOWNGRADE_PARTIAL/HOLD/DROP）。 |
+| 弱边界降级 partial（去掉盲切） | 已完成 | `AzureAsrIntegration.AsrSession` 三处发段点（force-backstop / 正常 force-segment / llm-boundary）接入 `decideEmit`，弱边界不再以 `isFinal=true` 发出，不推进 `emittedLen`，由现有 interim 显示路展示 partial。 |
+| final remainder 发出前 Guard | 已完成 | `transcribed` 终稿 remainder 发出前过 `check`，HOLD/DROP 抑制（不进翻译/入库/TTS）。 |
+| 翻译入口纵深防御 | 已完成 | `RealtimeInterpretationFacade.translateAndStreamTts` 对 id 源文本进翻译前再过一次 `check`，非 PASS 直接释放 TTS 预约并返回。 |
+| minId 软化 | 已完成 | Guard 开启时不再用 `minSentenceEmitIdChars` 死卡 wtpsplit 强边界；短强边界交给 `decideEmit`（强边界 + 完整性检查）放行/扣回。 |
+| 编号标题强边界 | 已完成 | 新增 `numbered-title` 强边界候选，在 `13 pemikiran` 这类列表编号前切；`10 juta`（数字+单位词）不识别为编号、不被切断。 |
+| 发段前 Guard 日志 | 已完成 | 新增 `[IdGuard] ...`（init/HOLD/DOWNGRADE/DROP/final remainder suppressed/facade suppress）。 |
+| 开关与回滚 | 已完成 | `azure.asr.id-segment-guard-enabled`（env `AZURE_ASR_ID_SEGMENT_GUARD_ENABLED`，默认 `true`）；置 false 完整回退旧强切行为。 |
+| 不启用 LLM 实时分句 | 维持关闭 | `id-zh-llm-segment-enabled` 保持 false（实测效果不佳）。 |
+
+### 生产配置建议
+
+| 配置 | 现状 | 建议 |
+|---|---|---|
+| `SEGMENTATION_SERVICE_ENABLED` | true | 保持 true（wtpsplit 为强边界主力） |
+| `AZURE_ASR_ID_SEGMENT_GUARD_ENABLED` | 新增 | true（准确率优先） |
+| `SEGMENTATION_SERVICE_TIMEOUT_MS` | 100 | 100~120（实测约 7ms，余量充足） |
+| `AZURE_ASR_SEGMENTATION_SILENCE_TIMEOUT_MS` | 600 | 700~800（更依赖 Azure 终稿，换更完整整句） |
+| `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS` | 48 | 保持 48（现仅作弱边界地板，强边界已由 Guard 放行） |
+| `AZURE_ASR_MAX_SEGMENT_WORDS` / `MAX_SEGMENT_CHARS` | 0 / 0 | 保持 0（其强切为弱边界，已降级 partial，不产 final） |
+| `OPENAI_ID_ZH_LLM_SEGMENT_ENABLED` | false | 保持 false |
+
+### 影响范围
+
+- 后端：新增 `service/IndonesianIncompleteGuard.java`；改动 `integration/AzureAsrIntegration.java`、`facade/RealtimeInterpretationFacade.java`、`config/AzureSpeechProperties.java`、`application.yml`；测试 `service/IndonesianIncompleteGuardTest.java`、`facade/RealtimeInterpretationOrderTest.java`（构造参数补 Guard mock）。
+- 前端：无。
+- 配置 / 数据：`backend.env` 建议补 `AZURE_ASR_ID_SEGMENT_GUARD_ENABLED=true`（与 `SEGMENTATION_SERVICE_ENABLED=true`）。
+
+### 验收标准
+
+- 正式 final 印尼语段不再出现：`…peng`、`tuk setiap`、`sepak/bola`、`Amerika/Serikat`、`masa/depan`、连接词结尾残句。
+- 部署后日志：`force-segment by=force-boundary` 占比大幅下降，final 以 `sentence-wtpsplit`/`sentence-punct`/`numbered-title` 为主；出现 `[IdGuard]` HOLD/veto；翻译/TTS 不再收到半词。
+- 单测全绿（见对应周度验证记录）。
+
+### 遗留问题
+
+- 连续无停顿长句的 final 延迟会上升（等 Azure 静音终稿）；partial 原文仍实时显示，属准确率优先的预期代价。
+- final remainder 的 HOLD/DROP 当前为「抑制」，未做跨 utterance 的 heldRemainder 接续（P0 不做，避免跨句/跨说话人风险）；如线上发现明显内容丢失再评估二期接续。
+- wtpsplit 仍可能给出切断固定短语的强边界，已由 `boundaryVeto` 二次拦截；词表/短语表当前为常量，后续可外置配置。
+- 服务器侧验证待部署后用真实印尼语长会议日志包复核。

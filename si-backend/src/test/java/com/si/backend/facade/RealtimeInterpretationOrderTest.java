@@ -50,6 +50,8 @@ class RealtimeInterpretationOrderTest {
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
         SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -60,7 +62,8 @@ class RealtimeInterpretationOrderTest {
                 recordService,
                 audioRecordService,
                 speakerTurnService,
-                userVoiceService
+                userVoiceService,
+                indonesianIncompleteGuard
         );
 
         String sessionId = "order-test-session";
@@ -138,6 +141,8 @@ class RealtimeInterpretationOrderTest {
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
         SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -148,7 +153,8 @@ class RealtimeInterpretationOrderTest {
                 recordService,
                 audioRecordService,
                 speakerTurnService,
-                userVoiceService
+                userVoiceService,
+                indonesianIncompleteGuard
         );
 
         String sessionId = "skip-wait-session";

@@ -1780,3 +1780,68 @@ mvn test
 - Local focused tests passed: 14 tests, 0 failures, 0 errors.
 - Local full backend verification passed: 390 tests, 0 failures, 0 errors.
 - Server validation remains pending until this change is deployed and a new long meeting log package is exported.
+
+## 周度验证记录：2026-W26 印尼语流式分段完整性 Guard（去掉盲切 + 弱边界降级 partial）
+
+### 对应优化范围
+
+- 对应 `docs/optimization-implementation-plan.md` 中的 `周度优化记录：2026-W26 印尼语流式分段完整性 Guard（去掉盲切 + 弱边界降级 partial）`。
+
+### 验证目标
+
+- 半词尾/连接词尾/可疑词头的 id 段不进入翻译（HOLD/DROP）。
+- 固定短语（masa depan / sepak bola / Amerika Serikat 等）不被切断；`10 juta` 不识别为编号、`13 pemikiran` 识别为编号标题。
+- 强边界即使 <48、过 Guard 也放行；弱边界即使够长也降级 partial，不作为 final。
+- 部署后 `force-boundary` 盲切占比显著下降，final 以强边界为主。
+
+### 优先通过日志 / 接口 / 数据库验证
+
+本地单元（已执行，全绿）：
+
+```powershell
+cd D:\data\syncLingo-plus\si-backend
+mvn -q -Dtest=IndonesianIncompleteGuardTest test
+mvn test   # 全量回归
+```
+
+通过标准（本地）：
+
+- `IndonesianIncompleteGuardTest` 13 条 P0 用例全过（半词尾 HOLD、可疑词头 HOLD、连接词尾 HOLD、masa depan / sepak bola / Amerika Serikat 不可切、10 juta 非编号、13 pemikiran 为编号、强边界短句放行、弱边界长句降级、HOLD/EMIT_FINAL 动作正确、final remainder 半词拦截、开关关闭回退）。
+- 全量后端 404 tests，0 failures，0 errors，BUILD SUCCESS。
+
+部署后（服务器，待执行）：
+
+```bash
+# 1) 确认开关与依赖
+docker exec si-backend env | grep -E 'ID_SEGMENT_GUARD_ENABLED|SEGMENTATION_SERVICE_ENABLED'
+docker logs si-backend 2>&1 | grep -E '\[IdGuard\] init|\[SegmentationService\] enabled='
+
+# 2) 跑一段印尼语会议后，看切法占比（force-boundary 应明显下降）
+docker logs si-backend 2>&1 | grep -oE 'force-segment by=[a-z-]+' | sort | uniq -c | sort -rn
+
+# 3) 看 Guard 是否在拦截半词/残句
+docker logs si-backend 2>&1 | grep -E '\[IdGuard\] (HOLD|DROP|DOWNGRADE_PARTIAL|final remainder suppressed|facade suppress)'
+
+# 4) 确认翻译入库不再出现半词残句（DB 抽样）
+docker exec si-mysql mysql -usync_lingo -p'<app-password>' si_backend \
+  -e "select source_text from interpretation_result where source_lang like 'id%' order by id desc limit 50;"
+```
+
+通过标准（服务器）：
+
+- `[IdGuard] init, enabled=true`；`force-segment by=force-boundary` 占比相对改造前显著下降，final 以 `sentence-wtpsplit`/`sentence-punct`/`numbered-title` 为主。
+- 出现 `[IdGuard] ... HOLD/DOWNGRADE/veto`，被拦内容为半词/连接词尾/切断短语候选。
+- `interpretation_result` 中 id 源文本不再出现 `…peng`、`tuk setiap`、`sepak`/`bola`、`Amerika`/`Serikat`、`masa`/`depan`、连接词结尾残句。
+
+### 必要时再做人工判断
+
+- 至少跑一场含印尼语的会议，主观确认中文译文通顺、无半句乱码、TTS 不念半词。
+- 关注连续无停顿长句的 final 延迟是否在可接受范围（准确率优先的预期代价）。
+- 如线上发现明显内容丢失（final remainder 被 HOLD/DROP 抑制掉的真实尾词），记录样本，评估二期 heldRemainder 跨句接续。
+
+### 结果记录
+
+- 本地：通过（全量 404 tests，0 失败；P0 13 用例全过）。
+- 服务器：待部署后用真实印尼语长会议日志包复核。
+- 遗留问题：见对应优化记录「遗留问题」。
+- 需回归项：现有 `AsrServiceOverlapTest`、`finalRemainderAfterForcedSegments` 相关、`RealtimeInterpretationOrderTest`（已随本次回归通过）。

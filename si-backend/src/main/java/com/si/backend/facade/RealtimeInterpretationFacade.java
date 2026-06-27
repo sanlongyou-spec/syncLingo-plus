@@ -4,6 +4,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
+import com.si.backend.service.IndonesianIncompleteGuard;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
@@ -42,6 +43,7 @@ public class RealtimeInterpretationFacade {
     private final AudioRecordService audioRecordService;
     private final SpeakerTurnService speakerTurnService;
     private final UserVoiceService userVoiceService;
+    private final IndonesianIncompleteGuard indonesianIncompleteGuard;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -353,6 +355,16 @@ public class RealtimeInterpretationFacade {
         try {
             Long userId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L);
             boolean indonesianSource = sourceLang != null && sourceLang.trim().toLowerCase().startsWith("id");
+            // 纵深防御:id 源文本进翻译/入库/TTS 前再过一次完整性 Guard,拦住任何漏网的半词/残句。
+            if (indonesianSource && indonesianIncompleteGuard.isEnabled()) {
+                IndonesianIncompleteGuard.GuardResult guardResult = indonesianIncompleteGuard.check(text);
+                if (!guardResult.isPass()) {
+                    log.info("[IdGuard] facade suppress id source, decision={}, reason={}, sessionId={}, textLen={}",
+                            guardResult.decision(), guardResult.reason(), sessionId, text.length());
+                    completeTtsReservation(reservation, "id_guard_blocked");
+                    return;
+                }
+            }
             String recentContext = indonesianSource ? recentIdContext(sessionId, text) : null;
             translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress, recentContext);
             if (indonesianSource) {
