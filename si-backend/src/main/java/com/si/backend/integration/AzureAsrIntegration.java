@@ -454,6 +454,10 @@ public class AzureAsrIntegration {
             }
             String working = text.substring(start);
 
+            // 为本段计时(供超时兜底 forceSegmentMs 使用):首段也要有起算点,
+            // 否则 startedAt=0 时 shouldForce 的超时路径永不触发。每次 emit 后会重置为 emit 时刻。
+            segmentStartMs.compareAndSet(0, System.currentTimeMillis());
+
             // ── 方案2:LLM 实时分句(印尼语)。开启后印尼语完全交给 LLM 在句子边界异步切句,
             //    本轮不做同步切(wtpsplit/逗号/词数都跳过);说话停顿时 transcribed 终稿兜底剩余。
             if (idSegmenter != null && idSegmenter.isEnabled() && startsWithIgnoreCase(lang, "id")) {
@@ -466,6 +470,27 @@ public class AzureAsrIntegration {
             log.debug("[AsrSession] emitForcedSegments workingLen={} stable={} safe={} lang={} speakerId={}",
                     working.length(), stableInWorking, safe, lang, speakerId);
             if (safe <= 0) {
+                // 兜底:稳定前缀长期不前进(印尼语长串枚举/无标点时 Azure 反复改写尾部),
+                // 会使 safe<=0、下方正常切句路径全程早退,缓冲无限增长(曾观测单段 500~660 字 / 25~40s 延迟,
+                // 直到静音终稿才一次性吐出)。一旦超长(词数/字数)或超时(forceSegmentMs),不再等待稳定前缀:
+                // 用全文 working、仅留尾部 FORCE_TAIL_MARGIN_CHARS 余量,按词/字边界强切一刀。
+                if (shouldForce(working, lang)) {
+                    int hardSafe = working.length() - FORCE_TAIL_MARGIN_CHARS;
+                    int b = hardSafe > 0 ? wordOrCharBoundaryAt(working, hardSafe, lang) : NO_SEGMENT;
+                    if (b > 0) {
+                        String segment = working.substring(0, b).trim();
+                        if (segment.length() >= 8 && !segment.isBlank()) {
+                            emittedLen = start + b;
+                            emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
+                            segmentStartMs.set(System.currentTimeMillis());
+                            String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
+                            log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
+                                    segment.length(), lang, resolvedSpeakerId,
+                                    segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                            callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                        }
+                    }
+                }
                 return;
             }
 
