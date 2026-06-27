@@ -39,6 +39,10 @@ public interface InterpretationSessionMapper {
     @Update("ALTER TABLE interpretation_session ADD COLUMN hotword_ids VARCHAR(2048) DEFAULT NULL AFTER voice_id")
     void addHotwordIdsColumnIfNotExists();
 
+    /** 自动抽取使热词数大增,选中 ID 串可能超过 VARCHAR(2048);加宽为 TEXT。幂等,可重复执行。 */
+    @Update("ALTER TABLE interpretation_session MODIFY COLUMN hotword_ids TEXT")
+    void widenHotwordIdsColumnToText();
+
     @Update("ALTER TABLE interpretation_session ADD COLUMN enabled_languages VARCHAR(128) DEFAULT NULL AFTER hotword_ids")
     void addEnabledLanguagesColumnIfNotExists();
 

@@ -46,6 +46,13 @@ public class InterpretationSessionService {
         addColumnIfMissing("title", sessionMapper::addTitleColumnIfNotExists);
         addColumnIfMissing("deleted", sessionMapper::addDeletedColumnIfNotExists);
         addColumnIfMissing("hotword_ids", sessionMapper::addHotwordIdsColumnIfNotExists);
+        // 自动抽取后热词数大增,选中 ID 串易超 VARCHAR(2048),统一加宽为 TEXT(幂等)
+        try {
+            sessionMapper.widenHotwordIdsColumnToText();
+            log.info("[InterpretationSessionService] hotword_ids widened to TEXT");
+        } catch (DataAccessException e) {
+            log.warn("[InterpretationSessionService] widen hotword_ids failed (continue): {}", e.getMessage());
+        }
         addColumnIfMissing("enabled_languages", sessionMapper::addEnabledLanguagesColumnIfNotExists);
         addColumnIfMissing("meeting_summary", sessionMapper::addMeetingSummaryColumnIfNotExists);
         addColumnIfMissing("meeting_id", sessionMapper::addMeetingIdColumnIfNotExists);
