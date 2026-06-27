@@ -1597,3 +1597,45 @@ GET    /api/admin/audit-logs
 - Existing failed uploads, including fileIds `95`, `96`, and `97`, will not automatically reprocess. Operators should re-upload the reports or add a manual reprocess endpoint/job.
 - Extraction quality remains model-dependent; after the no-reasoning model is deployed, the next tuning round should review duplicate terms, cross-language coverage, and noisy domain phrases.
 - The mojibake seen in some terminal output is an encoding/display issue and is separate from extraction correctness.
+
+## Weekly Optimization Record: 2026-W26 ASR Final Remainder Alignment
+
+### Goal
+
+- Fix forced ASR segmentation seams where Azure interim text was emitted early, then Azure final text rewrote casing, punctuation, or token formatting.
+- Stop using the interim `emittedLen` character offset directly against final text.
+- Preserve realtime forced segmentation while making final remainders align by previously emitted text.
+
+### Evidence From Logs
+
+- `dbg-stream.log` showed `force-segment by=sentence-wtpsplit` emitted `amerika industri indonesia semua akan digabungkan menjadi 1`.
+- The following Azure final remainder started with `i 1 sistem industri...`, proving the interim offset landed inside a rewritten final token.
+- The issue is caused by final text drift, not by queue delay or translation latency.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Track complete emitted text | Done | `AzureAsrIntegration.AsrSession` now records every forced final segment in an emitted-text buffer, not only `emittedLen` and suffix. |
+| Final text realignment | Done | Final remainder calculation aligns final text by the complete emitted text first, then uses suffix alignment as fallback. |
+| Normalized comparison | Done | Alignment ignores casing, punctuation, and whitespace, and normalizes simple English/Indonesian number words such as `satu` / `one` to `1`. |
+| Boundary cleanup | Done | If fallback offset lands inside a word, the remainder start moves to the next token boundary, then performs token-level overlap cleanup. |
+| Regression coverage | Done | Added tests for the observed `i 1 sistem` seam, punctuation insertion, number normalization, fallback half-word cleanup, and duplicate-tail trimming. |
+
+### Affected Modules
+
+- Backend ASR integration: `AzureAsrIntegration`.
+- Backend ASR regression tests: `AzureAsrFinalRemainderTest`.
+- Existing downstream overlap protection in `AsrService` remains in place as a second safety net.
+
+### Acceptance Criteria
+
+- Azure final remainders no longer start with leaked tails such as `i 1`, `epan`, `nal`, or duplicated boundary words after a forced segment.
+- Logs may show `final remainder aligned` when final text had to be realigned by emitted text or overlap cleanup.
+- Existing realtime segmentation still emits from the stable interim prefix and does not wait for full Azure utterance finalization.
+- Focused ASR seam tests pass and full backend `mvn test` passes.
+
+### Residual Issues
+
+- This fix handles deterministic text drift at forced/final seams. It does not correct underlying ASR word substitutions such as domain words being misheard.
+- More complex number expressions beyond simple `zero` through `ten` / `nol` through `sepuluh` may still need future normalization.

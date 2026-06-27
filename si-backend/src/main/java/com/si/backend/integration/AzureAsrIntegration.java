@@ -13,7 +13,9 @@ import com.si.backend.config.AzureSpeechProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -29,6 +31,9 @@ import java.util.concurrent.atomic.AtomicReference;
 @Slf4j
 @Component
 public class AzureAsrIntegration {
+
+    private static final int FINAL_REALIGN_WINDOW_CHARS = 80;
+    private static final int MIN_FINAL_REMAINDER_OVERLAP_CHARS = 2;
 
     private final AzureSpeechProperties asrProperties;
     private final PunctuationServiceIntegration punctuationService;
@@ -223,6 +228,8 @@ public class AzureAsrIntegration {
         private int emittedLen = 0;
         /** emittedLen 边界前 EMIT_SUFFIX_LEN 个字符的指纹，用于检测 ASR 文本修正导致的指针漂移 */
         private String emittedSuffix = "";
+        /** 已提前发出的完整文本，用于 final 结果到达后重新对齐真实 remainder 边界 */
+        private final StringBuilder emittedTextBuffer = new StringBuilder();
         private static final int EMIT_SUFFIX_LEN = 16;
         /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
         private String prevText = "";
@@ -374,7 +381,8 @@ public class AzureAsrIntegration {
                 String text = result.getText();
                 String lang = resolveDetectedLanguage(result);
                 String speakerId = resolveSpeakerId(result);
-                // 最终结果: 按 emittedLen 取已强切之后的剩余部分(单调下标, 不重发已发文本)
+                // 最终结果: 先按已发段尾在 Azure 终稿里重新对齐，再取剩余部分。
+                // 不能直接把 interim 的 emittedLen 当 final 下标: Azure 终稿会重写大小写/标点/词面，字符下标可能漂移。
                 String full = text == null ? "" : text;
                 if (!full.isBlank()) {
                     log.info("[AsrSession] asr-raw lang={} speakerId={} len={} text='{}'",
@@ -383,12 +391,21 @@ public class AzureAsrIntegration {
                 }
                 String remainder;
                 boolean hadForced;
+                FinalRemainderResult remainderResult;
                 synchronized (segLock) {
                     hadForced = emittedLen > 0;
-                    remainder = full.substring(Math.min(emittedLen, full.length())).trim();
+                    remainderResult = finalRemainderAfterForcedSegments(
+                            full, emittedLen, emittedSuffix, emittedTextBuffer.toString());
+                    remainder = remainderResult.text();
                     emittedLen = 0;
                     emittedSuffix = "";
+                    emittedTextBuffer.setLength(0);
                     prevText = "";
+                }
+                if (hadForced && (remainderResult.aligned() || remainderResult.overlapChars() > 0)) {
+                    log.debug("[AsrSession] final remainder aligned, cutIndex={}, overlapChars={}, aligned={}, finalLen={}",
+                            remainderResult.cutIndex(), remainderResult.overlapChars(), remainderResult.aligned(),
+                            full.length());
                 }
                 lastLoggedTranscribeLen = 0;
                 lastLoggedTranscribeMs = 0;
@@ -482,6 +499,7 @@ public class AzureAsrIntegration {
                         if (segment.length() >= 8 && !segment.isBlank()) {
                             emittedLen = start + b;
                             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
+                            rememberEmittedSegment(segment);
                             segmentStartMs.set(System.currentTimeMillis());
                             String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                             log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
@@ -604,6 +622,7 @@ public class AzureAsrIntegration {
             }
             emittedLen = start + end;   // 单调推进(原始下标), 不会回头重切
             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
+            rememberEmittedSegment(segment);
             segmentStartMs.set(System.currentTimeMillis());
             if (!segment.isBlank()) {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
@@ -661,6 +680,7 @@ public class AzureAsrIntegration {
                 }
                 emittedLen = start + end;
                 emittedSuffix = snapshot.substring(Math.max(0, end - EMIT_SUFFIX_LEN), end);
+                rememberEmittedSegment(segment);
                 segmentStartMs.set(System.currentTimeMillis());
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                 log.info("[AsrSession] force-segment by=llm-boundary len={} lang={} speakerId={} text='{}'",
@@ -668,6 +688,16 @@ public class AzureAsrIntegration {
                         segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
                 callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
             }
+        }
+
+        private void rememberEmittedSegment(String segment) {
+            if (segment == null || segment.isBlank()) {
+                return;
+            }
+            if (emittedTextBuffer.length() > 0) {
+                emittedTextBuffer.append(' ');
+            }
+            emittedTextBuffer.append(segment.trim());
         }
 
         /**
@@ -1077,6 +1107,256 @@ public class AzureAsrIntegration {
             pushStream.close();
             config.close();
         }
+    }
+
+    static FinalRemainderResult finalRemainderAfterForcedSegments(
+            String full,
+            int emittedLen,
+            String emittedSuffix,
+            String emittedText
+    ) {
+        if (full == null || full.isBlank()) {
+            return new FinalRemainderResult("", 0, 0, false);
+        }
+        if (emittedLen <= 0) {
+            return new FinalRemainderResult(full.trim(), 0, 0, false);
+        }
+        int fallbackCut = Math.min(emittedLen, full.length());
+        BoundaryAlignment alignment = alignFinalBoundaryByEmittedText(full, fallbackCut, emittedText);
+        if (!alignment.aligned()) {
+            alignment = alignFinalBoundaryBySuffix(full, fallbackCut, emittedSuffix);
+        }
+        int cutIndex = alignment.aligned()
+                ? alignment.cutIndex()
+                : moveCutToNextTokenBoundary(full, alignment.cutIndex());
+        String remaining = full.substring(Math.min(cutIndex, full.length())).trim();
+        String overlapReference = emittedText != null && !emittedText.isBlank() ? emittedText : emittedSuffix;
+        OverlapTrimResult trimmed = trimRepeatedLeadingOverlap(overlapReference, remaining);
+        return new FinalRemainderResult(trimmed.text(), cutIndex, trimmed.overlapChars(), alignment.aligned());
+    }
+
+    private static BoundaryAlignment alignFinalBoundaryByEmittedText(String full, int fallbackCut, String emittedText) {
+        if (emittedText == null || emittedText.isBlank()) {
+            return new BoundaryAlignment(fallbackCut, false);
+        }
+        int searchUntil = Math.min(full.length(), fallbackCut + FINAL_REALIGN_WINDOW_CHARS);
+        BoundaryAlignment comparable = alignFinalBoundaryByComparableSuffix(full, searchUntil, emittedText);
+        if (comparable.aligned()) {
+            return comparable;
+        }
+        return new BoundaryAlignment(fallbackCut, false);
+    }
+
+    private static BoundaryAlignment alignFinalBoundaryBySuffix(String full, int fallbackCut, String emittedSuffix) {
+        if (emittedSuffix == null || emittedSuffix.isBlank()) {
+            return new BoundaryAlignment(fallbackCut, false);
+        }
+        int searchUntil = Math.min(full.length(), fallbackCut + FINAL_REALIGN_WINDOW_CHARS);
+        int exact = full.lastIndexOf(emittedSuffix, searchUntil);
+        if (exact >= 0) {
+            return new BoundaryAlignment(exact + emittedSuffix.length(), true);
+        }
+        int caseInsensitive = full.toLowerCase(Locale.ROOT)
+                .lastIndexOf(emittedSuffix.toLowerCase(Locale.ROOT), searchUntil);
+        if (caseInsensitive >= 0) {
+            return new BoundaryAlignment(caseInsensitive + emittedSuffix.length(), true);
+        }
+        BoundaryAlignment comparable = alignFinalBoundaryByComparableSuffix(full, searchUntil, emittedSuffix);
+        if (comparable.aligned()) {
+            return comparable;
+        }
+        return new BoundaryAlignment(fallbackCut, false);
+    }
+
+    private static BoundaryAlignment alignFinalBoundaryByComparableSuffix(String full, int searchUntil, String emittedSuffix) {
+        ComparisonText fullComparison = comparableText(full.substring(0, searchUntil));
+        int[] suffix = comparableCodePoints(emittedSuffix);
+        if (suffix.length == 0 || suffix.length > fullComparison.codePoints().length) {
+            return new BoundaryAlignment(0, false);
+        }
+        for (int start = fullComparison.codePoints().length - suffix.length; start >= 0; start--) {
+            boolean matches = true;
+            for (int i = 0; i < suffix.length; i++) {
+                if (fullComparison.codePoints()[start + i] != suffix[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return new BoundaryAlignment(fullComparison.sourceEndOffsets()[start + suffix.length - 1], true);
+            }
+        }
+        return new BoundaryAlignment(0, false);
+    }
+
+    private static OverlapTrimResult trimRepeatedLeadingOverlap(String emittedSuffix, String currentText) {
+        if (currentText == null || currentText.isBlank()) {
+            return new OverlapTrimResult("", 0);
+        }
+        if (emittedSuffix == null || emittedSuffix.isBlank()) {
+            return new OverlapTrimResult(currentText.trim(), 0);
+        }
+        int[] previous = comparableCodePoints(emittedSuffix);
+        String remaining = currentText.trim();
+        int totalOverlap = 0;
+        while (!remaining.isBlank()) {
+            int[] current = comparableCodePoints(remaining);
+            int overlap = longestSuffixPrefixOverlap(previous, current);
+            if (overlap < requiredRemainderOverlap(previous, current, overlap)) {
+                break;
+            }
+            totalOverlap += overlap;
+            if (overlap == current.length) {
+                remaining = "";
+                break;
+            }
+            int sourceCutOffset = sourceOffsetAfterComparableCodePoints(remaining, overlap);
+            remaining = trimLeadingSeparators(remaining.substring(sourceCutOffset));
+        }
+        return new OverlapTrimResult(remaining, totalOverlap);
+    }
+
+    private static int requiredRemainderOverlap(int[] previous, int[] current, int overlap) {
+        if (overlap == 1 && previous.length > 0 && current.length > 0) {
+            int lastPrevious = previous[previous.length - 1];
+            if (lastPrevious == current[0] && Character.isDigit(lastPrevious)) {
+                return 1;
+            }
+        }
+        return MIN_FINAL_REMAINDER_OVERLAP_CHARS;
+    }
+
+    private static int[] comparableCodePoints(String text) {
+        return comparableText(text).codePoints();
+    }
+
+    private static ComparisonText comparableText(String text) {
+        List<Integer> codePoints = new ArrayList<>();
+        List<Integer> sourceEndOffsets = new ArrayList<>();
+        for (int offset = 0; offset < text.length(); ) {
+            int codePoint = text.codePointAt(offset);
+            int nextOffset = offset + Character.charCount(codePoint);
+            if (Character.isLetterOrDigit(codePoint)) {
+                int tokenEnd = nextOffset;
+                while (tokenEnd < text.length()) {
+                    int nextCodePoint = text.codePointAt(tokenEnd);
+                    if (!Character.isLetterOrDigit(nextCodePoint)) {
+                        break;
+                    }
+                    tokenEnd += Character.charCount(nextCodePoint);
+                }
+                String normalizedToken = normalizeComparableToken(text.substring(offset, tokenEnd));
+                for (int tokenOffset = 0; tokenOffset < normalizedToken.length(); ) {
+                    int normalizedCodePoint = normalizedToken.codePointAt(tokenOffset);
+                    codePoints.add(normalizedCodePoint);
+                    sourceEndOffsets.add(tokenEnd);
+                    tokenOffset += Character.charCount(normalizedCodePoint);
+                }
+                offset = tokenEnd;
+                continue;
+            }
+            offset = nextOffset;
+        }
+        return new ComparisonText(
+                codePoints.stream().mapToInt(Integer::intValue).toArray(),
+                sourceEndOffsets.stream().mapToInt(Integer::intValue).toArray()
+        );
+    }
+
+    private static String normalizeComparableToken(String token) {
+        String normalized = token.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "zero", "nol", "kosong" -> "0";
+            case "one", "satu" -> "1";
+            case "two", "dua" -> "2";
+            case "three", "tiga" -> "3";
+            case "four", "empat" -> "4";
+            case "five", "lima" -> "5";
+            case "six", "enam" -> "6";
+            case "seven", "tujuh" -> "7";
+            case "eight", "delapan" -> "8";
+            case "nine", "sembilan" -> "9";
+            case "ten", "sepuluh" -> "10";
+            default -> normalized;
+        };
+    }
+
+    private static int moveCutToNextTokenBoundary(String text, int cutIndex) {
+        int cut = Math.min(Math.max(cutIndex, 0), text.length());
+        if (cut <= 0 || cut >= text.length()) {
+            return cut;
+        }
+        int before = text.codePointBefore(cut);
+        int current = text.codePointAt(cut);
+        if (!Character.isLetterOrDigit(before) || !Character.isLetterOrDigit(current)) {
+            return cut;
+        }
+        int offset = cut;
+        while (offset < text.length()) {
+            int codePoint = text.codePointAt(offset);
+            if (!Character.isLetterOrDigit(codePoint)) {
+                break;
+            }
+            offset += Character.charCount(codePoint);
+        }
+        while (offset < text.length()) {
+            int codePoint = text.codePointAt(offset);
+            if (Character.isLetterOrDigit(codePoint)) {
+                break;
+            }
+            offset += Character.charCount(codePoint);
+        }
+        return offset;
+    }
+
+    private static int sourceOffsetAfterComparableCodePoints(String text, int count) {
+        ComparisonText comparison = comparableText(text);
+        if (count <= 0 || comparison.sourceEndOffsets().length == 0) {
+            return 0;
+        }
+        int index = Math.min(count, comparison.sourceEndOffsets().length) - 1;
+        return comparison.sourceEndOffsets()[index];
+    }
+
+    private static int longestSuffixPrefixOverlap(int[] previous, int[] current) {
+        for (int length = Math.min(previous.length, current.length); length > 0; length--) {
+            int previousStart = previous.length - length;
+            boolean matches = true;
+            for (int i = 0; i < length; i++) {
+                if (previous[previousStart + i] != current[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return length;
+            }
+        }
+        return 0;
+    }
+
+    private static String trimLeadingSeparators(String text) {
+        int offset = 0;
+        while (offset < text.length()) {
+            int codePoint = text.codePointAt(offset);
+            if (Character.isLetterOrDigit(codePoint)) {
+                break;
+            }
+            offset += Character.charCount(codePoint);
+        }
+        return text.substring(offset).trim();
+    }
+
+    record FinalRemainderResult(String text, int cutIndex, int overlapChars, boolean aligned) {
+    }
+
+    private record BoundaryAlignment(int cutIndex, boolean aligned) {
+    }
+
+    private record OverlapTrimResult(String text, int overlapChars) {
+    }
+
+    private record ComparisonText(int[] codePoints, int[] sourceEndOffsets) {
     }
 
     public interface RecognizerCallback {

@@ -1653,3 +1653,54 @@ mvn clean test
 - Local focused tests passed: 7 tests, 0 failures, 0 errors.
 - Local full backend verification passed: 373 tests, 0 failures, 0 errors.
 - Server validation remains pending until this stabilization change is rebuilt on the server and the report files are re-uploaded or reprocessed.
+
+## Weekly Validation Record: 2026-W26 ASR Final Remainder Alignment
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W26 ASR Final Remainder Alignment`.
+
+### Validation Goals
+
+- Prove Azure final text is no longer sliced by stale interim character offsets after forced segmentation.
+- Prove final remainders align by complete emitted text, tolerate punctuation/case/spacing changes, and handle simple number normalization.
+- Prove downstream ASR overlap trimming still works as a second safety net.
+
+### Log / API / Data Validation First
+
+```bash
+# After deploying and running a meeting with long Indonesian speech:
+docker logs --since 30m si-backend 2>&1 | grep -E \
+ "force-segment by=sentence-wtpsplit|asr-segment final=remainder|final remainder aligned|adjacent overlap removed"
+
+# Bad patterns should not appear at final-remainder starts:
+docker logs --since 30m si-backend 2>&1 | grep "asr-segment final=remainder" | grep -E \
+ "text='(i 1|epan |nal\\.|tal\\.|benar benar|8 tahun\\.|sebut\\.)"
+```
+
+Pass criteria:
+
+- Forced segmentation continues to appear for long Indonesian segments.
+- Final remainders after forced segments do not start with leaked tails from the previous segment.
+- `final remainder aligned` appears when Azure final text drift required emitted-text or suffix realignment.
+- `adjacent overlap removed` should be rare; it remains acceptable as downstream safety but should not be the primary cleanup path.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn "-Dtest=AzureAsrFinalRemainderTest,TranscriptOverlapTrimmerTest,AsrServiceOverlapTest" test
+mvn test
+```
+
+### Manual Validation
+
+- Reproduce a long Indonesian paragraph containing `menjadi 1 sistem` or `menjadi satu sistem`.
+- Confirm transcript export contains only `sistem industri...` as the next segment, not `i 1 sistem...`.
+- Confirm no audio or transcript segment is dropped; the fix only changes final remainder alignment.
+
+### Result Record
+
+- Local focused ASR seam tests passed: 13 tests, 0 failures, 0 errors.
+- Local full backend verification passed: 388 tests, 0 failures, 0 errors.
+- Server validation remains pending until this change is rebuilt and exercised in a live meeting.
