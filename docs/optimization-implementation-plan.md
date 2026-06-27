@@ -1639,3 +1639,60 @@ GET    /api/admin/audit-logs
 
 - This fix handles deterministic text drift at forced/final seams. It does not correct underlying ASR word substitutions such as domain words being misheard.
 - More complex number expressions beyond simple `zero` through `ten` / `nol` through `sepuluh` may still need future normalization.
+
+## Weekly Optimization Record: 2026-W26 Realtime TTS Queue and Indonesian Segmentation Stability
+
+### Goal
+
+- Keep the user's hard requirement: audio that has already been synthesized and sent to the frontend must play in order and must not be skipped by backend catch-up logic.
+- Allow only unsynthesized TTS items to be skipped after they have waited too long behind earlier audio, reducing live backlog without cutting already-started playback.
+- Reduce Indonesian ASR fragmenting by raising the minimum sentence boundary length and preventing fallback split paths from emitting very short Indonesian pieces.
+- Reduce Cartesia odd-audio risk after long-run WebSocket failures by invalidating failed TTS connections instead of returning them to the pool.
+- Tighten id->zh LLM correction so meta commentary is discarded and falls back before it can enter transcript/TTS.
+
+### Evidence From 2026-06-27 Long Test Logs
+
+- `dbg-stream-full.log` covered about 40 minutes and produced 366 transcript rows for session `0b9a50b7-7ad0-4092-9d62-96b75c505879`.
+- Forced ASR segmentation still had 73 Indonesian segments shorter than 48 characters, and several `force-backstop` segments reached 419-576 characters.
+- Previous final remainder tail leakage such as `i 1 sistem` was gone, but 10 final remainders still started with punctuation such as `. Dunia...` or `, dana...`.
+- Client latency was dominated by playback backlog: `playbackRateMilli=1000`, average backlog about 4.0s, p95 about 16.6s, max about 22.9s.
+- Cartesia logged three WebSocket ping timeout failures during the meeting; no TTS playback timeout occurred, so failed idle connection reuse was treated as the main backend-side odd-audio risk.
+- id->zh LLM meta commentary was detected and fell back twice; the transcript export did not contain those meta strings, but the prompt/request path still needed tighter prevention.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Ordered TTS synthesis gate | Done | `RealtimeInterpretationFacade` now waits for the previous TTS reservation before starting synthesis for the next item. Already-sent audio remains ordered and uninterrupted. |
+| Unsynthesized skip gate | Done | Added `CARTESIA_TTS_UNSYNTHESIZED_SKIP_WAIT_MS` / `cartesia.tts.unsynthesized-skip-wait-ms`, default 12000ms. Only items that have not started synthesis can be skipped. |
+| Indonesian minimum segment length | Done | Raised default `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS` from 24 to 48 and applied the minimum to wtpsplit, comma, boundary, backstop, and optional LLM boundary paths. |
+| Backstop segment cap | Done | `force-backstop` now uses the configured word/character limit before falling back to the near-whole working buffer, reducing 400-500 character bursts. |
+| Final remainder punctuation cleanup | Done | Final remainders are trimmed through the existing separator cleanup so the next segment does not start with isolated punctuation. |
+| Cartesia failed-connection invalidation | Done | TTS WebSocket failures now invalidate the pooled client and clear the failed socket, instead of returning a failed client for reuse. |
+| id->zh no-reasoning and meta guard | Done | Realtime id->zh correction uses no-reasoning chat options on OpenRouter and catches the meta phrases observed in the long test. |
+| Deployment env documentation | Done | `deploy/linux/env/backend.env.example` documents the ASR and TTS queue tuning variables. |
+
+### Affected Modules
+
+- Backend realtime pipeline: `RealtimeInterpretationFacade`.
+- Backend ASR integration: `AzureAsrIntegration`, `AzureSpeechProperties`, `application.yml`.
+- Backend TTS integration/config: `CartesiaStreamingIntegration`, `CartesiaProperties`, `application.yml`.
+- Backend LLM integration: `LlmIntegration`.
+- Deployment template: `deploy/linux/env/backend.env.example`.
+- Tests: `RealtimeInterpretationOrderTest`, `AzureAsrFinalRemainderTest`, `LlmIdZhSanitizeTest`.
+
+### Acceptance Criteria
+
+- Logs show `TTS unsynthesized skipped` only for items that waited longer than the configured threshold before synthesis started.
+- Logs show `TTS first chunk ... orderedWaitMs=...`, proving synthesis begins after the ordered wait rather than before it.
+- No `sent tts_audio` or share-audio stream is intentionally cut by the backend once chunks have started.
+- Indonesian `force-segment` rows shorter than 48 visible characters should disappear except for Azure finalization paths that are not forced interim emits.
+- Final remainders should not start with `.`, `,`, `?`, or similar standalone punctuation.
+- Cartesia WebSocket failures should be followed by failed-client invalidation logs and should not reuse the failed client.
+- id->zh meta strings such as `这句话在输入中...`, `根据上文...`, or `咨询词汇上下文后...` should not appear in exported transcripts.
+
+### Residual Issues
+
+- Skipping unsynthesized TTS reduces backlog but may omit late, not-yet-audible translations when the meeting is already too far behind. This is an explicit trade-off requested for long-waiting unsynthesized audio.
+- The frontend playback speed was still `playbackRateMilli=1000` in the long test. If 1.35x playback remains required, the frontend/runtime setting must be verified separately.
+- Cartesia source audio quality or provider-side artifacts can still produce odd sound even after failed connection invalidation; future tests should compare default voice vs cloned voice and inspect provider context errors.

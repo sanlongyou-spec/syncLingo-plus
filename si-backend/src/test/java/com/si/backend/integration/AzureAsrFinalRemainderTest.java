@@ -93,6 +93,17 @@ class AzureAsrFinalRemainderTest {
     }
 
     @Test
+    void stripsLeadingPunctuationFromFinalRemainder() {
+        AzureAsrIntegration.FinalRemainderResult result = AzureAsrIntegration.finalRemainderAfterForcedSegments(
+                "Satelit adalah pintu masuk. Dunia telah memasuki era pertanian digital.",
+                "Satelit adalah pintu masuk".length(),
+                "pintu masuk",
+                "Satelit adalah pintu masuk");
+
+        assertEquals("Dunia telah memasuki era pertanian digital.", result.text());
+    }
+
+    @Test
     void returnsFullTextWhenNothingWasForced() {
         AzureAsrIntegration.FinalRemainderResult result = AzureAsrIntegration.finalRemainderAfterForcedSegments(
                 "Karena.",

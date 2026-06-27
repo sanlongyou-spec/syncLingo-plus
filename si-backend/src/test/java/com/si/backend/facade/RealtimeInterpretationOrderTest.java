@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -123,6 +124,82 @@ class RealtimeInterpretationOrderTest {
 
         assertTrue(played.await(5, TimeUnit.SECONDS));
         assertEquals(List.of(1L, 2L), playedSequences);
+    }
+
+    @Test
+    void unsynthesizedLaterSentenceCanBeSkippedAfterLongOrderedWait() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        cartesiaProperties.getTts().setUnsynthesizedSkipWaitMs(50L);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService
+        );
+
+        String sessionId = "skip-wait-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0) + "-translated");
+
+        CountDownLatch firstSynthStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstSynth = new CountDownLatch(1);
+        AtomicInteger synthCalls = new AtomicInteger();
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(1);
+            synthCalls.incrementAndGet();
+            if ("first-translated".equals(text)) {
+                firstSynthStarted.countDown();
+                assertTrue(releaseFirstSynth.await(5, TimeUnit.SECONDS));
+                Runnable onComplete = invocation.getArgument(6);
+                onComplete.run();
+                return null;
+            }
+            throw new AssertionError("Second sentence should be skipped before TTS synthesis");
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        facade.translateAndStreamTts(
+                "first", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+        );
+        assertTrue(firstSynthStarted.await(5, TimeUnit.SECONDS));
+
+        facade.translateAndStreamTts(
+                "second", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+        );
+
+        Thread.sleep(200);
+        assertEquals(1, synthCalls.get());
+
+        releaseFirstSynth.countDown();
+        Thread.sleep(200);
+        assertEquals(1, synthCalls.get());
     }
 
     @SuppressWarnings("unchecked")

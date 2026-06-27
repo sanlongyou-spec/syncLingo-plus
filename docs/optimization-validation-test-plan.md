@@ -1704,3 +1704,79 @@ mvn test
 - Local focused ASR seam tests passed: 13 tests, 0 failures, 0 errors.
 - Local full backend verification passed: 388 tests, 0 failures, 0 errors.
 - Server validation remains pending until this change is rebuilt and exercised in a live meeting.
+
+## Weekly Validation Record: 2026-W26 Realtime TTS Queue and Indonesian Segmentation Stability
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W26 Realtime TTS Queue and Indonesian Segmentation Stability`.
+
+### Validation Goals
+
+- Prove synthesized/sent TTS audio is still delivered in sequence and is not cut by backend catch-up logic.
+- Prove only unsynthesized TTS items can be skipped after a long ordered wait.
+- Prove Indonesian forced segmentation no longer emits short fragments and no longer produces very large backstop bursts.
+- Prove final remainders do not start with leaked punctuation.
+- Prove id->zh LLM meta commentary is rejected before transcript/TTS.
+- Prove failed Cartesia WebSocket clients are invalidated instead of reused.
+
+### Log / API / Database Validation First
+
+```bash
+# After deployment, start from a fresh container log if possible.
+docker logs --timestamps si-backend > /var/www/si/dbg-stream-full.log 2>&1
+
+docker logs --timestamps si-backend 2>&1 | grep -E \
+"ASR silence config|loaded hotwords|asr-stream|wtpsplit query|force-segment by=|force-segment deferred by min length|final remainder aligned|asr-segment final|adjacent overlap removed|idZhCorrectTranslate io|meta-commentary detected|fallback to google|glossaryLines|translate end|latency-breakdown|TTS queued|TTS first chunk|orderedWaitMs|TTS unsynthesized skipped|TTS order released|tts-audio-duration|CartesiaWsClient|invalidated failed client|e2e client latency" \
+> /var/www/si/dbg-stream.log
+
+DU=$(grep -m1 '^DB_USERNAME=' /opt/syncLingo/backend.env | cut -d= -f2- | tr -d '\r')
+DP=$(grep -m1 '^DB_PASSWORD=' /opt/syncLingo/backend.env | cut -d= -f2- | tr -d '\r')
+DN=$(grep -m1 '^DB_NAME=' /opt/syncLingo/backend.env | cut -d= -f2- | tr -d '\r')
+SESSION_ID=$(docker exec -i si-mysql mysql --default-character-set=utf8mb4 -N -B -u"$DU" -p"$DP" "$DN" -e \
+"SELECT session_id FROM interpretation_record GROUP BY session_id ORDER BY MAX(create_time) DESC LIMIT 1;")
+
+docker exec -i si-mysql mysql --default-character-set=utf8mb4 -u"$DU" -p"$DP" "$DN" -e \
+"SELECT seq, source_lang, target_lang, source_text, target_text, create_time
+ FROM interpretation_record
+ WHERE session_id='$SESSION_ID'
+ ORDER BY seq;" > /var/www/si/transcript.tsv
+
+docker exec -i si-mysql mysql --default-character-set=utf8mb4 -u"$DU" -p"$DP" "$DN" -e \
+"SELECT id, speaker_id, source_lang, target_lang, source_text, translated_text, create_time
+ FROM interpretation_result
+ WHERE session_id='$SESSION_ID'
+ ORDER BY id;" > /var/www/si/transcript-result.tsv
+
+wc -l /var/www/si/dbg-stream-full.log /var/www/si/dbg-stream.log /var/www/si/transcript.tsv /var/www/si/transcript-result.tsv
+```
+
+Pass criteria:
+
+- `TTS first chunk` includes `orderedWaitMs`, and TTS sequences are released in order for non-skipped items.
+- `TTS unsynthesized skipped` appears only when `waitMs` exceeds `CARTESIA_TTS_UNSYNTHESIZED_SKIP_WAIT_MS`; skipped items have no earlier `TTS first chunk`.
+- Forced Indonesian segments shorter than `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS` are absent or logged as deferred.
+- No `asr-segment final=remainder` text starts with standalone `.`, `,`, `?`, `;`, or `:`.
+- `invalidated failed client` appears after Cartesia WebSocket failures, if any failures occur.
+- Exported `transcript.tsv` and `transcript-result.tsv` contain no LLM meta phrases such as `无法确定`, `根据上文`, `可能的原句`, or `咨询词汇上下文后`.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn "-Dtest=RealtimeInterpretationOrderTest,AzureAsrFinalRemainderTest,LlmIdZhSanitizeTest,LlmRequestOptionsTest" test
+mvn test
+```
+
+### Manual Validation
+
+- Run at least one 60-minute meeting with Chinese, Indonesian, and English enabled.
+- Keep the same report files/materials loaded unless the test is specifically about material extraction; the realtime queue and segmentation changes do not require re-uploading files.
+- Monitor the share-audio page on the target language that previously accumulated backlog, and note whether audio remains ordered when backlog grows.
+- If odd sound appears, repeat a shorter comparison using default voice and cloned voice separately.
+
+### Result Record
+
+- Local focused tests passed: 14 tests, 0 failures, 0 errors.
+- Local full backend verification passed: 390 tests, 0 failures, 0 errors.
+- Server validation remains pending until this change is deployed and a new long meeting log package is exported.

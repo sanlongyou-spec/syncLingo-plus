@@ -90,7 +90,8 @@ public class CartesiaStreamingIntegration {
                         onComplete.run();
                     },
                     err -> {
-                        returnClient(pool, clientHolder[0], voiceId);
+                        invalidateClient(pool, clientHolder[0], voiceId, err);
+                        clientHolder[0] = null;
                         onError.accept(err);
                     }
             );
@@ -117,6 +118,18 @@ public class CartesiaStreamingIntegration {
                     voiceId, pool.getNumActive(), pool.getNumIdle());
         } catch (Exception returnEx) {
             log.warn("[CartesiaStreamingIntegration] returnObject error, voiceId={}", voiceId, returnEx);
+        }
+    }
+
+    private void invalidateClient(GenericObjectPool<CartesiaWsClient> pool, CartesiaWsClient client, String voiceId, String reason) {
+        if (client == null) return;
+        try {
+            pool.invalidateObject(client);
+            log.warn("[CartesiaStreamingIntegration] invalidated failed client, voiceId={}, reason={}, active={}, idle={}",
+                    voiceId, reason, pool.getNumActive(), pool.getNumIdle());
+        } catch (Exception invalidEx) {
+            log.warn("[CartesiaStreamingIntegration] invalidateObject error, voiceId={}, reason={}",
+                    voiceId, reason, invalidEx);
         }
     }
 
@@ -415,7 +428,12 @@ public class CartesiaStreamingIntegration {
                 @Override
                 public void onFailure(okhttp3.WebSocket ws, Throwable t, okhttp3.Response response) {
                     if (myEpoch != connEpoch) return;   // 过期连接失败与当前合成无关，忽略
-                    open = false;
+                    synchronized (CartesiaWsClient.this) {
+                        open = false;
+                        if (webSocket == ws) {
+                            webSocket = null;
+                        }
+                    }
                     String errMsg = t != null ? t.getMessage() : Constants.TTS_ERROR_UNKNOWN;
                     log.error("[CartesiaWsClient] WebSocket failure, error={}", errMsg, t);
                     completeOnce(false, errMsg);
@@ -425,7 +443,12 @@ public class CartesiaStreamingIntegration {
                 public void onClosed(okhttp3.WebSocket ws, int code, String reason) {
                     // 关键修复：旧连接为复用而被主动关闭时 epoch 已过期，绝不能据此把新句子判失败。
                     if (myEpoch != connEpoch) return;
-                    open = false;
+                    synchronized (CartesiaWsClient.this) {
+                        open = false;
+                        if (webSocket == ws) {
+                            webSocket = null;
+                        }
+                    }
                     // 若当前连接在生成途中被关（如服务端超时），兜底回调，避免借出的连接永不归还。
                     completeOnce(false, "WebSocket closed: " + reason);
                 }

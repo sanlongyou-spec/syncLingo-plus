@@ -363,7 +363,8 @@ public class LlmIntegration {
                 systemPrompt,
                 userMessage.toString(),
                 openAiProperties.getIdZhLlmTranslateMaxOutputTokens(),
-                Duration.ofMillis(openAiProperties.getIdZhLlmTranslateTimeoutMs())
+                Duration.ofMillis(openAiProperties.getIdZhLlmTranslateTimeoutMs()),
+                realtimeChatOptions()
         );
         String cleaned = sanitizeIdZhTranslation(result);
         if (looksLikeMetaCommentary(cleaned)) {
@@ -427,7 +428,9 @@ public class LlmIntegration {
     /** 元话语标记:LLM 偶尔输出"解释/拒绝/说明"而非译文,命中即判无效(回退普通翻译)。 */
     private static final String[] ID_ZH_META_MARKERS = {
             "无法判断", "无法确定", "疑似识别错误", "按您的要求", "建议补充", "重新听取",
-            "我注意到", "逻辑不完整", "原文结构", "说明：", "说明:", "【说明】", "**说明**"
+            "我注意到", "逻辑不完整", "原文结构", "说明：", "说明:", "【说明】", "**说明**",
+            "这句话在输入中", "根据上文", "根据上下文", "根据本场会议背景", "可能的原句",
+            "可能是指", "无法对应", "咨询词汇", "该词无法确定含义", "翻译过程", "音频"
     };
 
     /** 去掉译文里残留的(疑似…)括号注释与首尾空白。 */
@@ -873,6 +876,10 @@ public class LlmIntegration {
         return openAiProperties.isExtractionDisableReasoning() && isOpenRouterBaseUrl()
                 ? NO_REASONING_CHAT_OPTIONS
                 : DEFAULT_CHAT_OPTIONS;
+    }
+
+    private ChatRequestOptions realtimeChatOptions() {
+        return isOpenRouterBaseUrl() ? NO_REASONING_CHAT_OPTIONS : DEFAULT_CHAT_OPTIONS;
     }
 
     private boolean isOpenRouterBaseUrl() {

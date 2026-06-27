@@ -87,7 +87,7 @@ azure:
       # sentence-punct 触发前中文段的最小字符数；短句不切，等下一个句末标点积累到目标长度再发。0=不限制。
       min-sentence-emit-zh-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ZH_CHARS:45}
       # 印尼语 wtpsplit 句边界最小字符数：短于此不切,避免 "satu"/"nine" 这类碎片。0=不限制
-      min-sentence-emit-id-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS:24}
+      min-sentence-emit-id-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS:48}
       # 长句强切：单调下标 + 稳定前缀 + 安全边界(标点>逗号>词/字) + 留尾余量，不吞句首字、不失控刷段。
       # 默认开启、只切 run-on 长句(中文>60字 / 拉丁>25词);正常短句不切。置 0 可关。
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:60}
@@ -229,6 +229,7 @@ cartesia:
     # Cartesia max_buffer_delay_ms：合成前最多缓冲多少毫秒文本攒上下文。0=收到即合成(短句易怪音)。
     # 官方建议给小正值减少 choppy/怪音。默认 150;怪音仍多可调大(200~300),要更低延迟可调小(0~80)。
     max-buffer-delay-ms: ${CARTESIA_MAX_BUFFER_DELAY_MS:150}
+    unsynthesized-skip-wait-ms: ${CARTESIA_TTS_UNSYNTHESIZED_SKIP_WAIT_MS:12000}
   pool:
     max-total-per-voice: 4    # 全局共用池：TTS 并发上限（贴合 Cartesia 账户 5 并发，留 1 余量）
     min-idle-per-voice: 0     # 不常驻空闲连接（连接合成完即关，避免空占并发额度）

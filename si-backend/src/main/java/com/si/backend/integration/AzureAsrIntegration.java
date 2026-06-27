@@ -492,11 +492,10 @@ public class AzureAsrIntegration {
                 // 直到静音终稿才一次性吐出)。一旦超长(词数/字数)或超时(forceSegmentMs),不再等待稳定前缀:
                 // 用全文 working、仅留尾部 FORCE_TAIL_MARGIN_CHARS 余量,按词/字边界强切一刀。
                 if (shouldForce(working, lang)) {
-                    int hardSafe = working.length() - FORCE_TAIL_MARGIN_CHARS;
-                    int b = hardSafe > 0 ? wordOrCharBoundaryAt(working, hardSafe, lang) : NO_SEGMENT;
+                    int b = hardBackstopBoundary(working, lang);
                     if (b > 0) {
                         String segment = working.substring(0, b).trim();
-                        if (segment.length() >= 8 && !segment.isBlank()) {
+                        if (!shouldDeferShortSegment("force-backstop", segment, lang) && segment.length() >= 8 && !segment.isBlank()) {
                             emittedLen = start + b;
                             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
                             rememberEmittedSegment(segment);
@@ -620,6 +619,12 @@ public class AzureAsrIntegration {
                 log.debug("[AsrSession] force-boundary segment too short ({}), deferred: '{}'", segment.length(), segment);
                 return;
             }
+            if (shouldDeferShortSegment(reason, segment, lang)) {
+                log.debug("[AsrSession] force-segment deferred by min length, reason={}, len={}, minId={}, lang={}, text='{}'",
+                        reason, segment.length(), minSentenceEmitIdChars, lang,
+                        segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
+                return;
+            }
             emittedLen = start + end;   // 单调推进(原始下标), 不会回头重切
             emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
             rememberEmittedSegment(segment);
@@ -678,6 +683,9 @@ public class AzureAsrIntegration {
                 if (segment.isBlank()) {
                     return;
                 }
+                if (shouldDeferShortSegment("llm-boundary", segment, lang)) {
+                    return;
+                }
                 emittedLen = start + end;
                 emittedSuffix = snapshot.substring(Math.max(0, end - EMIT_SUFFIX_LEN), end);
                 rememberEmittedSegment(segment);
@@ -730,6 +738,37 @@ public class AzureAsrIntegration {
                 i++;
             }
             return i;
+        }
+
+        private boolean shouldDeferShortSegment(String reason, String segment, String lang) {
+            if (segment == null || minSentenceEmitIdChars <= 0 || !startsWithIgnoreCase(lang, "id")) {
+                return false;
+            }
+            if (visibleCharCount(segment) >= minSentenceEmitIdChars) {
+                return false;
+            }
+            return switch (reason) {
+                case "sentence-wtpsplit", "force-boundary", "force-comma", "force-comma-punct",
+                     "force-backstop", "llm-boundary" -> true;
+                default -> false;
+            };
+        }
+
+        private int hardBackstopBoundary(String working, String lang) {
+            int hardSafe = working.length() - FORCE_TAIL_MARGIN_CHARS;
+            if (hardSafe <= 0) {
+                return NO_SEGMENT;
+            }
+            int limit = hardSafe;
+            int lengthLimit = findLengthLimitSegmentEnd(working, 0, lang);
+            if (lengthLimit > 0) {
+                limit = Math.min(limit, lengthLimit);
+            }
+            if (startsWithIgnoreCase(lang, "id") && minSentenceEmitIdChars > 0
+                    && limit < minSentenceEmitIdChars && hardSafe >= minSentenceEmitIdChars) {
+                limit = minSentenceEmitIdChars;
+            }
+            return wordOrCharBoundaryAt(working, limit, lang);
         }
 
         /** 是否触发长句强切: 中文超字数 / 拉丁超词数 / 任意超总字符, 或 超时。 */
@@ -1132,7 +1171,7 @@ public class AzureAsrIntegration {
         String remaining = full.substring(Math.min(cutIndex, full.length())).trim();
         String overlapReference = emittedText != null && !emittedText.isBlank() ? emittedText : emittedSuffix;
         OverlapTrimResult trimmed = trimRepeatedLeadingOverlap(overlapReference, remaining);
-        return new FinalRemainderResult(trimmed.text(), cutIndex, trimmed.overlapChars(), alignment.aligned());
+        return new FinalRemainderResult(trimLeadingSeparators(trimmed.text()), cutIndex, trimmed.overlapChars(), alignment.aligned());
     }
 
     private static BoundaryAlignment alignFinalBoundaryByEmittedText(String full, int fallbackCut, String emittedText) {
