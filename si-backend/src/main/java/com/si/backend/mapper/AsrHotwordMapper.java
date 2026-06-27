@@ -32,8 +32,9 @@ public interface AsrHotwordMapper {
             """)
     void createTableIfNotExists();
 
+    // INSERT IGNORE:撞唯一键 uk_user_phrase(user_id, phrase) 自动跳过,并发/重传都不再产生重复。
     @Insert("""
-            INSERT INTO asr_hotword (
+            INSERT IGNORE INTO asr_hotword (
                 user_id, phrase, language, category, weight, source_type, source_terminology_id,
                 enabled, expires_at, create_time, update_time
             )
@@ -44,6 +45,22 @@ public interface AsrHotwordMapper {
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(AsrHotword hotword);
+
+    /** 去重:同一 user_id+phrase 只保留最小 id 的一条(加唯一索引前先清历史重复)。 */
+    @Delete("""
+            DELETE h1 FROM asr_hotword h1
+            INNER JOIN asr_hotword h2
+              ON h1.user_id = h2.user_id AND h1.phrase = h2.phrase AND h1.id > h2.id
+            """)
+    int dedupeDuplicatePhrases();
+
+    /** 加 (user_id, phrase) 唯一索引(phrase 取前 191 字符前缀);已存在会抛 "Duplicate key name",调用方忽略。 */
+    @Update("ALTER TABLE asr_hotword ADD UNIQUE KEY uk_user_phrase (user_id, phrase(191))")
+    void addUniqueUserPhraseIndex();
+
+    /** 按 phrase 判存在(忽略语言),用于抽取入库前的去重预筛。 */
+    @Select("SELECT COUNT(*) FROM asr_hotword WHERE user_id = #{userId} AND phrase = #{phrase}")
+    int countByUserIdAndPhrase(@Param("userId") Long userId, @Param("phrase") String phrase);
 
     @Select("""
             SELECT * FROM asr_hotword

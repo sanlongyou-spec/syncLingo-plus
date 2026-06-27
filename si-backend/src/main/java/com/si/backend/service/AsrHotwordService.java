@@ -36,6 +36,24 @@ public class AsrHotwordService {
                 throw e;
             }
         }
+        // 去重 + (user_id, phrase) 唯一索引:并发/重传不再产生重复。必须先清历史重复再建索引。
+        try {
+            int removed = hotwordMapper.dedupeDuplicatePhrases();
+            if (removed > 0) {
+                log.info("[AsrHotwordService] deduped duplicate phrases, removed={}", removed);
+            }
+        } catch (DataAccessException e) {
+            log.warn("[AsrHotwordService] dedupe phrases failed (continue): {}", e.getMessage());
+        }
+        try {
+            hotwordMapper.addUniqueUserPhraseIndex();
+            log.info("[AsrHotwordService] unique index uk_user_phrase added");
+        } catch (DataAccessException e) {
+            // 索引已存在会抛 "Duplicate key name",属正常,忽略
+            if (e.getMessage() == null || !e.getMessage().contains("Duplicate key name")) {
+                log.warn("[AsrHotwordService] add unique index failed (continue): {}", e.getMessage());
+            }
+        }
         log.info("[AsrHotwordService] initTable end");
     }
 

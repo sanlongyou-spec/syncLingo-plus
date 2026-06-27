@@ -103,8 +103,9 @@ public class HotwordExtractionService {
         List<AsrHotword> saved = uniqueByPhrase.values().stream()
                 // 热词质量过滤:剔除整句/表头/单位符号,只留短专名/术语(热词本就该是短词)
                 .filter(s -> isUsableHotword(s.getPhrase()))
+                // 去重预筛:按 phrase 判存在(忽略语言);最终唯一性由 (user_id, phrase) 唯一索引 + INSERT IGNORE 兜底
+                .filter(s -> hotwordMapper.countByUserIdAndPhrase(userId, s.getPhrase().trim()) == 0)
                 // 文件抽取的热词入库时语言置空(=全局),让三种语言识别路径都生效
-                .filter(s -> hotwordMapper.countByUserIdPhraseAndLanguage(userId, s.getPhrase().trim(), "") == 0)
                 .map(s -> buildGlobalHotword(s, "AUTO_EXTRACTED"))
                 .map(hw -> hotwordService.create(userId, hw))
                 .toList();
