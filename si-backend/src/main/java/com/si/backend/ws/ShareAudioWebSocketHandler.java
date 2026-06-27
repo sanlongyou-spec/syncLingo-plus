@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 分享页音频分发 WebSocket（二进制 Opus 包）。
@@ -265,7 +266,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     }
 
     /** 单个订阅连接：有界队列（500帧≈10s音频）+ 独立发送线程，慢客户端队列满时断开连接。 */
-    private static final int MAX_QUEUE_PACKETS = 500;
+    private static final int MAX_QUEUE_PACKETS = 1500;
 
     private static final class AudioSubscriber implements Runnable {
         private final WebSocketSession session;
@@ -273,6 +274,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
         private final String lang;
         private final BlockingQueue<byte[]> queue = new ArrayBlockingQueue<>(MAX_QUEUE_PACKETS);
         private final AtomicBoolean running = new AtomicBoolean(true);
+        private final AtomicLong droppedPackets = new AtomicLong(0);
 
         private AudioSubscriber(WebSocketSession session, String sessionId, String lang) {
             this.session = session;
@@ -283,9 +285,20 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
 
         private void offer(byte[] packet) {
             if (!running.get()) return;
-            if (!queue.offer(packet)) {
-                // Queue full — slow client is too far behind; disconnect it to reclaim resources
-                stop();
+            if (queue.offer(packet)) {
+                return;
+            }
+            // 队列满：丢最旧的包给新包腾位置，保持音频连续 —— 宁可丢一点旧音频，也不要清空+断开听众。
+            // 旧逻辑 stop() 会让该听众从此静默，表现为 TTS“读一半”。直播场景丢旧留新更合理(听当下)。
+            // 极端并发下若仍放不进，则丢弃当前新包，绝不断开。
+            for (int i = 0; i < MAX_QUEUE_PACKETS && !queue.offer(packet); i++) {
+                if (queue.poll() != null) {
+                    long total = droppedPackets.incrementAndGet();
+                    if (total == 1 || total % 200 == 0) {
+                        log.warn("[ShareAudioWebSocketHandler] slow client, dropping oldest audio packets (kept connected), sessionId={}, lang={}, totalDropped={}",
+                                sessionId, lang, total);
+                    }
+                }
             }
         }
 
