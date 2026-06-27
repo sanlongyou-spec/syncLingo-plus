@@ -88,6 +88,9 @@ azure:
       min-sentence-emit-zh-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ZH_CHARS:45}
       # 印尼语 wtpsplit 句边界最小字符数：短于此不切,避免 "satu"/"nine" 这类碎片。0=不限制
       min-sentence-emit-id-chars: ${AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS:48}
+      # 印尼语送 SaT 分句的最小累积字符数：短于此不调 SaT，先累积再切(SaT 上下文不足会切出
+      # starship/ke depan/8 tahun 这类碎片)。嫌碎调大(48)，嫌慢调小(32)，0=回退旧行为。
+      id-seg-min-input-chars: ${AZURE_ASR_ID_SEG_MIN_INPUT_CHARS:40}
       # 印尼语完整性 Guard(id-ID)：半词尾/连接词尾/可疑词头拦截 + 固定短语保护 + 编号/金额消歧 +
       # 弱边界强切降级为 partial(去掉盲切)。准确率优先，默认开；置 false 回退旧强切行为。
       id-segment-guard-enabled: ${AZURE_ASR_ID_SEGMENT_GUARD_ENABLED:true}

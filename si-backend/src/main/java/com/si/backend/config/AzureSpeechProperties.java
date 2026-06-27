@@ -52,6 +52,13 @@ public class AzureSpeechProperties {
          */
         private int minSentenceEmitIdChars = 48;
         /**
+         * 印尼语调用 wtpsplit/SaT 分句前，working 需累积的最小字符数。
+         * 短于此值不送 SaT（SaT 是句子分割模型，上下文不足会把短缓冲过度切碎，
+         * 如 "starship"/"ke depan"/"8 tahun"）。短文先累积，等够长再交给 SaT，边界更准。
+         * 0 = 不限制（回退到仅受 PUNCT_MIN_CHARS=10 约束的旧行为）。
+         */
+        private int idSegMinInputChars = 40;
+        /**
          * 印尼语完整性 Guard 开关（id-ID 专用）：
          * 半词尾/连接词尾/可疑词头拦截、固定短语保护、编号/金额消歧，
          * 弱边界(逗号/词边界/超长/超时 backstop)强切降级为 partial（不进翻译/入库/TTS）。

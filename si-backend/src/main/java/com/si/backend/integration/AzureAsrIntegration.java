@@ -90,7 +90,7 @@ public class AzureAsrIntegration {
         if (asrProperties.getAsr().isDiarizeIntermediateResults()) {
             config.setProperty(PropertyId.SpeechServiceResponse_DiarizeIntermediateResults, "true");
         }
-        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, forceSegmentMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}",
+        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, forceSegmentMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}, minSentenceEmitIdChars={}, idSegMinInputChars={}",
                 asrProperties.getAsr().getEndSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationStrategy(),
@@ -99,7 +99,9 @@ public class AzureAsrIntegration {
                 asrProperties.getAsr().isSentenceSegmentationEnabled(),
                 asrProperties.getAsr().getMaxSegmentZhChars(),
                 asrProperties.getAsr().getMaxSegmentWords(),
-                asrProperties.getAsr().getMaxSegmentChars());
+                asrProperties.getAsr().getMaxSegmentChars(),
+                asrProperties.getAsr().getMinSentenceEmitIdChars(),
+                asrProperties.getAsr().getIdSegMinInputChars());
 
         AudioStreamFormat audioFormat = AudioStreamFormat.getWaveFormatPCM(
                 (short) asrProperties.getAsr().getSampleRate(),
@@ -213,6 +215,8 @@ public class AzureAsrIntegration {
         private final int minSentenceEmitZhChars;
         /** 印尼语 wtpsplit 句边界的最小字符数；短于此值不切，避免碎片；0 = 不限制 */
         private final int minSentenceEmitIdChars;
+        /** 印尼语送 SaT 分句前 working 需累积的最小字符数；短于此不调 SaT，先累积再切（避免上下文不足切碎）。 */
+        private final int idSegMinInputChars;
         /** 标点还原服务（null = 未启用），用于在 Transcribing 中间结果里推断句末标点位置 */
         private final PunctuationServiceIntegration punctuationSvc;
         /** 句边界检测服务（null = 未启用），用于印尼语等无标点还原模型的语言 */
@@ -271,6 +275,7 @@ public class AzureAsrIntegration {
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
             this.minSentenceEmitIdChars = asrConfig.getMinSentenceEmitIdChars();
+            this.idSegMinInputChars = asrConfig.getIdSegMinInputChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -296,6 +301,7 @@ public class AzureAsrIntegration {
             this.forceSegmentMs = asrConfig.getForceSegmentMs();
             this.minSentenceEmitZhChars = asrConfig.getMinSentenceEmitZhChars();
             this.minSentenceEmitIdChars = asrConfig.getMinSentenceEmitIdChars();
+            this.idSegMinInputChars = asrConfig.getIdSegMinInputChars();
             this.hotwords = hotwords;
             this.punctuationSvc = punctuationService;
             this.segmentationSvc = segmentationService;
@@ -570,7 +576,7 @@ public class AzureAsrIntegration {
             // ── 句边界检测（印尼语：wtpsplit SaT，服务可用时）──────────────────────
             int wtpBoundary = NO_SEGMENT;
             if (segmentationSvc != null && segmentationSvc.isEnabled()
-                    && working.length() >= PUNCT_MIN_CHARS
+                    && working.length() >= Math.max(PUNCT_MIN_CHARS, idSegMinInputChars)
                     && startsWithIgnoreCase(lang, "id")) {
                 int b = segmentationSvc.findBoundary(working, lang, safe);
                 if (b > 0) wtpBoundary = b;
