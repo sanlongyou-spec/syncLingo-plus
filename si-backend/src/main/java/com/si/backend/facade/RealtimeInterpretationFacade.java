@@ -74,10 +74,12 @@ public class RealtimeInterpretationFacade {
     private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, null, -1L, -1, -1L);
     private final ConcurrentHashMap<String, String> sessionLastSourceLang = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> sessionTargetLangMap = new ConcurrentHashMap<>();
-    /** 会话级印尼语源文本滑动上下文(供 id→zh LLM 纠错翻译消歧)；按句去重、按字符数截断 */
-    private final ConcurrentHashMap<String, java.util.ArrayDeque<String>> sessionIdSourceContext = new ConcurrentHashMap<>();
+    /** 会话级印尼语(原文→中文译文)滑动上下文：供 id→zh LLM 纠错翻译消歧并保持术语/称谓/风格一致 */
+    private final ConcurrentHashMap<String, java.util.ArrayDeque<String[]>> sessionIdSourceContext = new ConcurrentHashMap<>();
     /** 滑动上下文最大字符数 */
     private static final int MAX_ID_CONTEXT_CHARS = 600;
+    /** 双语上下文最多保留的(印尼语→中文)对数，有界防 prompt 膨胀/延迟 */
+    private static final int MAX_ID_CONTEXT_PAIRS = 3;
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsQueueSize = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionTtsSequence = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> sessionUtteranceStartMs = new ConcurrentHashMap<>();
@@ -351,10 +353,10 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] compress-decision, sessionId={}, taskId={}, lang={}, backlog={}, speakingMs={}, wantCompress={}, queueSize={}",
                 sessionId, reservation.taskId(), targetLang, backlog, speakingMs, wantCompress, qSize != null ? qSize.get() : 0);
 
+        boolean indonesianSource = sourceLang != null && sourceLang.trim().toLowerCase().startsWith("id");
         String translated;
         try {
             Long userId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L);
-            boolean indonesianSource = sourceLang != null && sourceLang.trim().toLowerCase().startsWith("id");
             // 纵深防御:id 源文本进翻译/入库/TTS 前再过一次完整性 Guard,拦住任何漏网的半词/残句。
             if (indonesianSource && indonesianIncompleteGuard.isEnabled()) {
                 IndonesianIncompleteGuard.GuardResult guardResult = indonesianIncompleteGuard.check(text);
@@ -367,9 +369,6 @@ public class RealtimeInterpretationFacade {
             }
             String recentContext = indonesianSource ? recentIdContext(sessionId, text) : null;
             translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress, recentContext);
-            if (indonesianSource) {
-                appendIdContext(sessionId, text);
-            }
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}", sessionId, e);
             completeTtsReservation(reservation, "translate_failed");
@@ -382,6 +381,10 @@ public class RealtimeInterpretationFacade {
         if (translated == null || translated.isBlank()) {
             completeTtsReservation(reservation, "blank_translation");
             return;
+        }
+        if (indonesianSource) {
+            // 记录(印尼语原文 → 中文译文)成对上下文，供后续句 id→zh 纠错翻译保持术语/称谓/风格一致
+            appendIdContext(sessionId, text, translated);
         }
         if (!isPipelineActive(sessionId, "before_save_record")) {
             completeTtsReservation(reservation, "inactive_before_save");
@@ -757,46 +760,55 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] cleanupSession done, sessionId={}", sessionId);
     }
 
-    /** 取该会话最近的印尼语原文作为上下文(排除当前句),供 id→zh LLM 纠错翻译消歧。 */
+    /** 取该会话最近的(印尼语原文→中文译文)对作为上下文(排除当前句)，供 id→zh LLM 纠错翻译消歧并保持一致。 */
     private String recentIdContext(String sessionId, String currentText) {
-        java.util.ArrayDeque<String> buffer = sessionIdSourceContext.get(sessionId);
+        java.util.ArrayDeque<String[]> buffer = sessionIdSourceContext.get(sessionId);
         if (buffer == null || buffer.isEmpty()) {
             return null;
         }
         StringBuilder context = new StringBuilder();
         synchronized (buffer) {
-            for (String item : buffer) {
-                if (item.equals(currentText)) {
+            for (String[] pair : buffer) {
+                String id = pair[0];
+                String zh = pair.length > 1 ? pair[1] : null;
+                if (id == null || id.equals(currentText)) {
                     continue;
                 }
                 if (context.length() > 0) {
-                    context.append(' ');
+                    context.append('\n');
                 }
-                context.append(item);
+                context.append("印尼语: ").append(id);
+                if (zh != null && !zh.isBlank()) {
+                    context.append("\n中文: ").append(zh);
+                }
             }
         }
         return context.length() == 0 ? null : context.toString();
     }
 
-    /** 把当前印尼语原文追加进会话上下文(连续重复只记一次),并按 {@link #MAX_ID_CONTEXT_CHARS} 截断旧句。 */
-    private void appendIdContext(String sessionId, String text) {
-        if (text == null || text.isBlank()) {
+    /** 把(印尼语原文→中文译文)对追加进会话上下文(同句只记一次)，并按对数与字符数双重上界裁剪旧句。 */
+    private void appendIdContext(String sessionId, String id, String zh) {
+        if (id == null || id.isBlank()) {
             return;
         }
-        java.util.ArrayDeque<String> buffer =
+        java.util.ArrayDeque<String[]> buffer =
                 sessionIdSourceContext.computeIfAbsent(sessionId, k -> new java.util.ArrayDeque<>());
         synchronized (buffer) {
-            if (text.equals(buffer.peekLast())) {
-                return;   // 同句被多目标语言重复翻译时,只记一次
+            String[] last = buffer.peekLast();
+            if (last != null && id.equals(last[0])) {
+                return;   // 同句被多目标语言重复翻译时，只记一次
             }
-            buffer.addLast(text);
+            buffer.addLast(new String[]{id, zh == null ? "" : zh});
+            while (buffer.size() > MAX_ID_CONTEXT_PAIRS) {
+                buffer.pollFirst();
+            }
             int total = 0;
-            for (String item : buffer) {
-                total += item.length() + 1;
+            for (String[] pair : buffer) {
+                total += pair[0].length() + (pair[1] == null ? 0 : pair[1].length()) + 2;
             }
             while (total > MAX_ID_CONTEXT_CHARS && buffer.size() > 1) {
-                String removed = buffer.pollFirst();
-                total -= removed.length() + 1;
+                String[] removed = buffer.pollFirst();
+                total -= removed[0].length() + (removed[1] == null ? 0 : removed[1].length()) + 2;
             }
         }
     }

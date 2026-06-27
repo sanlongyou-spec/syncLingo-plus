@@ -342,7 +342,7 @@ public class LlmIntegration {
                     .append(knowledgePack.trim()).append("\n\n");
         }
         if (recentContext != null && !recentContext.isBlank()) {
-            userMessage.append("[上文(仅供消歧,不要翻译)]\n").append(recentContext.trim()).append("\n\n");
+            userMessage.append("[已译上文对照(印尼语原文 + 你之前给出的中文译文；仅用于保持术语/人名/称谓/风格一致与消歧，不要翻译或复述上文)]\n").append(recentContext.trim()).append("\n\n");
         }
         if (dynamicGlossary != null && !dynamicGlossary.isBlank()) {
             // 术语段(含"必须遵守"精确命中 + "参考"模糊命中)由调用方格式化好,这里原样插入
