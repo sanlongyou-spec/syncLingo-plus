@@ -94,11 +94,19 @@ public class IndonesianIncompleteGuard {
 
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{Nd}]+");
 
+    /** 短应答白名单：这些即便短于门槛也可直接 final（真·短句，无需等并句）。 */
+    private static final Set<String> SHORT_REPLY_WHITELIST = Set.of(
+            "ya", "iya", "tidak", "baik", "setuju", "oke", "ok", "sudah", "silakan", "lanjut",
+            "mohon", "maaf", "betul", "benar", "terima kasih", "selamat pagi", "selamat siang", "selamat sore");
+
     private final boolean enabled;
+    /** sentence-wtpsplit 短段门槛（可见字符数）：短于此且非白名单 → HOLD 退回下一轮并句。 */
+    private final int minIdChars;
 
     public IndonesianIncompleteGuard(AzureSpeechProperties properties) {
         this.enabled = properties.getAsr().isIdSegmentGuardEnabled();
-        log.info("[IdGuard] init, enabled={}", enabled);
+        this.minIdChars = properties.getAsr().getMinSentenceEmitIdChars();
+        log.info("[IdGuard] init, enabled={}, minIdChars={}", enabled, minIdChars);
     }
 
     public boolean isEnabled() {
@@ -257,7 +265,8 @@ public class IndonesianIncompleteGuard {
      *   <li>切点被否决 → HOLD；</li>
      *   <li>段文本不完整 → HOLD/DROP；</li>
      *   <li>弱边界 → DOWNGRADE_PARTIAL（去掉盲切：不发 final）；</li>
-     *   <li>强边界且通过完整性检查 → EMIT_FINAL（即使短于 minId 也放行）。</li>
+     *   <li>sentence-wtpsplit 短于门槛且非白名单 → HOLD（退回下一轮并句，避免短碎片直接 final）；</li>
+     *   <li>强边界且完整、长度达标 → EMIT_FINAL。</li>
      * </ul>
      */
     public EmitAction decideEmit(String working, int end, String reason) {
@@ -277,6 +286,14 @@ public class IndonesianIncompleteGuard {
         }
         if (!isStrongBoundary(reason)) {
             return EmitAction.DOWNGRADE_PARTIAL;
+        }
+        // 短句门槛：wtpsplit 在足量上下文里仍可能在很早处结句(如 "ke depan"/"8 tahun")。
+        // 这类短段 HOLD 退回下一轮并句，不直接 final；真·短应答(ya/baik/terima kasih)走白名单放行。
+        if ("sentence-wtpsplit".equals(reason)
+                && minIdChars > 0
+                && visibleCharCount(segment) < minIdChars
+                && !isWhitelistedShortReply(segment)) {
+            return EmitAction.HOLD;
         }
         return EmitAction.EMIT_FINAL;
     }
@@ -329,5 +346,57 @@ public class IndonesianIncompleteGuard {
 
     private boolean isShortNumber(String token) {
         return isNumber(token) && token.length() >= 1 && token.length() <= 2;
+    }
+
+    private int visibleCharCount(String text) {
+        int count = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (!Character.isWhitespace(text.charAt(i))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 整段(忽略标点/空白后)是否就是一个白名单短应答，如 "Ya."、"Terima kasih."。 */
+    private boolean isWhitelistedShortReply(String segment) {
+        if (segment == null) {
+            return false;
+        }
+        StringBuilder sb = new StringBuilder();
+        Matcher matcher = TOKEN_PATTERN.matcher(segment.toLowerCase(Locale.ROOT));
+        while (matcher.find()) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(matcher.group());
+        }
+        return SHORT_REPLY_WHITELIST.contains(sb.toString());
+    }
+
+    /**
+     * 终稿 remainder 外科式处理：只反复剥掉结尾的半词前缀 / 连接词介词 token，返回可发出的前缀。
+     * <p>不丢整段、不看词头(终稿是 Azure 权威文本，词头如 "Juta" 照常保留)。
+     * 若剥到为空(整段都是残片)返回空串，调用方据此抑制。</p>
+     */
+    public String trimIncompleteTail(String text) {
+        if (text == null) {
+            return "";
+        }
+        String current = text.trim();
+        while (!current.isEmpty()) {
+            List<Token> tokens = tokenize(current);
+            if (tokens.isEmpty()) {
+                return "";
+            }
+            String last = tokens.get(tokens.size() - 1).text();
+            if (HALF_WORD_PREFIXES.contains(last) || CONNECTOR_TAILS.contains(last)) {
+                int cut = tokens.get(tokens.size() - 1).start();
+                current = current.substring(0, cut).trim();
+                continue;
+            }
+            return current;
+        }
+        return "";
     }
 }

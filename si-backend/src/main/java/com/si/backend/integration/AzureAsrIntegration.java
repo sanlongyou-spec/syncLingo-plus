@@ -428,13 +428,20 @@ public class AzureAsrIntegration {
                 long lastInterim = lastInterimAtMs.getAndSet(0);
                 long asrTailMs = lastInterim > 0 ? System.currentTimeMillis() - lastInterim : -1;
                 if (!remainder.isBlank()) {
+                    // 终稿外科式：只剥结尾半词/连接词，绝不整段丢、不看词头(终稿是 Azure 权威文本)。
                     if (idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id")) {
-                        com.si.backend.service.IndonesianIncompleteGuard.GuardResult guardResult = idGuard.check(remainder);
-                        if (!guardResult.isPass()) {
-                            log.info("[IdGuard] final remainder suppressed decision={} reason={} len={} text='{}'",
-                                    guardResult.decision(), guardResult.reason(), remainder.length(),
+                        String trimmed = idGuard.trimIncompleteTail(remainder);
+                        if (trimmed.isBlank()) {
+                            log.info("[IdGuard] final remainder fully incomplete, suppressed, len={} text='{}'",
+                                    remainder.length(),
                                     remainder.length() <= 120 ? remainder : remainder.substring(0, 117) + "...");
                             return;
+                        }
+                        if (trimmed.length() != remainder.length()) {
+                            log.info("[IdGuard] final remainder tail trimmed, fromLen={} toLen={} text='{}'",
+                                    remainder.length(), trimmed.length(),
+                                    trimmed.length() <= 120 ? trimmed : trimmed.substring(0, 117) + "...");
+                            remainder = trimmed;
                         }
                     }
                     callback.onRecognizing(remainder, lang, speakerId, true);

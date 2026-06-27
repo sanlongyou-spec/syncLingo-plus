@@ -90,13 +90,35 @@ class IndonesianIncompleteGuardTest {
         assertEquals(numberStart, boundary);
     }
 
-    // 8. 强边界 + 长度 < 48 + Guard PASS → 允许 EMIT_FINAL
+    // 8. wtpsplit 短段(<门槛)且非白名单 → HOLD 退回下一轮(不直接 final)
     @Test
-    void shortStrongBoundaryPasses() {
-        String working = "untuk setiap pohon"; // 18 字符 < 48
-        int end = working.length();
-        assertTrue(end < 48);
-        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit(working, end, "sentence-wtpsplit"));
+    void shortWtpsplitSegmentHeld() {
+        for (String working : new String[]{"ke depan", "8 tahun", "3 satelit", "dari sisi"}) {
+            assertEquals(EmitAction.HOLD, guard().decideEmit(working, working.length(), "sentence-wtpsplit"),
+                    "应 HOLD: " + working);
+        }
+    }
+
+    // 8b. 真·短应答在白名单里 → 即使短也 EMIT_FINAL
+    @Test
+    void whitelistedShortReplyEmits() {
+        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit("Ya.", "Ya.".length(), "sentence-wtpsplit"));
+        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit("terima kasih", "terima kasih".length(), "sentence-wtpsplit"));
+    }
+
+    // 8c. 长度达标的强边界整句 → EMIT_FINAL
+    @Test
+    void longWtpsplitSegmentEmits() {
+        String working = "seluruh perkembangan perusahaan ke depan akan terus berpusat pada sistem ini";
+        assertTrue(working.replace(" ", "").length() >= 48);
+        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit(working, working.length(), "sentence-wtpsplit"));
+    }
+
+    // 8d. 编号标题不受短句门槛限制(标题本就短)
+    @Test
+    void numberedTitleNotHeldByFloor() {
+        String working = "14 kesimpulan";
+        assertEquals(EmitAction.EMIT_FINAL, guard().decideEmit(working, working.length(), "numbered-title"));
     }
 
     // 9. 弱边界即使长度够，也必须降级（不直接作为 final）
@@ -134,6 +156,35 @@ class IndonesianIncompleteGuardTest {
         assertEquals(Decision.HOLD, tail.decision());
         // 正常完整 remainder 应放行
         assertTrue(result.isPass());
+    }
+
+    // 13. 终稿外科式：连接词尾只剥尾、不丢整段
+    @Test
+    void trimTailStripsConnectorKeepsBody() {
+        String r = guard().trimIncompleteTail("Oleh karena itu, kita sedang memahami kapitalisme di Indonesia dan.");
+        assertTrue(r.contains("kapitalisme di Indonesia"), r);
+        assertFalse(r.toLowerCase().endsWith("dan"), r);
+    }
+
+    // 14. 终稿外科式：半词尾只剥尾
+    @Test
+    void trimTailStripsHalfWord() {
+        String r = guard().trimIncompleteTail("model keuangan sistem biaya target fiskal peng");
+        assertTrue(r.endsWith("fiskal"), r);
+    }
+
+    // 15. 终稿外科式：词头可疑(Juta)不影响 —— 不看头,整段保留
+    @Test
+    void trimTailKeepsSuspiciousHead() {
+        String text = "Juta sinkronisasi dana Amerika dan Indonesia pemikiran penting";
+        assertEquals(text, guard().trimIncompleteTail(text));
+    }
+
+    // 16. 终稿外科式：整段都是残片 → 返回空(调用方抑制)
+    @Test
+    void trimTailEmptyWhenAllIncomplete() {
+        assertEquals("", guard().trimIncompleteTail("dengan"));
+        assertEquals("", guard().trimIncompleteTail("peng"));
     }
 
     // 关闭开关时（默认行为回退）：enabled=false
