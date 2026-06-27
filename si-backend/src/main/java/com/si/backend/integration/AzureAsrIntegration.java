@@ -243,6 +243,12 @@ public class AzureAsrIntegration {
         private String pendingIdFloorText = "";
         private String pendingIdFloorLang = "";
         private String pendingIdFloorSpeakerId = "";
+        /** 已发 id final 文本的归一化滚动账本：跨段/跨终稿去重，防 emittedLen 回退导致的重发/前缀重叠。 */
+        private final StringBuilder idEmitLedger = new StringBuilder();
+        private long idEmitLedgerAtMs = 0;
+        /** 账本滚动窗口(归一化字符数)与空闲清空 TTL。 */
+        private static final int ID_EMIT_LEDGER_MAX = 2000;
+        private static final long ID_EMIT_LEDGER_TTL_MS = 60_000L;
         private static final int EMIT_SUFFIX_LEN = 16;
         /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
         private String prevText = "";
@@ -459,7 +465,7 @@ public class AzureAsrIntegration {
                             }
                         }
                     }
-                    callback.onRecognizing(remainder, lang, speakerId, true);
+                    emitFinalDeduped(remainder, lang, speakerId);
                     log.info("[AsrSession] asr-segment final={} costMs={} len={} speakerId={} text='{}'",
                             hadForced ? "remainder" : "full", asrTailMs, remainder.length(), speakerId,
                             previewText(remainder));
@@ -553,7 +559,7 @@ public class AzureAsrIntegration {
                                 String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, "force-backstop");
                                 log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
                                         outputSegment.length(), lang, resolvedSpeakerId, previewText(outputSegment));
-                                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
+                                emitFinalDeduped(outputSegment, lang, resolvedSpeakerId);
                             } else {
                                 log.info("[IdGuard] {} boundary reason=force-backstop len={} text='{}'", action, segment.length(),
                                         segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
@@ -567,7 +573,7 @@ public class AzureAsrIntegration {
                             log.info("[AsrSession] force-segment by=force-backstop len={} lang={} speakerId={} text='{}'",
                                     segment.length(), lang, resolvedSpeakerId,
                                     segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
-                            callback.onRecognizing(segment, lang, resolvedSpeakerId, true);
+                            emitFinalDeduped(segment, lang, resolvedSpeakerId);
                         }
                     }
                 }
@@ -715,7 +721,7 @@ public class AzureAsrIntegration {
                 log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
                         reason, outputSegment.length(), lang, resolvedSpeakerId, punctuated != null,
                         previewText(outputSegment));
-                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
+                emitFinalDeduped(outputSegment, lang, resolvedSpeakerId);
             }
         }
 
@@ -783,7 +789,7 @@ public class AzureAsrIntegration {
                 String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, "llm-boundary");
                 log.info("[AsrSession] force-segment by=llm-boundary len={} lang={} speakerId={} text='{}'",
                         outputSegment.length(), lang, resolvedSpeakerId, previewText(outputSegment));
-                callback.onRecognizing(outputSegment, lang, resolvedSpeakerId, true);
+                emitFinalDeduped(outputSegment, lang, resolvedSpeakerId);
             }
         }
 
@@ -799,6 +805,36 @@ public class AzureAsrIntegration {
 
         private boolean isIdGuardActiveFor(String lang) {
             return idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id");
+        }
+
+        /**
+         * 统一的 id final 发送出口：发前对"已发账本"去重（整段重复→丢弃，前缀重叠→裁掉），再发出并更新账本。
+         * 非 id 或 Guard 未启用时原样发出，不做去重。防 emittedLen 回退导致的重发/前缀重叠。
+         */
+        private void emitFinalDeduped(String text, String lang, String speakerId) {
+            String out = text;
+            if (isIdGuardActiveFor(lang) && text != null && !text.isBlank()) {
+                long now = System.currentTimeMillis();
+                if (idEmitLedgerAtMs > 0 && now - idEmitLedgerAtMs > ID_EMIT_LEDGER_TTL_MS) {
+                    idEmitLedger.setLength(0);   // 长时间空闲，账本失效，重置
+                }
+                out = dedupEmitAgainstLedger(idEmitLedger.toString(), text);
+                if (out == null || out.isBlank()) {
+                    log.info("[IdLedger] duplicate suppressed, len={} text='{}'",
+                            text.length(), text.length() <= 120 ? text : text.substring(0, 117) + "...");
+                    return;
+                }
+                if (out.length() != text.length()) {
+                    log.info("[IdLedger] overlap trimmed, fromLen={} toLen={} text='{}'",
+                            text.length(), out.length(), out.length() <= 120 ? out : out.substring(0, 117) + "...");
+                }
+                idEmitLedger.append(comparableString(out));
+                if (idEmitLedger.length() > ID_EMIT_LEDGER_MAX) {
+                    idEmitLedger.delete(0, idEmitLedger.length() - ID_EMIT_LEDGER_MAX);
+                }
+                idEmitLedgerAtMs = now;
+            }
+            callback.onRecognizing(out, lang, speakerId, true);
         }
 
         private String mergePendingIdFloorText(String segment, String lang, String speakerId, String reason) {
@@ -1419,6 +1455,62 @@ public class AzureAsrIntegration {
             }
         }
         return MIN_FINAL_REMAINDER_OVERLAP_CHARS;
+    }
+
+    /** 账本去重的最小判定长度（归一化字符）：候选短于此不参与"整段重复"判定，避免误丢真·短重复句。 */
+    private static final int LEDGER_MIN_DUP_CHARS = 20;
+    /** 账本去重的最小重叠长度（归一化字符）：前缀与账本尾部重叠达到此值才裁剪，避免巧合短重叠误裁。 */
+    private static final int LEDGER_MIN_OVERLAP_CHARS = 12;
+
+    /** 把文本归一化成可比字符串（小写、去标点空白、数字词→数字），用于账本去重比对。 */
+    static String comparableString(String text) {
+        int[] cps = comparableCodePoints(text);
+        StringBuilder sb = new StringBuilder(cps.length);
+        for (int cp : cps) {
+            sb.appendCodePoint(cp);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 账本去重（纯函数，可单测）：{@code ledgerNorm} 为已发文本的归一化账本，{@code segment} 为候选原文。
+     * <ul>
+     *   <li>候选归一化后整段已在账本中 → 返回 ""（完全重复，调用方丢弃）；</li>
+     *   <li>候选前缀与账本尾部重叠 ≥ 阈值 → 裁掉重叠前缀，返回剩余原文；</li>
+     *   <li>否则原样返回。</li>
+     * </ul>
+     */
+    static String dedupEmitAgainstLedger(String ledgerNorm, String segment) {
+        if (segment == null || segment.isBlank()) {
+            return "";
+        }
+        if (ledgerNorm == null || ledgerNorm.isEmpty()) {
+            return segment;
+        }
+        String candNorm = comparableString(segment);
+        if (candNorm.length() < LEDGER_MIN_DUP_CHARS) {
+            return segment;   // 太短，不做去重，避免误伤合法短重复（如多次"谢谢"）
+        }
+        if (ledgerNorm.contains(candNorm)) {
+            return "";        // 整段已发过
+        }
+        int overlap = longestLedgerOverlap(ledgerNorm, candNorm);
+        if (overlap >= LEDGER_MIN_OVERLAP_CHARS) {
+            int srcCut = sourceOffsetAfterComparableCodePoints(segment, overlap);
+            return trimLeadingSeparators(segment.substring(Math.min(srcCut, segment.length())));
+        }
+        return segment;
+    }
+
+    /** 账本尾部与候选前缀的最长重叠（归一化字符数）；不足 {@link #LEDGER_MIN_OVERLAP_CHARS} 返回 0。 */
+    private static int longestLedgerOverlap(String ledger, String cand) {
+        int max = Math.min(ledger.length(), cand.length());
+        for (int k = max; k >= LEDGER_MIN_OVERLAP_CHARS; k--) {
+            if (ledger.regionMatches(ledger.length() - k, cand, 0, k)) {
+                return k;
+            }
+        }
+        return 0;
     }
 
     private static int[] comparableCodePoints(String text) {
