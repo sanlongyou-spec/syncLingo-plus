@@ -139,7 +139,7 @@ class SegmentBoundaryRequest(BaseModel):
 
 
 class SegmentBoundaryResponse(BaseModel):
-    boundary: int       # safe_end 范围内第一个句边界的字符位置，-1 表示未找到
+    boundary: int       # safe_end 范围内最后一个句边界的字符位置(尽量多吐完整句)，-1 表示未找到
     latency_ms: float
     model_available: bool
 
@@ -147,7 +147,7 @@ class SegmentBoundaryResponse(BaseModel):
 @app.post("/segment-boundary", response_model=SegmentBoundaryResponse)
 async def segment_boundary(req: SegmentBoundaryRequest):
     """
-    在 safe_end 字符范围内查找第一个句子边界位置。
+    在 safe_end 字符范围内查找最后一个句子边界位置(尽量多吐完整句，避免在首个边界处切成短碎片)。
     用于印尼语等无标点还原模型的语言的语义分段。
     boundary=-1 表示模型不可用或范围内无句边界。
     """
@@ -174,8 +174,9 @@ async def segment_boundary(req: SegmentBoundaryRequest):
             while pos < len(text) and text[pos] == ' ':
                 pos += 1
             if 0 < pos <= safe_end:
-                boundary = pos
-                break
+                boundary = pos      # 不 break：持续覆盖，最终落在 <= safe_end 的最后一个句边界
+            elif pos > safe_end:
+                break               # 超出 safe_end 后，后续边界只会更大，可提前停止
 
         sat_log.info("[sat] lang=%s inputLen=%d safeEnd=%d boundary=%d latency=%.1fms",
                      lang, len(text), safe_end, boundary, latency_ms)
