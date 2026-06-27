@@ -36,10 +36,12 @@ PUNCT_MODEL_PATH = os.environ.get(
 PUNCT_NUM_THREADS = int(os.environ.get("PUNCT_NUM_THREADS", "1"))
 
 # ── 句边界检测模型（wtpsplit SaT，用于印尼语等无标点还原模型的语言）──────────
-# sat-3l 支持 85+ 语言(含 id)，约 100MB；首次启动自动从 HuggingFace 下载
-# sat-3l-sm 有 ONNX 导出，配合 ort_providers 无需 torch
-# 若需要更高精度可改为 sat-3l（同样支持 ort_providers）
-SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-3l-sm")
+# 默认 sat-12l-sm：-sm 版为无标点/口语/ASR 文本训练，精度最高，支持 ONNX(ort_providers，无需 torch)。
+# 首次启动自动从 HuggingFace 下载(较大，一次性)。CPU 推理延迟随层数上升：
+#   sat-3l-sm ~7ms / sat-6l-sm 居中 / sat-12l-sm 最准但最慢。
+# 注意：分句调用在 ASR 的 segLock 同步路径内，模型越慢、每个 interim 阻塞越久；
+# 若 [sat] latency 或后端 SegmentationService 超时偏高，用 SAT_MODEL_NAME 降到 sat-6l-sm / sat-3l-sm。
+SAT_MODEL_NAME = os.environ.get("SAT_MODEL_NAME", "sat-12l-sm")
 
 
 @asynccontextmanager
