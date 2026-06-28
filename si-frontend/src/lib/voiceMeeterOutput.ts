@@ -2,6 +2,13 @@ import { TTS_OUTPUT_SAMPLE_RATE, VOICEMEETER } from '../api/constants'
 
 type OutputLang = 'zh' | 'id' | 'en'
 
+/**
+ * 排程提前量(秒)：每块在"上一块结束"或"当前时间+提前量"中较晚者开播。
+ * 后端为低延迟把 TTS 切成很碎的块，提前量太小时网络抖动/GC 会让某块来不及、
+ * 在拼接缝出咔哒声；80ms 缓冲垫可吸收抖动、消除偶发怪音(代价是出声晚 ~60ms)。
+ */
+const SCHEDULE_LEAD_SECONDS = 0.08
+
 interface OutputChannel {
   dest: MediaStreamAudioDestinationNode | null
   audioEl: HTMLAudioElement | null
@@ -32,7 +39,9 @@ export class VoiceMeeterOutput {
   /** 创建播放上下文与三条语言链路（静音、暂停，待 applySinks 绑定设备后才出声）。 */
   async init(): Promise<void> {
     if (!this.context) {
-      this.context = new AudioContext()
+      // 上下文直接建在 TTS 采样率(24kHz)：buffer 原生播放、不做逐块重采样，
+      // 避免每块独立重采样在拼接缝引入杂音；到设备(48kHz)的重采样由系统连续完成。
+      this.context = new AudioContext({ sampleRate: TTS_OUTPUT_SAMPLE_RATE })
     }
     const ctx = this.context
     for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
@@ -78,6 +87,14 @@ export class VoiceMeeterOutput {
       device.label.toLowerCase().includes(VOICEMEETER.EN_DEVICE_LABEL.toLowerCase()),
     ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('vaio3'))
 
+    // 诊断：打印每种语言匹配到的具体设备，便于核对路由是否串台。
+    console.log('[VoiceMeeterOutput] devices found:', voiceMeeterOutputs.map(d => d.label))
+    console.log('[VoiceMeeterOutput] matched: zh="%s" id="%s" en="%s"',
+      zhDevice?.label ?? '(none)', idDevice?.label ?? '(none)', enDevice?.label ?? '(none)')
+    if (zhDevice && idDevice && zhDevice.deviceId === idDevice.deviceId) {
+      console.error('[VoiceMeeterOutput] zh 与 id 解析到同一设备，会串台：', zhDevice.label)
+    }
+
     this.channels.zh.sinkReady = zhDevice ? await this.setSink(this.channels.zh, zhDevice.deviceId) : false
     this.channels.id.sinkReady = idDevice ? await this.setSink(this.channels.id, idDevice.deviceId) : false
     this.channels.en.sinkReady = enDevice ? await this.setSink(this.channels.en, enDevice.deviceId) : false
@@ -105,7 +122,7 @@ export class VoiceMeeterOutput {
     const source = ctx.createBufferSource()
     source.buffer = buffer
     source.connect(channel.dest)
-    const startAt = Math.max(ctx.currentTime + 0.02, channel.scheduleTime)
+    const startAt = Math.max(ctx.currentTime + SCHEDULE_LEAD_SECONDS, channel.scheduleTime)
     channel.pending.add(source)
     source.onended = () => channel.pending.delete(source)
     source.start(startAt)

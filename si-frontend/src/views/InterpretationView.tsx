@@ -329,6 +329,9 @@ export default function InterpretationView() {
           // 按 ttsTaskId+chunkIndex 去重并发现疑似缺块（顺序播放靠 VoiceMeeterOutput 内部排程）。
           if (msg.ttsTaskId && typeof msg.chunkIndex === 'number') {
             const lastIndex = ttsChunkIndexByTaskRef.current.get(msg.ttsTaskId) ?? -1
+            if (msg.chunkIndex === 0) {
+              console.log('[tts route] taskId=%s targetLanguage=%s', msg.ttsTaskId, msg.targetLanguage)
+            }
             if (msg.chunkIndex <= lastIndex) break
             if (msg.chunkIndex > lastIndex + 1) {
               console.warn('[InterpretationView] possible missing chunk, taskId=%s expected=%d got=%d',
