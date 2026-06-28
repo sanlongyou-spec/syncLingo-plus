@@ -75,7 +75,7 @@ class RealtimeInterpretationOrderTest {
 
         CountDownLatch firstTranslationStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstTranslation = new CountDownLatch(1);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean(), any()))
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
                 .thenAnswer(invocation -> {
                     String text = invocation.getArgument(0);
                     if ("first".equals(text)) {
@@ -163,7 +163,7 @@ class RealtimeInterpretationOrderTest {
         session.setUserId(1L);
         when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
         when(sessionService.isSessionActive(sessionId)).thenReturn(true);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), anyBoolean(), any()))
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(0) + "-translated");
 
         CountDownLatch firstSynthStarted = new CountDownLatch(1);

@@ -78,6 +78,14 @@ public class TranslationService {
      */
     public String translate(String text, String sourceLang, String targetLang, Long userId, boolean allowCompress,
                             String recentContext) {
+        return translate(text, sourceLang, targetLang, userId, null, allowCompress, recentContext);
+    }
+
+    /**
+     * @param meetingId 当前会议 ID：按会议隔离的知识包与自动抽取术语只在该会议生效；可为空(仅全局术语)。
+     */
+    public String translate(String text, String sourceLang, String targetLang, Long userId, Long meetingId,
+                            boolean allowCompress, String recentContext) {
         log.info("[TranslationService] translate start, userId={}, textLen={}, textHash={}, sourceLang={}, targetLang={}, allowCompress={}",
                 userId, text != null ? text.length() : 0, diagnosticHash(text), sourceLang, targetLang, allowCompress);
         if (text == null || text.isBlank()) {
@@ -97,7 +105,7 @@ public class TranslationService {
         // 印尼语→中文:走 LLM 纠错翻译(ASR 后处理 + 专业翻译)。失败/超时回退下方 Google 路径。
         if (openAiProperties.isIdZhLlmTranslateEnabled()
                 && isIndonesianSource(sourceLang) && isChineseTarget(targetLang)) {
-            String llmResult = tryLlmCorrectTranslate(text, sourceLang, targetLang, userId, recentContext);
+            String llmResult = tryLlmCorrectTranslate(text, sourceLang, targetLang, userId, meetingId, recentContext);
             if (llmResult != null && !llmResult.isBlank()) {
                 log.info("[TranslationService] translate end (llm id->zh), userId={}, textHash={}, resultLen={}, costMs={}",
                         userId, diagnosticHash(text), llmResult.length(), System.currentTimeMillis() - start);
@@ -108,7 +116,7 @@ public class TranslationService {
         }
 
         TerminologyService.TerminologyProtection terminologyProtection =
-                terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
+                terminologyService.applyBeforeTranslate(userId, meetingId, text, sourceLang, targetLang);
         String protectedText = terminologyProtection.getProtectedText();
         log.info("[TranslationService] terminology before translate done, userId={}, textHash={}, termCount={}, protectedLen={}, changed={}",
                 userId, diagnosticHash(text), terminologyProtection.getTargetTermByPlaceholder().size(),
@@ -271,10 +279,10 @@ public class TranslationService {
      * 任何异常/超时返回 null，由调用方回退到 Google 翻译路径。
      */
     private String tryLlmCorrectTranslate(String text, String sourceLang, String targetLang, Long userId,
-                                          String recentContext) {
+                                          Long meetingId, String recentContext) {
         try {
-            String glossary = buildDynamicGlossary(userId, text, sourceLang, targetLang);
-            String knowledgePack = meetingKnowledgeService.getForInject(userId);
+            String glossary = buildDynamicGlossary(userId, meetingId, text, sourceLang, targetLang);
+            String knowledgePack = meetingKnowledgeService.getForInject(meetingId);
             return llmIntegration.correctAndTranslateIndonesianToChinese(text, recentContext, glossary, knowledgePack);
         } catch (Exception e) {
             log.warn("[TranslationService] llm id->zh failed, userId={}, textHash={}, reason={}",
@@ -292,13 +300,13 @@ public class TranslationService {
      * ② 模糊命中(原文某词疑似被听错成形近词)→「参考」(不强制,防误伤)。
      * 复用 {@link TerminologyService#applyBeforeTranslate}(精确)与 {@link TerminologyService#fuzzyIdToZhHints}(模糊)。
      */
-    private String buildDynamicGlossary(Long userId, String text, String sourceLang, String targetLang) {
+    private String buildDynamicGlossary(Long userId, Long meetingId, String text, String sourceLang, String targetLang) {
         StringBuilder glossary = new StringBuilder();
         java.util.Set<String> exactSources = new java.util.HashSet<>();
         // ① 精确命中
         try {
             TerminologyService.TerminologyProtection protection =
-                    terminologyService.applyBeforeTranslate(userId, text, sourceLang, targetLang);
+                    terminologyService.applyBeforeTranslate(userId, meetingId, text, sourceLang, targetLang);
             Map<String, String> sourceByPlaceholder = protection.getSourceTermByPlaceholder();
             Map<String, String> targetByPlaceholder = protection.getTargetTermByPlaceholder();
             if (sourceByPlaceholder != null && !sourceByPlaceholder.isEmpty()) {
@@ -321,7 +329,7 @@ public class TranslationService {
         // ② 模糊命中(参考)
         try {
             Map<String, String> fuzzy = terminologyService.fuzzyIdToZhHints(
-                    userId, text, sourceLang, targetLang, FUZZY_GLOSSARY_MAX);
+                    userId, meetingId, text, sourceLang, targetLang, FUZZY_GLOSSARY_MAX);
             if (fuzzy != null && !fuzzy.isEmpty()) {
                 StringBuilder hints = new StringBuilder();
                 for (Map.Entry<String, String> entry : fuzzy.entrySet()) {

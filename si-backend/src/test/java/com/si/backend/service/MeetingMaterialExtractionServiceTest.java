@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 class MeetingMaterialExtractionServiceTest {
@@ -25,21 +26,22 @@ class MeetingMaterialExtractionServiceTest {
             asrHotwordService);
 
     @Test
-    void extractNowRunsEveryExtractorAndMeetingEntityStep() {
+    void extractNowRunsEveryExtractorWithMeetingScope() {
         String extractionText = "report.pdf\nRudi report content";
         PreMeetingService.MeetingEntities entities =
                 new PreMeetingService.MeetingEntities(List.of("Rudi"), "Main Room");
 
-        service.extractNow(4L, "MEETING_AGENDA", "file-1", extractionText, entities);
+        service.extractNow(4L, 53L, "MEETING_FILE", "meetingId=53,fileId=77", extractionText, entities);
 
         ArgumentCaptor<String> textCaptor = ArgumentCaptor.forClass(String.class);
         verify(hotwordExtractionService).extractAndSaveFromText(textCaptor.capture(), eq(4L));
         assertTrue(textCaptor.getValue().contains("report.pdf"));
         assertTrue(textCaptor.getValue().contains("Rudi report content"));
-        verify(meetingKnowledgeService).generateAndSaveFromText(4L, extractionText);
-        verify(terminologyExtractionService).extractAndSaveFromText(4L, extractionText);
+        // 知识包按会议(meetingId)归属；术语按 (userId, meetingId) 归属
+        verify(meetingKnowledgeService).generateAndSaveFromText(53L, extractionText);
+        verify(terminologyExtractionService).extractAndSaveFromText(4L, 53L, extractionText);
         verify(asrHotwordService).saveMeetingEntities(
-                4L, List.of("Rudi"), "Main Room", "MEETING_AGENDA");
+                4L, List.of("Rudi"), "Main Room", "MEETING_FILE");
     }
 
     @Test
@@ -47,9 +49,19 @@ class MeetingMaterialExtractionServiceTest {
         doThrow(new RuntimeException("llm down"))
                 .when(hotwordExtractionService).extractAndSaveFromText(any(), eq(4L));
 
-        service.extractNow(4L, "MEETING_FILE", "meetingId=53,fileId=77", "report text", null);
+        service.extractNow(4L, 53L, "MEETING_FILE", "meetingId=53,fileId=77", "report text", null);
 
-        verify(meetingKnowledgeService).generateAndSaveFromText(4L, "report text");
-        verify(terminologyExtractionService).extractAndSaveFromText(4L, "report text");
+        verify(meetingKnowledgeService).generateAndSaveFromText(53L, "report text");
+        verify(terminologyExtractionService).extractAndSaveFromText(4L, 53L, "report text");
+    }
+
+    @Test
+    void extractNowSkipsKnowledgeAndTerminologyWhenNoMeetingId() {
+        // 会前独立上传(未绑定会议)无 meetingId：只跑热词，不抽知识包/术语，避免无会议归属串用。
+        service.extractNow(4L, null, "MEETING_AGENDA", "file-1", "agenda text content", null);
+
+        verify(hotwordExtractionService).extractAndSaveFromText(any(), eq(4L));
+        verify(meetingKnowledgeService, never()).generateAndSaveFromText(any(), any());
+        verify(terminologyExtractionService, never()).extractAndSaveFromText(any(), any(), any());
     }
 }

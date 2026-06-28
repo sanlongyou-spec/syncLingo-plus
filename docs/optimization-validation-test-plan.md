@@ -1845,3 +1845,90 @@ docker exec si-mysql mysql -usync_lingo -p'<app-password>' si_backend \
 - 服务器：待部署后用真实印尼语长会议日志包复核。
 - 遗留问题：见对应优化记录「遗留问题」。
 - 需回归项：现有 `AsrServiceOverlapTest`、`finalRemainderAfterForcedSegments` 相关、`RealtimeInterpretationOrderTest`（已随本次回归通过）。
+
+## Weekly Validation Record: 2026-W26 Indonesian Output Floor Follow-up
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W26 Indonesian Output Floor Follow-up`.
+
+### Validation Goals
+
+- Prove every Indonesian final output path obeys the configured short-sentence floor.
+- Prove short replies and short `numbered-title` segments no longer bypass the floor.
+- Prove short Azure final remainders are held in pending state and merged into the next Indonesian final output instead of entering transcript/TTS by themselves.
+- Prove deployment uses the actual follow-up build, not only the old Guard configuration.
+
+### Log / Database Validation First
+
+Use the same one-file log package format after each live test:
+
+```bash
+tar -tzf /var/www/si/si-test-logs-<timestamp>.tar.gz
+
+# Required evidence inside the package:
+# - be-full.log
+# - be-focused.log
+# - speaker-full.log
+# - speaker-focused.log
+# - sessions.tsv
+# - session-id.txt
+# - transcript.tsv
+# - result.tsv
+```
+
+Pass criteria:
+
+- `be-focused.log` contains `ASR silence config` with `minSentenceEmitIdChars=48` or the intended configured value.
+- `be-focused.log` contains `HOLD output-floor` when the ASR final remainder or forced candidate is below the floor.
+- `be-focused.log` contains `pending output-floor merged` when a pending short Indonesian segment is released with the next Indonesian segment.
+- `transcript.tsv` contains no Indonesian `source_text` rows below the floor, except terminal pending fragments that are logged as `pending output-floor not emitted on close` and do not enter transcript/TTS.
+- `force-segment by=numbered-title` rows below the floor are absent or logged as held.
+
+### 2026-06-28 Log Package Result
+
+Log package reviewed:
+
+```text
+https://julongtongchuan.icu/si-test-logs-20260628-033113.tar.gz
+```
+
+Package contents:
+
+- `be-focused.log`: 12,761 lines.
+- `be-full.log`: 20,611 lines.
+- `speaker-focused.log`: 1,745 lines.
+- `speaker-full.log`: 3,516 lines.
+- `transcript.tsv`: 97 lines including header.
+- `result.tsv`: 97 lines including header.
+
+Session:
+
+- `session_id=0ff924ad-72b6-4385-9f80-7ca8cd3ae10c`.
+- Database row count: 96 interpretation records.
+- Database time range: `2026-06-27 19:19:00` to `2026-06-27 19:30:56`.
+
+Observed evidence:
+
+- Config loaded: `ASR silence config ... minSentenceEmitIdChars=48, idSegMinInputChars=40`.
+- TTS ordering path was active: `TTS order reserved=97`, `TTS first chunk=96`, `TTS order released=97`; no `TTS unsynthesized skipped` in this run.
+- id->zh LLM correction was active: `translate end (llm id->zh)=93`, `google translate done=3`, `meta-commentary detected=1`.
+- Output-floor follow-up evidence was absent: `HOLD output-floor=0`, `pending output-floor=0`.
+- Forced segments: 73 total; 72 `sentence-wtpsplit`, 1 `numbered-title`.
+- One forced `numbered-title` segment still bypassed the intended floor: visible length 45, text `untuk perencanaan industri 3 5 bahkan 8 tahun ke depan`.
+- Final ASR segments: 26 total; 23 `remainder`, 3 `full`.
+- Short final segments below 48 visible characters: 13 total, including `4 nilai terbesar satelit.`, `11 berfokus p.`, `Pupuk yang terencana.`, `mencapai 52.672 ton`, and `kebetulan.`.
+- Exported Indonesian transcript rows below 48 visible characters: 11.
+
+### Result Record
+
+- Local code validation: passed. Focused tests passed 30 tests, and full backend `mvn clean test` passed 413 tests.
+- Server package `20260628-033113`: not a pass for the output-floor follow-up. It proves the old/partial server image was still running because short final remainders and a short `numbered-title` row reached transcript/TTS, and the new `HOLD output-floor` / `pending output-floor` logs never appeared.
+- Required next action: commit/push the follow-up code, pull that exact commit on `/opt/syncLingo`, rebuild with Java 21, rebuild the Docker image, restart with `--network host --add-host si-mysql:127.0.0.1`, then run a new log package test.
+
+### Manual Validation After Corrected Deployment
+
+- Repeat the Indonesian test phrases: `ya`, `baik`, `terima kasih`, `ke depan`, `8 tahun`, `13 pemikiran...`, `14 kesimpulan...`, and long sentences with pauses.
+- Confirm the UI transcript no longer shows short standalone Indonesian rows for those phrases.
+- Confirm no sentence tail is duplicated into the next segment and no already-synthesized audio is skipped.
+- If the last spoken phrase is intentionally shorter than the floor, check backend logs for `pending output-floor not emitted on close` and decide whether the product wants a terminal flush exception.

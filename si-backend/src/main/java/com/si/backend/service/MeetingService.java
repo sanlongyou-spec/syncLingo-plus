@@ -142,6 +142,9 @@ public class MeetingService {
                 storedFile.originalBytes());
         log.info("[MeetingService] savePreMeetingFile done, meetingId={}, fileId={}, savedFileId={}",
                 meetingId, fileId, saved.getId());
+        // 通知/会前文件绑定到会议后，按 meetingId 抽取知识包+术语(此时才有会议归属，避免跨会议串用)。
+        meetingMaterialExtractionService.enqueueFromMeetingFile(
+                actor.userId(), meetingId, saved.getId(), originalName, storedFile.text());
         return saved;
     }
 

@@ -29,7 +29,8 @@ public class MeetingMaterialExtractionService {
             String fileName,
             String text,
             PreMeetingService.MeetingEntities entities) {
-        enqueue(userId, SOURCE_MEETING_AGENDA, fileId, fileName, text, entities);
+        // 会前独立上传(还未绑定会议)无 meetingId：只抽热词/实体(账号级)，知识包/术语等绑定会议后再抽。
+        enqueue(userId, null, SOURCE_MEETING_AGENDA, fileId, fileName, text, entities);
     }
 
     public void enqueueFromMeetingFile(
@@ -39,11 +40,12 @@ public class MeetingMaterialExtractionService {
             String fileName,
             String text) {
         String sourceRef = "meetingId=" + meetingId + ",fileId=" + fileId;
-        enqueue(userId, SOURCE_MEETING_FILE, sourceRef, fileName, text, null);
+        enqueue(userId, meetingId, SOURCE_MEETING_FILE, sourceRef, fileName, text, null);
     }
 
     private void enqueue(
             Long userId,
+            Long meetingId,
             String sourceType,
             String sourceRef,
             String fileName,
@@ -55,22 +57,29 @@ public class MeetingMaterialExtractionService {
                     userId, sourceType, sourceRef);
             return;
         }
-        CompletableFuture.runAsync(() -> extractNow(userId, sourceType, sourceRef, extractionText, entities));
+        CompletableFuture.runAsync(() -> extractNow(userId, meetingId, sourceType, sourceRef, extractionText, entities));
     }
 
     void extractNow(
             Long userId,
+            Long meetingId,
             String sourceType,
             String sourceRef,
             String extractionText,
             PreMeetingService.MeetingEntities entities) {
         long start = System.currentTimeMillis();
-        log.info("[MeetingMaterialExtractionService] extract start, userId={}, sourceType={}, sourceRef={}, textLen={}",
-                userId, sourceType, sourceRef, extractionText.length());
-        runStep("knowledge", sourceType, sourceRef,
-                () -> meetingKnowledgeService.generateAndSaveFromText(userId, extractionText));
-        runStep("terminology", sourceType, sourceRef,
-                () -> terminologyExtractionService.extractAndSaveFromText(userId, extractionText));
+        log.info("[MeetingMaterialExtractionService] extract start, userId={}, meetingId={}, sourceType={}, sourceRef={}, textLen={}",
+                userId, meetingId, sourceType, sourceRef, extractionText.length());
+        // 知识包与自动术语按会议隔离：只有已知 meetingId(会议报告上传 / 通知绑定会议)时才抽取，避免跨会议串用。
+        if (meetingId != null) {
+            runStep("knowledge", sourceType, sourceRef,
+                    () -> meetingKnowledgeService.generateAndSaveFromText(meetingId, extractionText));
+            runStep("terminology", sourceType, sourceRef,
+                    () -> terminologyExtractionService.extractAndSaveFromText(userId, meetingId, extractionText));
+        } else {
+            log.info("[MeetingMaterialExtractionService] skip knowledge/terminology (no meetingId, unbound pre-meeting), sourceRef={}",
+                    sourceRef);
+        }
         runStep("hotwords", sourceType, sourceRef,
                 () -> hotwordExtractionService.extractAndSaveFromText(extractionText, userId));
         if (entities != null) {

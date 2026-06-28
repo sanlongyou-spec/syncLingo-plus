@@ -20,6 +20,7 @@ public interface TerminologyMapper {
             CREATE TABLE IF NOT EXISTS terminology (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
                 user_id     BIGINT DEFAULT 1,
+                meeting_id  BIGINT DEFAULT NULL,
                 term_zh     VARCHAR(255),
                 term_id     VARCHAR(255),
                 term_en     VARCHAR(255),
@@ -40,11 +41,11 @@ public interface TerminologyMapper {
 
     @Insert("""
             INSERT INTO terminology (
-                user_id, term_zh, term_id, term_en, pinyin, category, note, source_sheet, source_row,
+                user_id, meeting_id, term_zh, term_id, term_en, pinyin, category, note, source_sheet, source_row,
                 review_status, enabled, create_time, update_time
             )
             VALUES (
-                #{userId}, #{termZh}, #{termId}, #{termEn}, #{pinyin}, #{category}, #{note}, #{sourceSheet}, #{sourceRow},
+                #{userId}, #{meetingId}, #{termZh}, #{termId}, #{termEn}, #{pinyin}, #{category}, #{note}, #{sourceSheet}, #{sourceRow},
                 #{reviewStatus}, #{enabled}, NOW(), NOW()
             )
             """)
@@ -103,6 +104,9 @@ public interface TerminologyMapper {
 
     @Update("ALTER TABLE terminology ADD COLUMN user_id BIGINT DEFAULT 1 AFTER id")
     void addUserIdColumnIfNotExists();
+
+    @Update("ALTER TABLE terminology ADD COLUMN meeting_id BIGINT DEFAULT NULL AFTER user_id")
+    void addMeetingIdColumnIfNotExists();
 
     @Update("UPDATE terminology SET user_id = 1 WHERE user_id IS NULL")
     int backfillDefaultUserId();

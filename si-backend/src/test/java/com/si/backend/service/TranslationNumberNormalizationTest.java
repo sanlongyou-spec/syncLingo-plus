@@ -39,8 +39,8 @@ class TranslationNumberNormalizationTest {
                 asrCorrectionService, meetingKnowledgeService);
 
         // 术语层透传：保护=原样、还原=原样，便于断言纯数字归一化效果
-        when(terminologyService.applyBeforeTranslate(any(), any(), any(), any()))
-                .thenAnswer(inv -> TerminologyService.TerminologyProtection.empty(inv.getArgument(1)));
+        when(terminologyService.applyBeforeTranslate(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> TerminologyService.TerminologyProtection.empty(inv.getArgument(2)));
         when(terminologyService.applyAfterTranslate(any(), any(), any(), any(), any(), any()))
                 .thenAnswer(inv -> inv.getArgument(1));
         when(terminologyService.protectTargetTermsForRewrite(any(), any()))
@@ -55,7 +55,7 @@ class TranslationNumberNormalizationTest {
     private String normalizedTextFor(String input, String sourceLang) {
         translationService.translate(input, sourceLang, "zh", 1L);
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        verify(terminologyService).applyBeforeTranslate(eq(1L), captor.capture(), eq(sourceLang), eq("zh"));
+        verify(terminologyService).applyBeforeTranslate(eq(1L), any(), captor.capture(), eq(sourceLang), eq("zh"));
         return captor.getValue();
     }
 

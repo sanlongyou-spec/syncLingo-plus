@@ -12,6 +12,8 @@ public class Terminology {
 
     private Long id;
     private Long userId;
+    /** 来源会议：NULL = 手动/Excel 导入(全局，跨会议复用)；非空 = 从该会议材料自动抽取(仅该会议生效)。 */
+    private Long meetingId;
     private String termZh;
     private String termId;
     private String termEn;

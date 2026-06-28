@@ -179,7 +179,9 @@ class MeetingServiceSecurityTest {
         assertEquals("pdf", uploaded.getFileType());
         assertEquals("already extracted", captor.getValue().getFileContent());
         verify(preMeetingService, never()).extractFileText(any(byte[].class), eq("pdf"), eq("notice.pdf"));
-        verifyNoInteractions(materialExtractionService);
+        // 绑定时抽取：通知文件绑定会议后应按 meetingId 触发知识包/术语抽取(复用已解析文本，不重复解析上传)。
+        verify(materialExtractionService).enqueueFromMeetingFile(
+                eq(1L), eq(10L), any(), eq("notice.pdf"), eq("already extracted"));
     }
 
     @Test

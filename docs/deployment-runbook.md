@@ -121,8 +121,8 @@ docker build -t si-backend:latest .
 docker rm -f si-backend 2>/dev/null || true
 mkdir -p /opt/syncLingo/audio-records
 docker run -d --name si-backend --restart=always --network host \
+  --add-host si-mysql:127.0.0.1 \
   --env-file /opt/syncLingo/backend.env \
-  -e JAVA_OPTS="-Xms512m -Xmx2g" \
   -v /opt/syncLingo/audio-records:/app/audio-records \
   si-backend:latest
 
@@ -130,7 +130,11 @@ curl -sf http://127.0.0.1:8080/api/health
 docker logs --tail 260 si-backend 2>&1 | grep -E 'Started|MeetingService|meeting_url|ERROR|Exception'
 ```
 
-> **必须固定带上 `-v /opt/syncLingo/audio-records:/app/audio-records`**：录音写在容器内 `/app/audio-records`，不挂卷则每次 `docker rm`/重建都会丢失，合并会议录音时会出现 `source recording skipped`。`-Xmx2g`（而非 3g）给 8G 机器留内存余量，避免 OOM。
+> **必须固定带上 `--add-host si-mysql:127.0.0.1`**：后端用 `--network host`（为连本机 `127.0.0.1:7000` 的 speaker/segmentation/punctuation 服务），但 `backend.env` 用 `DB_HOST=si-mysql` 连库。host 网络模式下 Docker 内置 DNS 失效、解析不了容器名 `si-mysql`，会报 `UnknownHostException: si-mysql` → 启动建表失败 → 容器反复 `Restarting` → 前端 502。MySQL 已 `-p 127.0.0.1:3306:3306` 发布到本机，故把 `si-mysql` 映射到 `127.0.0.1` 即可。
+>
+> **必须固定带上 `-v /opt/syncLingo/audio-records:/app/audio-records`**：录音写在容器内 `/app/audio-records`，不挂卷则每次 `docker rm`/重建都会丢失，合并会议录音时会出现 `source recording skipped`。
+>
+> **不要加 `-e JAVA_OPTS`**：JVM 堆在 `backend.env` 单一来源（8G 机器固定 `-Xms512m -Xmx2g`，给系统留余量避免 OOM）。docker run 再传 `-e JAVA_OPTS` 会与 env 文件冲突/双重来源，统一只在 `backend.env` 配。
 
 ## 6. Speaker Service
 

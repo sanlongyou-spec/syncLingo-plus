@@ -357,6 +357,7 @@ public class RealtimeInterpretationFacade {
         String translated;
         try {
             Long userId = sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L);
+            Long meetingId = sessionService.getSession(sessionId).map(InterpretationSession::getMeetingId).orElse(null);
             // 纵深防御:id 源文本进翻译/入库/TTS 前再过一次完整性 Guard,拦住任何漏网的半词/残句。
             if (indonesianSource && indonesianIncompleteGuard.isEnabled()) {
                 IndonesianIncompleteGuard.GuardResult guardResult = indonesianIncompleteGuard.check(text);
@@ -368,7 +369,7 @@ public class RealtimeInterpretationFacade {
                 }
             }
             String recentContext = indonesianSource ? recentIdContext(sessionId, text) : null;
-            translated = translationService.translate(text, sourceLang, targetLang, userId, wantCompress, recentContext);
+            translated = translationService.translate(text, sourceLang, targetLang, userId, meetingId, wantCompress, recentContext);
         } catch (Exception e) {
             log.error("[RealtimeInterpretationFacade] translate failed, sessionId={}", sessionId, e);
             completeTtsReservation(reservation, "translate_failed");

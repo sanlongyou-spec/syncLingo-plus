@@ -31,11 +31,17 @@ public class TerminologyExtractionService {
     private final TerminologyService terminologyService;
     private final ObjectMapper objectMapper;
 
+    /** 兼容旧调用：无会议归属（抽取的术语为全局）。 */
     public int extractAndSaveFromText(Long userId, String text) {
+        return extractAndSaveFromText(userId, null, text);
+    }
+
+    /** 从会议材料抽取术语并归属到该会议(meetingId)；meetingId=null 表示全局。 */
+    public int extractAndSaveFromText(Long userId, Long meetingId, String text) {
         if (userId == null || text == null || text.isBlank()) {
             return 0;
         }
-        log.info("[TerminologyExtractionService] start, userId={}, textLen={}", userId, text.length());
+        log.info("[TerminologyExtractionService] start, userId={}, meetingId={}, textLen={}", userId, meetingId, text.length());
         List<String> chunks = TextChunks.split(text, CHUNK_CHARS, MAX_CHUNKS);
         List<Terminology> candidates = new ArrayList<>();
         for (int i = 0; i < chunks.size(); i++) {
@@ -55,7 +61,7 @@ public class TerminologyExtractionService {
             log.info("[TerminologyExtractionService] end, userId={}, chunks={}, candidates=0, created=0", userId, chunks.size());
             return 0;
         }
-        int created = terminologyService.addExtractedTerms(userId, candidates);
+        int created = terminologyService.addExtractedTerms(userId, meetingId, candidates);
         log.info("[TerminologyExtractionService] end, userId={}, chunks={}, candidates={}, created={}, terms={}",
                 userId, chunks.size(), candidates.size(), created, summarizeTerms(candidates));
         return created;

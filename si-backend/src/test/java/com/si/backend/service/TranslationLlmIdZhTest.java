@@ -41,8 +41,8 @@ class TranslationLlmIdZhTest {
                 asrCorrectionService, meetingKnowledgeService);
 
         // 术语层透传(动态术语表为空 + Google 回退路径都需要)
-        when(terminologyService.applyBeforeTranslate(any(), any(), any(), any()))
-                .thenAnswer(inv -> TerminologyService.TerminologyProtection.empty(inv.getArgument(1)));
+        when(terminologyService.applyBeforeTranslate(any(), any(), any(), any(), any()))
+                .thenAnswer(inv -> TerminologyService.TerminologyProtection.empty(inv.getArgument(2)));
         when(terminologyService.applyAfterTranslate(any(), any(), any(), any(), any(), any()))
                 .thenAnswer(inv -> inv.getArgument(1));
         when(terminologyService.protectTargetTermsForRewrite(any(), any()))

@@ -54,6 +54,7 @@ public class TerminologyService {
         terminologyMapper.createTableIfNotExists();
         addColumnIfMissing("user_id", terminologyMapper::addUserIdColumnIfNotExists);
         terminologyMapper.backfillDefaultUserId();
+        addColumnIfMissing("meeting_id", terminologyMapper::addMeetingIdColumnIfNotExists);
         addColumnIfMissing("pinyin", terminologyMapper::addPinyinColumnIfNotExists);
         addColumnIfMissing("note", terminologyMapper::addNoteColumnIfNotExists);
         addColumnIfMissing("source_sheet", terminologyMapper::addSourceSheetColumnIfNotExists);
@@ -211,7 +212,13 @@ public class TerminologyService {
      * 去重:① 完整三元组(中|印|英)已存在 → 跳过;② 同一印尼词已有映射 → 跳过(避免一个 id 对多个 zh 的冲突)。
      * 只接受至少含中文+印尼语的对。返回新建条数。
      */
+    /** 兼容旧调用：无会议归属（全局术语）。 */
     public int addExtractedTerms(Long userId, List<Terminology> candidates) {
+        return addExtractedTerms(userId, null, candidates);
+    }
+
+    /** 把"从会议材料自动抽取的术语对"入库，归属到该会议(meetingId)；meetingId=null 表示全局。 */
+    public int addExtractedTerms(Long userId, Long meetingId, List<Terminology> candidates) {
         requireUserId(userId);
         if (candidates == null || candidates.isEmpty()) {
             return 0;
@@ -241,6 +248,7 @@ public class TerminologyService {
             }
             Terminology term = new Terminology();
             term.setUserId(uid);
+            term.setMeetingId(meetingId);
             term.setTermZh(zh);
             term.setTermId(id);
             term.setTermEn(en);
@@ -369,7 +377,13 @@ public class TerminologyService {
         }
     }
 
+    /** 兼容旧调用：不限会议（仅全局/手动术语参与匹配）。 */
     public TerminologyProtection applyBeforeTranslate(Long userId, String sourceText, String sourceLang, String targetLang) {
+        return applyBeforeTranslate(userId, null, sourceText, sourceLang, targetLang);
+    }
+
+    /** meetingId 命中范围：全局(meeting_id 为空)的术语 + 本会议自动抽取的术语。 */
+    public TerminologyProtection applyBeforeTranslate(Long userId, Long meetingId, String sourceText, String sourceLang, String targetLang) {
         long startMs = System.currentTimeMillis();
         log.info("[TerminologyService] applyBeforeTranslate start, userId={}, sourceLang={}, targetLang={}, sourceLen={}, sourceHash={}",
                 userId, sourceLang, targetLang, sourceText != null ? sourceText.length() : 0, diagnosticHash(sourceText));
@@ -378,7 +392,7 @@ public class TerminologyService {
                     userId, diagnosticHash(sourceText), System.currentTimeMillis() - startMs);
             return TerminologyProtection.empty(sourceText);
         }
-        List<TerminologyCandidate> candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang);
+        List<TerminologyCandidate> candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang, meetingId);
         if (candidates.isEmpty()) {
             log.info("[TerminologyService] applyBeforeTranslate end, userId={}, sourceHash={}, candidates=0, reason=noCandidates, costMs={}",
                     userId, diagnosticHash(sourceText), System.currentTimeMillis() - startMs);
@@ -426,13 +440,18 @@ public class TerminologyService {
      */
     public LinkedHashMap<String, String> fuzzyIdToZhHints(
             Long userId, String sourceText, String sourceLang, String targetLang, int maxHints) {
+        return fuzzyIdToZhHints(userId, null, sourceText, sourceLang, targetLang, maxHints);
+    }
+
+    public LinkedHashMap<String, String> fuzzyIdToZhHints(
+            Long userId, Long meetingId, String sourceText, String sourceLang, String targetLang, int maxHints) {
         LinkedHashMap<String, String> hints = new LinkedHashMap<>();
         if (sourceText == null || sourceText.isBlank() || maxHints <= 0) {
             return hints;
         }
         List<TerminologyCandidate> candidates;
         try {
-            candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang);
+            candidates = loadTerminologyIndex(userId).candidates(sourceLang, targetLang, meetingId);
         } catch (Exception e) {
             log.debug("[TerminologyService] fuzzyIdToZhHints load failed, reason={}", e.getMessage());
             return hints;
@@ -650,13 +669,19 @@ public class TerminologyService {
     private List<TerminologyCandidate> buildCandidates(
             List<Terminology> enabledTerms,
             String sourceLang,
-            String targetLang
+            String targetLang,
+            Long meetingId
     ) {
         long startMs = System.currentTimeMillis();
         Map<String, TerminologyCandidate> candidateBySourceKey = new LinkedHashMap<>();
         Set<String> ambiguousSourceKeys = new HashSet<>();
         int skippedInvalid = 0;
         for (Terminology terminology : enabledTerms) {
+            // 会议隔离：全局术语(meeting_id 为空)始终参与；自动抽取术语仅在归属本会议时参与
+            Long termMeeting = terminology.getMeetingId();
+            if (termMeeting != null && !termMeeting.equals(meetingId)) {
+                continue;
+            }
             String sourceTerm = cleanSourceTerm(termByLang(terminology, sourceLang));
             String targetTerm = cleanTermValue(termByLang(terminology, targetLang));
             if (!isMatchableTerm(sourceTerm) || targetTerm == null || targetTerm.isBlank()) {
@@ -923,10 +948,11 @@ public class TerminologyService {
             return nowMillis - loadedAtMillis > INDEX_CACHE_TTL_MILLIS;
         }
 
-        private List<TerminologyCandidate> candidates(String sourceLang, String targetLang) {
+        private List<TerminologyCandidate> candidates(String sourceLang, String targetLang, Long meetingId) {
+            String key = languagePairKey(sourceLang, targetLang) + "#" + (meetingId == null ? "" : meetingId);
             return candidatesByLanguagePair.computeIfAbsent(
-                    languagePairKey(sourceLang, targetLang),
-                    ignored -> buildCandidates(enabledTerms, sourceLang, targetLang)
+                    key,
+                    ignored -> buildCandidates(enabledTerms, sourceLang, targetLang, meetingId)
             );
         }
     }

@@ -9,6 +9,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -37,13 +38,13 @@ class TerminologyExtractionVerifyTest {
         when(llm.verifyTerminologyPairsJson(anyString(), anyString())).thenReturn("""
                 [{"zh":"硼肥","id":"pupuk boron","en":"","category":"专业术语"}]
                 """);
-        when(terminologyService.addExtractedTerms(eq(7L), anyList())).thenReturn(1);
+        when(terminologyService.addExtractedTerms(eq(7L), any(), anyList())).thenReturn(1);
 
         service.extractAndSaveFromText(7L, "会议材料...Plasma...pupuk boron...");
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Terminology>> captor = ArgumentCaptor.forClass(List.class);
-        verify(terminologyService).addExtractedTerms(eq(7L), captor.capture());
+        verify(terminologyService).addExtractedTerms(eq(7L), any(), captor.capture());
         List<Terminology> saved = captor.getValue();
         assertEquals(1, saved.size());
         assertEquals("硼肥", saved.get(0).getTermZh());

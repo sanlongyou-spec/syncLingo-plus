@@ -1756,3 +1756,51 @@ GET    /api/admin/audit-logs
 - final remainder 的 HOLD/DROP 当前为「抑制」，未做跨 utterance 的 heldRemainder 接续（P0 不做，避免跨句/跨说话人风险）；如线上发现明显内容丢失再评估二期接续。
 - wtpsplit 仍可能给出切断固定短语的强边界，已由 `boundaryVeto` 二次拦截；词表/短语表当前为常量，后续可外置配置。
 - 服务器侧验证待部署后用真实印尼语长会议日志包复核。
+
+## Weekly Optimization Record: 2026-W26 Indonesian Output Floor Follow-up
+
+### Goal
+
+- Enforce the Indonesian short-sentence output floor on every final output path, not only `sentence-wtpsplit`.
+- Remove the short-reply allowlist so `ya`, `baik`, `terima kasih`, and similar short replies are held/merged instead of being emitted as standalone final segments.
+- Avoid dropping short Azure final remainders by holding them in a pending buffer and merging them into the next Indonesian final segment.
+- Make deployment validation distinguish between "configuration loaded" and "latest output-floor code actually running".
+
+### Progress Update
+
+| Item | Status | Notes |
+|---|---|---|
+| Remove short-reply allowlist | Implemented locally | `IndonesianIncompleteGuard` no longer contains `SHORT_REPLY_WHITELIST` or `isWhitelistedShortReply`; all short Indonesian segments use `shouldHoldForOutputFloor`. |
+| Apply floor before boundary strength | Implemented locally | `decideEmit` now checks output-floor before `isStrongBoundary`, so `sentence`, `sentence-punct`, `sentence-wtpsplit`, `numbered-title`, `force-*`, and `llm-boundary` all follow the same minimum. |
+| Final remainder pending merge | Implemented locally | `AzureAsrIntegration.AsrSession` now stores short Indonesian final remainders in `pendingIdFloorText`, logs `HOLD output-floor`, and logs `pending output-floor merged` when the next Indonesian segment releases the combined text. |
+| Session-close visibility | Implemented locally | If the meeting ends while a pending short Indonesian fragment is still below the floor, the backend logs `pending output-floor not emitted on close` for explicit audit. |
+| Automated regression | Passed locally | Focused `IndonesianIncompleteGuardTest,AzureAsrFinalRemainderTest` passed 30 tests; full `mvn clean test` passed 413 tests. |
+| Server deployment check | Gap found | The server was restored to a healthy `--network host --add-host si-mysql:127.0.0.1` deployment, but the `20260628-033113` log package shows the running image did not include the local output-floor follow-up code. |
+
+### Evidence From 2026-06-28 Server Log Package
+
+- Log package: `si-test-logs-20260628-033113.tar.gz`.
+- Session under review: `0ff924ad-72b6-4385-9f80-7ca8cd3ae10c`, 96 transcript rows, database time range `2026-06-27 19:19:00` to `2026-06-27 19:30:56`.
+- Runtime config was loaded: `minSentenceEmitIdChars=48`, `idSegMinInputChars=40`, `IdGuard enabled=true`.
+- The new output-floor logs were absent: `HOLD output-floor=0`, `pending output-floor=0`.
+- Short segments still entered transcript/TTS in that server run: one forced `numbered-title` segment had visible length 45, and 11 Indonesian transcript rows were below 48 visible characters.
+- Conclusion: this log package is useful as a deployment-gap finding, but it is not a pass/fail validation of the local follow-up implementation.
+
+### Affected Modules
+
+- Backend ASR guard: `IndonesianIncompleteGuard`.
+- Backend ASR integration: `AzureAsrIntegration`.
+- Backend regression tests: `IndonesianIncompleteGuardTest`, `AzureAsrFinalRemainderTest`.
+- Deployment process: after local changes are committed/pushed, the server must pull that exact commit, rebuild the jar with Java 21, rebuild `si-backend:latest`, and restart with the documented host-network command.
+
+### Acceptance Criteria
+
+- Server logs after the corrected deployment show `HOLD output-floor` for short final remainders and `pending output-floor merged` when they are joined into the next Indonesian segment.
+- Exported `transcript.tsv` for Indonesian source contains no rows below `AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS` visible characters, except for an explicitly logged session-close pending warning that does not enter transcript/TTS.
+- Short replies such as `ya`, `baik`, and `terima kasih` do not appear as standalone final transcript/TTS rows.
+- `numbered-title` no longer bypasses the floor when the emitted text is below the configured minimum.
+
+### Residual Issues
+
+- The latest local follow-up still needs a proper release commit/push and server redeploy before another live test can validate it.
+- Holding the final short fragment at session close satisfies the "all output goes through the floor" rule, but it means a terminal fragment below the floor is logged rather than emitted. If the business requirement later demands terminal flush with no exception, the floor rule and no-drop rule need an explicit priority decision.
