@@ -7,7 +7,6 @@ import type {
   StartInterpretationParams,
   InterpretationStatus,
   InterpretationResultItem,
-  PublicSessionInfo,
   SaveInterpretationResultParams,
   SessionSpeakerIdentity,
   Terminology,
@@ -120,9 +119,6 @@ export const saveInterpretationResult = (params: SaveInterpretationResultParams)
 export const getPublicInterpretationResults = (sessionId: string): Promise<Result<InterpretationResultItem[]>> =>
   client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`).then(r => r.data)
 
-export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSessionInfo>> =>
-  client.get<Result<PublicSessionInfo>>(`/api/interpretation/public/${sessionId}/info`).then(r => r.data)
-
 export interface ShareTokenIssued {
   id: number
   token: string
@@ -141,9 +137,9 @@ export interface ShareWsTicket {
   ticket: string
 }
 
-export const mintShareWsTicket = (token: string, lang?: string): Promise<Result<ShareWsTicket>> =>
+export const mintShareWsTicket = (token: string): Promise<Result<ShareWsTicket>> =>
   client.post<Result<ShareWsTicket>>('/api/interpretation/public/share-ws-tickets', null, {
-    params: { token, ...(lang ? { lang } : {}) },
+    params: { token },
   }).then(r => r.data)
 
 export interface WsTicket {
@@ -153,21 +149,6 @@ export interface WsTicket {
 // P5 WebSocket 一次性握手票据:连接 ASR WS 前换取,避免把长效 JWT 放进 query。
 export const mintWsTicket = (): Promise<Result<WsTicket>> =>
   client.post<Result<WsTicket>>('/api/ws-tickets').then(r => r.data)
-
-export interface PublicLatencyReport {
-  sessionId: string
-  lang: string
-  e2eMs: number
-  captureMs: number
-  rttMs: number
-  tailMs: number
-  outputLatencyMs: number
-  backlogMs: number
-  playbackRateMilli: number
-}
-
-export const reportPublicLatency = (params: PublicLatencyReport): Promise<Result<void>> =>
-  client.post<Result<void>>('/api/interpretation/public/latency', params).then(r => r.data)
 
 export const getUserInterpretationSessions = (keyword = ''): Promise<Result<InterpretationStatus[]>> =>
   client.get<Result<InterpretationStatus[]>>('/api/interpretation/sessions', { params: { keyword } }).then(r => r.data)

@@ -28,14 +28,6 @@ public class ShareWsTicketService {
         return issue(sessionId, null);
     }
 
-    public Issued issueAudioTicket(String sessionId, String lang) {
-        String normalized = com.si.backend.ws.ShareAudioWebSocketHandler.normalizeLang(lang);
-        if (normalized == null) {
-            throw BizException.of(ErrorCode.BAD_REQUEST, "Invalid audio language");
-        }
-        return issue(sessionId, normalized);
-    }
-
     public Entry consume(String ticket) {
         if (ticket == null || ticket.isBlank()) {
             return null;

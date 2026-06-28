@@ -1,12 +1,10 @@
 package com.si.backend.service;
 
-import com.si.backend.common.BizException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Anonymous share WS tickets: short-lived, one-time credentials bound to a shared session.
@@ -24,21 +22,6 @@ class ShareWsTicketServiceTest {
         assertEquals("s-1", entry.sessionId());
         assertNull(entry.lang());
         assertNull(service.consume(issued.ticket()));
-    }
-
-    @Test
-    void audioTicket_normalizesLanguage() {
-        ShareWsTicketService.Issued issued = service.issueAudioTicket("s-2", "id");
-        ShareWsTicketService.Entry entry = service.consume(issued.ticket());
-        assertEquals("s-2", entry.sessionId());
-        assertEquals("id", entry.lang());
-    }
-
-    @Test
-    void invalidAudioLanguage_isRejected() {
-        BizException error = assertThrows(BizException.class,
-                () -> service.issueAudioTicket("s-2", "fr-FR"));
-        assertEquals(400, error.getCode());
     }
 
     @Test

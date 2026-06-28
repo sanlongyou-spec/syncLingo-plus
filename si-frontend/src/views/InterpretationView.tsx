@@ -17,6 +17,7 @@ import { AUDIO_DEFAULTS } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import FontSizeControl from '../components/FontSizeControl'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
+import { VoiceMeeterOutput } from '../lib/voiceMeeterOutput'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
@@ -105,6 +106,9 @@ export default function InterpretationView() {
 
   const wsRef = useRef<AsrWebSocket | null>(null)
   const audioRef = useRef<AudioCapture | null>(null)
+  const voiceMeeterRef = useRef<VoiceMeeterOutput | null>(null)
+  /** 每个 TTS 任务已播放到的 chunkIndex，用于丢弃重复块并告警疑似缺块。 */
+  const ttsChunkIndexByTaskRef = useRef<Map<string, number>>(new Map())
   const sessionIdRef = useRef<string | null>(null)
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
@@ -154,6 +158,8 @@ export default function InterpretationView() {
       wsRef.current?.close()
       audioRef.current?.stop()
       audioRef.current = null
+      voiceMeeterRef.current?.stop()
+      voiceMeeterRef.current = null
     }
   }, [])
 
@@ -318,6 +324,28 @@ export default function InterpretationView() {
         })
         break
       }
+      case 'tts_audio': {
+        if (msg.audioBase64 && msg.targetLanguage) {
+          // 按 ttsTaskId+chunkIndex 去重并发现疑似缺块（顺序播放靠 VoiceMeeterOutput 内部排程）。
+          if (msg.ttsTaskId && typeof msg.chunkIndex === 'number') {
+            const lastIndex = ttsChunkIndexByTaskRef.current.get(msg.ttsTaskId) ?? -1
+            if (msg.chunkIndex <= lastIndex) break
+            if (msg.chunkIndex > lastIndex + 1) {
+              console.warn('[InterpretationView] possible missing chunk, taskId=%s expected=%d got=%d',
+                msg.ttsTaskId, lastIndex + 1, msg.chunkIndex)
+            }
+            ttsChunkIndexByTaskRef.current.set(msg.ttsTaskId, msg.chunkIndex)
+          }
+          const binary = atob(msg.audioBase64)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+          voiceMeeterRef.current?.play(
+            new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2)),
+            msg.targetLanguage,
+          )
+        }
+        break
+      }
       case 'started':
         setIsRunning(true)
         setError('')
@@ -364,6 +392,18 @@ export default function InterpretationView() {
     await ws.connect(sid)
     ws.onMessage(handleWsMessage)
     ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
+
+    // 译文出口就绪门禁：启动前必须确认 VoiceMeeter 输出设备就绪，否则阻止启动（绝不回退默认扬声器）。
+    const voiceMeeter = new VoiceMeeterOutput()
+    voiceMeeterRef.current = voiceMeeter
+    ttsChunkIndexByTaskRef.current.clear()
+    await voiceMeeter.init()
+    await voiceMeeter.applySinks()
+    if (!voiceMeeter.isReady()) {
+      voiceMeeter.stop()
+      voiceMeeterRef.current = null
+      throw new Error('未检测到就绪的 VoiceMeeter 输出设备（中文需「VoiceMeeter Input」、印尼语需「VoiceMeeter Aux Input」）。请先安装并启动 VoiceMeeter，授予浏览器音频设备权限后再开始。')
+    }
 
     const audio = new AudioCapture({
       sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
@@ -426,6 +466,9 @@ export default function InterpretationView() {
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null
+    voiceMeeterRef.current?.stop()
+    voiceMeeterRef.current = null
+    ttsChunkIndexByTaskRef.current.clear()
     await stopInterpretation(sid).then(res => {
       const warning = res?.data?.budgetWarning as string | undefined
       if (warning) {

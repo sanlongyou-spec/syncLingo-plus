@@ -76,8 +76,6 @@ public final class Constants {
     /** WebSocket ASR 路径 */
     public static final String WS_PATH_ASR = "/ws/asr";
     public static final String WS_PATH_SHARE = "/ws/share";
-    /** WebSocket 分享页音频分发路径（二进制 Opus） */
-    public static final String WS_PATH_SHARE_AUDIO = "/ws/share-audio";
     /** WebSocket 最大文本消息大小（64KB） */
     public static final int WS_MAX_TEXT_MESSAGE_SIZE = 1024 * 64;
     /** WebSocket 最大二进制消息大小（10MB，与 application.yml 保持一致） */

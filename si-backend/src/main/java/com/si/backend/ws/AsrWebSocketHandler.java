@@ -15,6 +15,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
@@ -40,18 +41,11 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final RealtimeInterpretationFacade realtimeFacade;
     private final ShareWebSocketHandler shareWebSocketHandler;
-    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
     private final UserWebSocketRegistry userWebSocketRegistry;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
-    /** 每个会话当前检测到的源语言，用于把原始麦克风音频路由给“选了源语言”的分享听众 */
-    private final Map<String, String> sessionSourceLangMap = new ConcurrentHashMap<>();
-    /** 会话配置的源语言(handleStart 传入)：为具体语言时原声按它路由，避免随每句检测漂移导致串台 */
-    private final Map<String, String> sessionConfiguredSourceLangMap = new ConcurrentHashMap<>();
-    /** 上次原声路由到的语言：仅在变化时打一条诊断日志，不逐包刷屏 */
-    private final Map<String, String> sessionAudioRouteLangMap = new ConcurrentHashMap<>();
     private final Map<String, String> webSocketSessionBizSessionMap = new ConcurrentHashMap<>();
     private final Map<String, String> bizSessionWebSocketMap = new ConcurrentHashMap<>();
     private final Set<String> stoppedWebSocketSessionIds = ConcurrentHashMap.newKeySet();
@@ -119,7 +113,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 sessionId, sourceLang, targetLang, msg.getVoiceId());
 
         sessionLangMap.put(sessionId, sourceLang + ":" + targetLang);
-        sessionConfiguredSourceLangMap.put(sessionId, sourceLang == null ? "" : sourceLang);
         realtimeFacade.startInterpretation(
                 sessionId,
                 sourceLang,
@@ -127,9 +120,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 msg.getVoiceId(),
                 // onRecognizing
                 (text, language, speakerId) -> {
-                    if (language != null && !language.isBlank()) {
-                        sessionSourceLangMap.put(sessionId, language);
-                    }
                     WsMessage out = new WsMessage();
                     out.setType(Constants.WS_MSG_TYPE_RECOGNIZING);
                     out.setSessionId(sessionId);
@@ -142,9 +132,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 },
                 // onRecognized：仅推送 WebSocket 消息，翻译/TTS 由 facade 内部管道处理
                 (text, language, speakerId) -> {
-                    if (language != null && !language.isBlank()) {
-                        sessionSourceLangMap.put(sessionId, language);
-                    }
                     log.info("[AsrWebSocketHandler] recognized, sessionId={}, speakerId={}, lang={}, textLen={}",
                             sessionId, speakerId, language, text != null ? text.length() : 0);
                     WsMessage out = new WsMessage();
@@ -175,14 +162,18 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     sendMessage(session, out);
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },
-                // onTtsAudio：将 TTS PCM 编码为 Opus，按目标语言扇出给分享页听众（不再发宿主/VoiceMeeter）
+                // onTtsAudio：将译文 TTS PCM 回推宿主前端，由前端按目标语言 setSinkId 路由到 VoiceMeeter
+                // （中文→Input/B1、印尼→Aux/B2、英语→VAIO3/B3）。原始麦克风音频绝不回推，不进 VoiceMeeter。
                 (pcmData, tLang, ttsTaskId, ttsSequence, chunkIndex, speechStartAtMs) -> {
-                    if (chunkIndex == 0) {
-                        // 该句首音：发标记，携带"开始收音→首音发出"的服务端耗时，供前端合成真实出声延迟
-                        int captureMs = (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() - speechStartAtMs);
-                        shareAudioWebSocketHandler.sendMarker(sessionId, tLang, captureMs);
-                    }
-                    shareAudioWebSocketHandler.broadcastPcm(sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS);
+                    WsMessage out = new WsMessage();
+                    out.setType(Constants.WS_MSG_TYPE_TTS_AUDIO);
+                    out.setSessionId(sessionId);
+                    out.setAudioBase64(Base64.getEncoder().encodeToString(pcmData));
+                    out.setTargetLanguage(tLang);
+                    out.setTtsTaskId(ttsTaskId);
+                    out.setTtsSequence(ttsSequence);
+                    out.setChunkIndex(chunkIndex);
+                    sendMessage(session, out);
                 },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)
@@ -221,19 +212,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         byte[] pcm = java.util.Base64.getDecoder().decode(data);
+        // 原始麦克风音频只进 ASR，绝不转发到任何音频出口(不进 VoiceMeeter、不发听众)。
         realtimeFacade.pushAudio(sessionId, pcm);
-        // 原始麦克风(16kHz)转发给“听该语言原声”的分享听众。会议指定了具体源语言时按它路由
-        // (避免随每句检测漂移/误判导致串台，如印尼语原声漏到中文频道)；仅 auto 时才用动态检测的源语言。
-        String configuredSource = sessionConfiguredSourceLangMap.get(sessionId);
-        String routeLang = isConcreteLang(configuredSource) ? configuredSource : sessionSourceLangMap.get(sessionId);
-        if (routeLang != null && !routeLang.isBlank()) {
-            String prev = sessionAudioRouteLangMap.put(sessionId, routeLang);
-            if (!routeLang.equals(prev)) {
-                log.info("[AsrWebSocketHandler] original-audio route lang, sessionId={}, routeLang={}, configured={}, detected={}",
-                        sessionId, routeLang, configuredSource, sessionSourceLangMap.get(sessionId));
-            }
-            shareAudioWebSocketHandler.broadcastPcm(sessionId, routeLang, pcm, Constants.DEFAULT_SAMPLE_RATE_ASR);
-        }
     }
 
     private void handleStop(WebSocketSession session, WsMessage msg) {
@@ -244,11 +224,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         stoppedWebSocketSessionIds.add(session.getId());
         cancelTransientCleanup(sessionId);
         sessionLangMap.remove(sessionId);
-        sessionSourceLangMap.remove(sessionId);
-        sessionConfiguredSourceLangMap.remove(sessionId);
-        sessionAudioRouteLangMap.remove(sessionId);
         realtimeFacade.stopInterpretation(sessionId);
-        shareAudioWebSocketHandler.closeSession(sessionId);
 
         WsMessage reply = new WsMessage();
         reply.setType(Constants.WS_MSG_TYPE_STOPPED);
@@ -294,9 +270,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (bizSessionId != null) {
             bizSessionWebSocketMap.remove(bizSessionId, session.getId());
             sessionLangMap.remove(bizSessionId);
-            sessionSourceLangMap.remove(bizSessionId);
-            sessionConfiguredSourceLangMap.remove(bizSessionId);
-            sessionAudioRouteLangMap.remove(bizSessionId);
             if (!stoppedWebSocketSessionIds.remove(session.getId())) {
                 scheduleTransientCleanup(bizSessionId);
             }
@@ -396,7 +369,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             log.info("[AsrWebSocketHandler] transient cleanup firing, sessionId={}, graceSeconds={}",
                     businessSessionId, TRANSIENT_DISCONNECT_GRACE_SECONDS);
             realtimeFacade.cleanupSession(businessSessionId);
-            shareAudioWebSocketHandler.closeSession(businessSessionId);
         }, TRANSIENT_DISCONNECT_GRACE_SECONDS, TimeUnit.SECONDS);
         pendingTransientCleanupTasks.put(businessSessionId, task);
         log.info("[AsrWebSocketHandler] transient cleanup scheduled, sessionId={}, graceSeconds={}",
@@ -440,15 +412,6 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             log.debug("[AsrWebSocketHandler] failed to close rejected connection, wsSessionId={}",
                     session.getId(), closeError);
         }
-    }
-
-    /** 是否为具体语言(非空、非 auto)。用于决定原声是否按配置源语言固定路由。 */
-    private boolean isConcreteLang(String lang) {
-        if (lang == null) {
-            return false;
-        }
-        String l = lang.trim().toLowerCase();
-        return !l.isEmpty() && !"auto".equals(l);
     }
 
     private record OutboundMessage(String json, WsMessage source, boolean audio) {
