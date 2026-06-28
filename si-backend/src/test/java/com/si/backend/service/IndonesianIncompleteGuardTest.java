@@ -45,6 +45,37 @@ class IndonesianIncompleteGuardTest {
         assertEquals("ID_CONNECTOR_TAIL", result.reason());
     }
 
+    // 残缺小数尾 "...dosis 14," → HOLD（印尼语逗号是小数点，小数部分未到达）
+    @Test
+    void incompleteDecimalTailHolds() {
+        GuardResult result = guard().check("nutren replas semen juga meningkat dengan dosis 14,");
+        assertEquals(Decision.HOLD, result.decision());
+        assertEquals("ID_DECIMAL_TAIL", result.reason());
+    }
+
+    // 完整小数 "...14,5" 与整数年份 "...2026"（无尾随逗号）不应被误判
+    @Test
+    void completeDecimalAndPlainNumberPass() {
+        assertTrue(guard().check("dosis pupuk mencapai 14,5 kg per pokok di kebun tersebut").isPass());
+        assertTrue(guard().check("rencana besar ini akan kita capai pada tahun 2026").isPass());
+    }
+
+    // 残缺小数尾弱边界：以前是 DOWNGRADE_PARTIAL，现在改为 HOLD 等小数补全
+    @Test
+    void incompleteDecimalTailHeldOnWeakBoundary() {
+        String working = "nutren replas semen juga meningkat dengan dosis 14,";
+        assertEquals(EmitAction.HOLD, guard().decideEmit(working, working.length(), "force-boundary"));
+    }
+
+    // 终稿外科式：残缺小数尾被剥掉，不发出 "14,"
+    @Test
+    void trimTailStripsIncompleteDecimal() {
+        String r = guard().trimIncompleteTail("nutren replas semen meningkat dengan dosis 14,");
+        assertFalse(r.endsWith("14,"), r);
+        assertFalse(r.endsWith(","), r);
+        assertTrue(r.endsWith("dosis"), r);
+    }
+
     // 3. 固定短语 masa depan 不可切断
     @Test
     void doesNotSplitMasaDepan() {

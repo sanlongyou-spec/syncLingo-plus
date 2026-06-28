@@ -94,6 +94,12 @@ public class IndonesianIncompleteGuard {
 
     private static final Pattern TOKEN_PATTERN = Pattern.compile("[\\p{L}\\p{Nd}]+");
 
+    /**
+     * 残缺小数尾：段以「数字 + 小数逗号」结尾（如 "dosis 14,"），印尼语逗号是小数点，
+     * 说明小数部分尚未到达 → 段在数字中间被切断，不完整。
+     */
+    private static final Pattern INCOMPLETE_DECIMAL_TAIL = Pattern.compile("\\d\\s*,\\s*$");
+
     private final boolean enabled;
     /** 印尼语输出地板（可见字符数）：短于此 → HOLD 退回下一轮并句。 */
     private final int minIdChars;
@@ -128,6 +134,9 @@ public class IndonesianIncompleteGuard {
         }
         if (CONNECTOR_TAILS.contains(last)) {
             return GuardResult.hold("ID_CONNECTOR_TAIL");
+        }
+        if (INCOMPLETE_DECIMAL_TAIL.matcher(segment).find()) {
+            return GuardResult.hold("ID_DECIMAL_TAIL");
         }
         if (SUSPICIOUS_HEADS.contains(first)) {
             return GuardResult.hold("ID_SUSPICIOUS_HEAD");
@@ -366,6 +375,12 @@ public class IndonesianIncompleteGuard {
             List<Token> tokens = tokenize(current);
             if (tokens.isEmpty()) {
                 return "";
+            }
+            // 残缺小数尾（数字+小数逗号无小数部分）：剥掉尾部数字与其后逗号，避免发出 "14," 这类被切断的数字。
+            if (INCOMPLETE_DECIMAL_TAIL.matcher(current).find()) {
+                int cut = tokens.get(tokens.size() - 1).start();
+                current = current.substring(0, cut).trim();
+                continue;
             }
             String last = tokens.get(tokens.size() - 1).text();
             if (HALF_WORD_PREFIXES.contains(last) || CONNECTOR_TAILS.contains(last)) {
