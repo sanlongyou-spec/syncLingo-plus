@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
+import com.si.backend.common.TtsStreamHandle;
 import com.si.backend.config.CartesiaProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.pool2.BasePooledObjectFactory;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * TTS 业务服务，管理 Cartesia WebSocket 连接池，按音色 ID 隔离连接池。
@@ -26,6 +28,15 @@ public class CartesiaStreamingIntegration {
 
     /** 全局共用连接池的 key（音色每句指定，连接不绑音色，所以只需一个池）。 */
     private static final String SHARED_POOL_KEY = "__cartesia_shared__";
+    private static final int BYTES_STREAM_CHUNK_SIZE = 8192;
+    private static final int BYTES_WRITE_TIMEOUT_SECONDS = 30;
+    private static final int ERROR_BODY_LOG_LIMIT = 500;
+    private static final okhttp3.MediaType JSON_MEDIA_TYPE =
+            okhttp3.MediaType.parse("application/json; charset=utf-8");
+    private static final okhttp3.OkHttpClient BYTES_HTTP_CLIENT = new okhttp3.OkHttpClient.Builder()
+            .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .writeTimeout(BYTES_WRITE_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+            .build();
 
     private final CartesiaProperties properties;
     private final ObjectMapper objectMapper;
@@ -37,10 +48,8 @@ public class CartesiaStreamingIntegration {
     }
 
     /**
-     * 启动时异步预热默认音色连接池，避免阻塞应用启动流程。
-     */
-    /**
-     * 流式合成语音，通过连接池管理 Cartesia WebSocket 连接。
+     * 流式合成完整句子。完整译文已在业务层聚合成句，因此主路径使用 Cartesia /tts/bytes
+     * 单请求流式响应，避免 WebSocket context 复用、迟到帧和 done 事件耦合。
      *
      * @param voiceId    音色 ID（也是连接池 key）
      * @param text       待合成文本
@@ -50,7 +59,7 @@ public class CartesiaStreamingIntegration {
      * @param onComplete 合成完成回调
      * @param onError    错误回调
      */
-    public void synthesizeStream(
+    public TtsStreamHandle synthesizeStream(
             String voiceId,
             String text,
             int sampleRate,
@@ -60,54 +69,187 @@ public class CartesiaStreamingIntegration {
             Runnable onComplete,
             java.util.function.Consumer<String> onError
     ) {
-        log.info("[CartesiaStreamingIntegration] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}, language={}",
-                voiceId, text != null ? text.length() : 0, sampleRate, speed, language);
+        return synthesizeBytesStream(voiceId, text, sampleRate, speed, language, onChunk, onComplete, onError);
+    }
 
-        GenericObjectPool<CartesiaWsClient> pool = getOrCreatePool();
-
-        CartesiaWsClient borrowedClient = null;
+    private TtsStreamHandle synthesizeBytesStream(
+            String voiceId,
+            String text,
+            int sampleRate,
+            double speed,
+            String language,
+            java.util.function.Consumer<byte[]> onChunk,
+            Runnable onComplete,
+            java.util.function.Consumer<String> onError
+    ) {
+        String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
+        String requestId = java.util.UUID.randomUUID().toString();
+        long startMs = System.currentTimeMillis();
+        String url = httpApiBaseUrl() + Constants.CARTESIA_TTS_BYTES_PATH;
+        String payload;
         try {
-            borrowedClient = pool.borrowObject();
-            log.debug("[CartesiaStreamingIntegration] borrowed client, voiceId={}, active={}, idle={}",
-                    voiceId, pool.getNumActive(), pool.getNumIdle());
-
-            borrowedClient.setVoiceId(voiceId);
-
-            // Use a holder array to allow lambda to reference the client
-            // while still being able to check for null in catch block
-            final CartesiaWsClient[] clientHolder = new CartesiaWsClient[] { borrowedClient };
-
-            // streamSynthesize 是异步的（newWebSocket 非阻塞，立即返回）。
-            // 必须在 onComplete / onError 里归还 client，不能在 finally 里立即归还。
-            clientHolder[0].streamSynthesize(
-                    text,
-                    sampleRate,
-                    speed,
-                    language,
-                    onChunk,
-                    () -> {
-                        returnClient(pool, clientHolder[0], voiceId);
-                        onComplete.run();
-                    },
-                    err -> {
-                        invalidateClient(pool, clientHolder[0], voiceId, err);
-                        clientHolder[0] = null;
-                        onError.accept(err);
-                    }
-            );
-
+            payload = objectMapper.writeValueAsString(buildBytesTtsRequest(
+                    text, sampleRate, speed, language, currentVoiceId));
         } catch (Exception e) {
-            log.error("[CartesiaStreamingIntegration] synthesizeStream borrow error, voiceId={}", voiceId, e);
-            if (borrowedClient != null) {
-                try {
-                    pool.invalidateObject(borrowedClient);
-                } catch (Exception invalidEx) {
-                    log.warn("[CartesiaStreamingIntegration] invalidateObject error, voiceId={}", voiceId, invalidEx);
+            onError.accept("TTS 合成失败: " + e.getMessage());
+            return TtsStreamHandle.NOOP;
+        }
+
+        log.info("[CartesiaStreamingIntegration] synthesizeBytes start, requestId={}, voiceId={}, textLen={}, sampleRate={}, speed={}, language={}, modelId={}, url={}",
+                requestId, currentVoiceId, text != null ? text.length() : 0, sampleRate, speed, language,
+                properties.getTts().getModelId(), url);
+
+        okhttp3.Request request = new okhttp3.Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer " + properties.getApiKey())
+                .addHeader("Cartesia-Version", Constants.CARTESIA_VERSION_HEADER)
+                .post(okhttp3.RequestBody.create(payload, JSON_MEDIA_TYPE))
+                .build();
+        okhttp3.Call call = BYTES_HTTP_CLIENT.newCall(request);
+        AtomicBoolean cancelRequested = new AtomicBoolean(false);
+        AtomicBoolean terminalCallbackFired = new AtomicBoolean(false);
+
+        call.enqueue(new okhttp3.Callback() {
+            @Override
+            public void onFailure(okhttp3.Call call, java.io.IOException e) {
+                if (cancelRequested.get() || call.isCanceled()) {
+                    log.warn("[CartesiaStreamingIntegration] synthesizeBytes cancelled, requestId={}, voiceId={}, elapsedMs={}, reason={}",
+                            requestId, currentVoiceId, System.currentTimeMillis() - startMs, e.getMessage());
+                    completeBytesOnce(terminalCallbackFired, onComplete);
+                    return;
+                }
+                log.error("[CartesiaStreamingIntegration] synthesizeBytes request failed, requestId={}, voiceId={}, elapsedMs={}",
+                        requestId, currentVoiceId, System.currentTimeMillis() - startMs, e);
+                failBytesOnce(terminalCallbackFired, onError, "TTS bytes 请求失败: " + e.getMessage());
+            }
+
+            @Override
+            public void onResponse(okhttp3.Call call, okhttp3.Response response) {
+                long chunkCount = 0L;
+                long totalBytes = 0L;
+                try (response) {
+                    if (!response.isSuccessful()) {
+                        String body = safeErrorBody(response.body());
+                        log.warn("[CartesiaStreamingIntegration] synthesizeBytes non-2xx, requestId={}, status={}, body='{}', elapsedMs={}",
+                                requestId, response.code(), body, System.currentTimeMillis() - startMs);
+                        failBytesOnce(terminalCallbackFired, onError,
+                                "TTS bytes 请求失败: HTTP " + response.code());
+                        return;
+                    }
+                    okhttp3.ResponseBody responseBody = response.body();
+                    if (responseBody == null) {
+                        failBytesOnce(terminalCallbackFired, onError, "TTS bytes 响应为空");
+                        return;
+                    }
+                    try (java.io.InputStream input = responseBody.byteStream()) {
+                        byte[] buffer = new byte[BYTES_STREAM_CHUNK_SIZE];
+                        int read;
+                        while (!cancelRequested.get() && (read = input.read(buffer)) != -1) {
+                            if (read <= 0) {
+                                continue;
+                            }
+                            byte[] pcm = java.util.Arrays.copyOf(buffer, read);
+                            chunkCount++;
+                            totalBytes += read;
+                            onChunk.accept(pcm);
+                        }
+                    }
+                    if (cancelRequested.get() || call.isCanceled()) {
+                        log.warn("[CartesiaStreamingIntegration] synthesizeBytes stopped early, requestId={}, voiceId={}, chunks={}, bytes={}, elapsedMs={}",
+                                requestId, currentVoiceId, chunkCount, totalBytes, System.currentTimeMillis() - startMs);
+                    } else {
+                        log.info("[CartesiaStreamingIntegration] synthesizeBytes end, requestId={}, voiceId={}, chunks={}, bytes={}, elapsedMs={}",
+                                requestId, currentVoiceId, chunkCount, totalBytes, System.currentTimeMillis() - startMs);
+                    }
+                    completeBytesOnce(terminalCallbackFired, onComplete);
+                } catch (Exception e) {
+                    if (cancelRequested.get() || call.isCanceled()) {
+                        log.warn("[CartesiaStreamingIntegration] synthesizeBytes cancelled while reading, requestId={}, voiceId={}, chunks={}, bytes={}, elapsedMs={}, reason={}",
+                                requestId, currentVoiceId, chunkCount, totalBytes,
+                                System.currentTimeMillis() - startMs, e.getMessage());
+                        completeBytesOnce(terminalCallbackFired, onComplete);
+                    } else {
+                        log.error("[CartesiaStreamingIntegration] synthesizeBytes read failed, requestId={}, voiceId={}, chunks={}, bytes={}, elapsedMs={}",
+                                requestId, currentVoiceId, chunkCount, totalBytes,
+                                System.currentTimeMillis() - startMs, e);
+                        failBytesOnce(terminalCallbackFired, onError, "TTS bytes 读取失败: " + e.getMessage());
+                    }
                 }
             }
-            onError.accept("TTS 合成失败: " + e.getMessage());
+        });
+
+        return reason -> {
+            if (cancelRequested.compareAndSet(false, true)) {
+                log.warn("[CartesiaStreamingIntegration] synthesizeBytes cancel requested, requestId={}, voiceId={}, reason={}",
+                        requestId, currentVoiceId, reason);
+                call.cancel();
+            }
+        };
+    }
+
+    Map<String, Object> buildBytesTtsRequest(String text, int sampleRate, double speed, String language,
+                                             String currentVoiceId) {
+        Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
+        ttsMsg.put(Constants.CARTESIA_FIELD_MODEL_ID, properties.getTts().getModelId());
+        if (language != null && !language.isBlank()) {
+            ttsMsg.put("language", language);
         }
-        // 注意：不在 finally 归还 client。client 在 onComplete / onError 回调里归还。
+        ttsMsg.put(Constants.CARTESIA_FIELD_TRANSCRIPT, text);
+        ttsMsg.put(Constants.CARTESIA_FIELD_VOICE, java.util.Map.of(
+                "mode", "id",
+                "id", currentVoiceId
+        ));
+        ttsMsg.put(Constants.CARTESIA_FIELD_OUTPUT_FORMAT, java.util.Map.of(
+                Constants.CARTESIA_FIELD_CONTAINER, Constants.CARTESIA_CONTAINER,
+                Constants.CARTESIA_FIELD_ENCODING, Constants.CARTESIA_ENCODING_PCM_S16LE,
+                Constants.CARTESIA_FIELD_SAMPLE_RATE, sampleRate
+        ));
+        ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
+        return ttsMsg;
+    }
+
+    String httpApiBaseUrl() {
+        String apiUrl = properties.getApiUrl() == null ? "" : properties.getApiUrl().trim();
+        if (apiUrl.startsWith("wss://")) {
+            apiUrl = "https://" + apiUrl.substring("wss://".length());
+        } else if (apiUrl.startsWith("ws://")) {
+            apiUrl = "http://" + apiUrl.substring("ws://".length());
+        }
+        while (apiUrl.endsWith("/")) {
+            apiUrl = apiUrl.substring(0, apiUrl.length() - 1);
+        }
+        return apiUrl;
+    }
+
+    private static void completeBytesOnce(AtomicBoolean terminalCallbackFired, Runnable onComplete) {
+        if (terminalCallbackFired.compareAndSet(false, true)) {
+            onComplete.run();
+        }
+    }
+
+    private static void failBytesOnce(
+            AtomicBoolean terminalCallbackFired,
+            java.util.function.Consumer<String> onError,
+            String error
+    ) {
+        if (terminalCallbackFired.compareAndSet(false, true)) {
+            onError.accept(error);
+        }
+    }
+
+    private static String safeErrorBody(okhttp3.ResponseBody body) {
+        if (body == null) {
+            return "";
+        }
+        try {
+            String value = body.string();
+            if (value.length() <= ERROR_BODY_LOG_LIMIT) {
+                return value;
+            }
+            return value.substring(0, ERROR_BODY_LOG_LIMIT) + "...";
+        } catch (Exception e) {
+            return "failed to read error body: " + e.getMessage();
+        }
     }
 
     private void returnClient(GenericObjectPool<CartesiaWsClient> pool, CartesiaWsClient client, String voiceId) {
@@ -294,7 +436,7 @@ public class CartesiaStreamingIntegration {
          * 连接已开就直接在老连接上发新请求（新 context_id）；否则新建连接并在 onOpen 时发送。
          * 合成完成<b>不关连接</b>，留给下次复用，省掉每句的 TCP/TLS/WS 握手延迟。
          */
-        public void streamSynthesize(
+        public String streamSynthesize(
                 String text,
                 int sampleRate,
                 double speed,
@@ -314,7 +456,11 @@ public class CartesiaStreamingIntegration {
             String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
             String contextId = java.util.UUID.randomUUID().toString();
             this.currentContextId = contextId;
-            String payload = toJson(buildTtsRequest(text, sampleRate, speed, language, currentVoiceId, contextId));
+            int maxBufferDelayMs = Constants.CARTESIA_FULL_SENTENCE_MAX_BUFFER_DELAY_MS;
+            String payload = toJson(buildTtsRequest(text, sampleRate, speed, language, currentVoiceId, contextId, maxBufferDelayMs));
+            log.debug("[CartesiaWsClient] stream request prepared, voiceId={}, contextId={}, modelId={}, maxBufferDelayMs={}, textLen={}",
+                    currentVoiceId, contextId, properties.getTts().getModelId(), maxBufferDelayMs,
+                    text != null ? text.length() : 0);
 
             // 健康检查：空闲过久的连接可能已静默死亡（send 仍会成功入队但永无响应），强制重建
             boolean stale = lastActivityMs > 0L && (System.currentTimeMillis() - lastActivityMs) > WS_IDLE_STALE_MS;
@@ -328,6 +474,7 @@ public class CartesiaStreamingIntegration {
             if (!reused) {
                 openAndSend(payload);
             }
+            return contextId;
         }
 
         /** 记录合成活动并重置空闲看门狗，避免长句在持续出块时被固定总时长截断。 */
@@ -558,7 +705,7 @@ public class CartesiaStreamingIntegration {
         }
 
         private Map<String, Object> buildTtsRequest(String text, int sampleRate, double speed, String language,
-                                                    String currentVoiceId, String contextId) {
+                                                    String currentVoiceId, String contextId, int maxBufferDelayMs) {
             Map<String, Object> ttsMsg = new java.util.LinkedHashMap<>();
             ttsMsg.put(Constants.CARTESIA_FIELD_TYPE, Constants.CARTESIA_MSG_TYPE_TTS_REQUEST);
             ttsMsg.put(Constants.CARTESIA_FIELD_MODEL_ID, properties.getTts().getModelId());
@@ -576,7 +723,7 @@ public class CartesiaStreamingIntegration {
             ttsMsg.put("generation_config", java.util.Map.of(Constants.CARTESIA_FIELD_SPEED, speed));
             ttsMsg.put(Constants.CARTESIA_FIELD_CONTEXT_ID, contextId);
             ttsMsg.put(Constants.CARTESIA_FIELD_CONTINUE, false);
-            ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, properties.getTts().getMaxBufferDelayMs());
+            ttsMsg.put(Constants.CARTESIA_FIELD_MAX_BUFFER_DELAY_MS, maxBufferDelayMs);
             return ttsMsg;
         }
 

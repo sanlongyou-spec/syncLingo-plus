@@ -1,7 +1,9 @@
 package com.si.backend.facade;
 
 import com.si.backend.common.Constants;
+import com.si.backend.common.TtsStreamHandle;
 import com.si.backend.config.CartesiaProperties;
+import com.si.backend.entity.InterpretationRecord;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
 import com.si.backend.service.IndonesianIncompleteGuard;
@@ -407,7 +409,7 @@ public class RealtimeInterpretationFacade {
         if (isCompressionDirection(sourceLang, targetLang)) {
             sessionService.addLlmTokens(sessionId, estimateTokens(text), estimateTokens(translated));
         }
-        recordService.saveTranslatedRecord(sessionId, sourceLang, targetLang, text, translated);
+        InterpretationRecord record = recordService.saveTranslatedRecord(sessionId, sourceLang, targetLang, text, translated);
 
         TranslationResultCallback onTranslated = sessionTranslatedCallbackMap.get(sessionId);
         if (onTranslated != null && isPipelineActive(sessionId, "before_translated_callback")) {
@@ -421,9 +423,12 @@ public class RealtimeInterpretationFacade {
         final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang, sessionId, speakerId);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
+        final Long recordId = record != null ? record.getId() : null;
+        final Integer recordSeq = record != null ? record.getSeq() : null;
         final TtsTextNormalizer.Result ttsTextResult =
                 TtsTextNormalizer.normalizeForTts(finalTranslated, finalTargetLang);
         final String finalTtsText = ttsTextResult.text();
+        final String ttsTextHash = diagnosticHash(finalTtsText);
         final long ttsSequence = reservation.sequence();
         final String ttsTaskId = reservation.taskId();
         final double ttsSpeed = resolveTtsSpeed(finalTargetLang);
@@ -431,12 +436,14 @@ public class RealtimeInterpretationFacade {
         final long maxForwardAudioMs = TtsTextNormalizer.maxForwardAudioMs(finalTtsText, finalTargetLang);
 
         if (ttsTextResult.changed()) {
-            log.info("[RealtimeInterpretationFacade] TTS text normalized, sessionId={}, taskId={}, sequence={}, originalLen={}, ttsLen={}, originalPreview='{}', ttsPreview='{}'",
-                    sessionId, ttsTaskId, ttsSequence, finalTranslated.length(), finalTtsText.length(),
+            log.info("[RealtimeInterpretationFacade] TTS text normalized, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, originalLen={}, ttsLen={}, originalPreview='{}', ttsPreview='{}'",
+                    sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash,
+                    finalTranslated.length(), finalTtsText.length(),
                     previewForLog(finalTranslated, 120), previewForLog(finalTtsText, 120));
         }
-        log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, textLen={}, ttsTextLen={}, ttsTextChanged={}, maxForwardAudioMs={}, voiceId={}, speed={}, prevDone={}",
-                sessionId, ttsTaskId, ttsSequence, finalTranslated.length(), finalTtsText.length(),
+        log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, textLen={}, ttsTextLen={}, ttsTextChanged={}, maxForwardAudioMs={}, voiceId={}, speed={}, prevDone={}",
+                sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash,
+                finalTranslated.length(), finalTtsText.length(),
                 ttsTextResult.changed(), maxForwardAudioMs, resolvedVoiceId, ttsSpeed, reservation.previous().isDone());
 
         BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
@@ -447,6 +454,8 @@ public class RealtimeInterpretationFacade {
         final AtomicLong forwardedChunkCounter = new AtomicLong(0);
         final AtomicBoolean ttsAudioTruncated = new AtomicBoolean(false);
         final AtomicReference<String> terminalReason = new AtomicReference<>();
+        final AtomicReference<TtsStreamHandle> ttsStreamHandle = new AtomicReference<>(TtsStreamHandle.NOOP);
+        final AtomicReference<String> pendingCancelReason = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
             if (!isPipelineActive(sessionId, "before_tts_synth")) {
@@ -456,7 +465,7 @@ public class RealtimeInterpretationFacade {
 
             long ttsStart = System.currentTimeMillis();
             AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
-            ttsService.synthesizeStream(
+            TtsStreamHandle handle = ttsService.synthesizeStream(
                     resolvedVoiceId, finalTtsText, cartesiaProperties.getTts().getSampleRate(),
                     ttsSpeed, cartesiaLanguage(finalTargetLang),
                     pcm -> {
@@ -466,12 +475,16 @@ public class RealtimeInterpretationFacade {
                                 forwardedPcmBytes.get() + pcm.length, ttsSampleRate);
                         if (maxForwardAudioMs > 0 && nextForwardAudioMs > maxForwardAudioMs) {
                             if (ttsAudioTruncated.compareAndSet(false, true)) {
-                                log.warn("[RealtimeInterpretationFacade] TTS audio duration guard triggered, sessionId={}, taskId={}, sequence={}, receivedChunks={}, receivedAudioMs={}, forwardedAudioMs={}, maxForwardAudioMs={}, textLen={}, ttsTextLen={}, ttsPreview='{}'",
-                                        sessionId, ttsTaskId, ttsSequence, receivedChunks,
+                                String cancelReason = "duration guard: taskId=" + ttsTaskId;
+                                terminalReason.compareAndSet(null, "duration_guard");
+                                pendingCancelReason.compareAndSet(null, cancelReason);
+                                log.warn("[RealtimeInterpretationFacade] TTS audio duration guard triggered, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, receivedChunks={}, receivedAudioMs={}, forwardedAudioMs={}, maxForwardAudioMs={}, textLen={}, ttsTextLen={}, ttsPreview='{}'",
+                                        sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash, receivedChunks,
                                         TtsTextNormalizer.pcmDurationMs(receivedBytes, ttsSampleRate),
                                         TtsTextNormalizer.pcmDurationMs(forwardedPcmBytes.get(), ttsSampleRate),
                                         maxForwardAudioMs, finalTranslated.length(), finalTtsText.length(),
                                         previewForLog(finalTtsText, 120));
+                                ttsStreamHandle.get().cancel(cancelReason);
                             }
                             return;
                         }
@@ -504,8 +517,8 @@ public class RealtimeInterpretationFacade {
                                     forwardedChunkCounter.get(), System.currentTimeMillis() - ttsStart);
                             long audioDurationMs = TtsTextNormalizer.pcmDurationMs(receivedPcmBytes.get(), ttsSampleRate);
                             long forwardedAudioDurationMs = TtsTextNormalizer.pcmDurationMs(forwardedPcmBytes.get(), ttsSampleRate);
-                            log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, lang={}, audioDurationMs={}, forwardedAudioDurationMs={}, maxForwardAudioMs={}, truncated={}, sourceSpeechWindowMs={}, textLen={}, ttsTextLen={}",
-                                    sessionId, ttsTaskId, finalTargetLang, audioDurationMs,
+                            log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, lang={}, audioDurationMs={}, forwardedAudioDurationMs={}, maxForwardAudioMs={}, truncated={}, sourceSpeechWindowMs={}, textLen={}, ttsTextLen={}",
+                                    sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash, finalTargetLang, audioDurationMs,
                                     forwardedAudioDurationMs, maxForwardAudioMs, ttsAudioTruncated.get(),
                                     translateStart - speechStartAtMs, finalTranslated.length(), finalTtsText.length());
                         } finally {
@@ -522,6 +535,11 @@ public class RealtimeInterpretationFacade {
                             audioQueue.offer(TTS_END);
                         }
                     });
+            ttsStreamHandle.set(handle != null ? handle : TtsStreamHandle.NOOP);
+            String cancelReason = pendingCancelReason.get();
+            if (cancelReason != null) {
+                ttsStreamHandle.get().cancel(cancelReason);
+            }
             try {
                 long orderedWaitStart = System.currentTimeMillis();
                 awaitPreviousTtsReservation(reservation);
@@ -679,6 +697,10 @@ public class RealtimeInterpretationFacade {
             return compact;
         }
         return compact.substring(0, Math.max(0, maxChars - 3)) + "...";
+    }
+
+    private static String diagnosticHash(String text) {
+        return text == null ? "null" : Integer.toHexString(text.hashCode());
     }
 
     private record TtsBufferedChunk(

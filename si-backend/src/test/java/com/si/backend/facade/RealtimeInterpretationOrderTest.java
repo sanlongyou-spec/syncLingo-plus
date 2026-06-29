@@ -1,5 +1,6 @@
 package com.si.backend.facade;
 
+import com.si.backend.common.TtsStreamHandle;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.service.AsrService;
@@ -96,7 +97,7 @@ class RealtimeInterpretationOrderTest {
             Runnable onComplete = invocation.getArgument(6);
             onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2)});
             onComplete.run();
-            return null;
+            return TtsStreamHandle.NOOP;
         }).when(ttsService).synthesizeStream(
                 anyString(),
                 anyString(),
@@ -184,13 +185,13 @@ class RealtimeInterpretationOrderTest {
                 assertTrue(releaseFirstSynth.await(5, TimeUnit.SECONDS));
                 onChunk.accept(new byte[]{1});
                 onComplete.run();
-                return null;
+                return TtsStreamHandle.NOOP;
             }
             if ("second-translated".equals(text)) {
                 secondSynthStarted.countDown();
                 onChunk.accept(new byte[]{2});
                 onComplete.run();
-                return null;
+                return TtsStreamHandle.NOOP;
             }
             throw new AssertionError("Unexpected TTS text: " + text);
         }).when(ttsService).synthesizeStream(
@@ -276,6 +277,7 @@ class RealtimeInterpretationOrderTest {
                 .thenReturn(translated);
 
         AtomicReference<String> synthesizedText = new AtomicReference<>();
+        AtomicReference<String> cancelReason = new AtomicReference<>();
         doAnswer(invocation -> {
             synthesizedText.set(invocation.getArgument(1));
             @SuppressWarnings("unchecked")
@@ -285,7 +287,7 @@ class RealtimeInterpretationOrderTest {
                 onChunk.accept(oneSecondPcm);
             }
             onComplete.run();
-            return null;
+            return (TtsStreamHandle) cancelReason::set;
         }).when(ttsService).synthesizeStream(
                 anyString(),
                 anyString(),
@@ -309,6 +311,7 @@ class RealtimeInterpretationOrderTest {
         assertEquals(normalized.text(), synthesizedText.get());
         assertEquals(expectedForwardedChunks, forwardedChunks.get());
         assertTrue(forwardedChunks.get() < 40);
+        assertTrue(cancelReason.get() != null && cancelReason.get().contains("duration guard"));
     }
 
     @SuppressWarnings("unchecked")

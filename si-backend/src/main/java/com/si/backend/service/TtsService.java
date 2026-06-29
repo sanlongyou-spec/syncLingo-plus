@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
 import com.si.backend.config.CartesiaProperties;
+import com.si.backend.common.TtsStreamHandle;
 import com.si.backend.integration.CartesiaStreamingIntegration;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -42,7 +43,7 @@ public class TtsService {
         });
     }
 
-    public void synthesizeStream(
+    public TtsStreamHandle synthesizeStream(
             String voiceId,
             String text,
             int sampleRate,
@@ -54,7 +55,7 @@ public class TtsService {
     ) {
         log.info("[TtsService] synthesizeStream start, voiceId={}, textLen={}, sampleRate={}, speed={}, language={}",
                 voiceId, text != null ? text.length() : 0, sampleRate, speed, language);
-        cartesiaStreamingIntegration.synthesizeStream(
+        return cartesiaStreamingIntegration.synthesizeStream(
                 voiceId,
                 text,
                 sampleRate,
