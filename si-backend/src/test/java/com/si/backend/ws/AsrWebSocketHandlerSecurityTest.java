@@ -112,6 +112,47 @@ class AsrWebSocketHandlerSecurityTest {
     }
 
     @Test
+    void playbackLogBeforeStart_isRejectedAndConnectionClosed() throws Exception {
+        session = session("ws-playback-1", 5L);
+        handler.afterConnectionEstablished(session);
+
+        handler.handleTextMessage(session, message(
+                "tts_playback_log",
+                "s-playback",
+                "\"event\":\"drop_chunk\",\"ttsTaskId\":\"task-1\",\"chunkIndex\":3"
+        ));
+
+        verify(realtimeFacade, never()).pushAudio(any(), any());
+        verify(session).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    void boundPlaybackLog_isAcceptedWithoutBusinessAudioAction() throws Exception {
+        session = session("ws-playback-2", 5L);
+        InterpretationSession owned = new InterpretationSession();
+        owned.setSessionId("s-playback-2");
+        owned.setUserId(5L);
+        when(ownershipPolicy.requireOwnedSession(new AuthenticatedActor(5L), "s-playback-2")).thenReturn(owned);
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, message(
+                "start",
+                "s-playback-2",
+                "\"sourceLang\":\"zh-CN\",\"targetLang\":\"id-ID\""
+        ));
+
+        handler.handleTextMessage(session, message(
+                "tts_playback_log",
+                "s-playback-2",
+                "\"event\":\"schedule_checkpoint\",\"targetLanguage\":\"zh-CN\",\"playbackLang\":\"zh\","
+                        + "\"ttsTaskId\":\"task-2\",\"ttsSequence\":2,\"chunkIndex\":0,"
+                        + "\"durationMs\":170,\"scheduledAheadMs\":80,\"pendingCount\":1"
+        ));
+
+        verify(realtimeFacade, never()).pushAudio(any(), any());
+        verify(session, never()).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
     void boundConnectionCannotSwitchSession() throws Exception {
         session = session("ws-4", 5L);
         InterpretationSession owned = new InterpretationSession();

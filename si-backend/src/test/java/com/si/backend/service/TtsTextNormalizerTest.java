@@ -42,9 +42,17 @@ class TtsTextNormalizerTest {
         long shortBudget = TtsTextNormalizer.maxForwardAudioMs("弄给分区的最高施肥剂量为12.36公斤每株。", "zh-CN");
         long longBudget = TtsTextNormalizer.maxForwardAudioMs("这是一段很长的中文译文".repeat(20), "zh-CN");
 
-        assertTrue(shortBudget >= 8_000L);
-        assertTrue(shortBudget < 15_000L);
-        assertEquals(30_000L, longBudget);
+        assertTrue(shortBudget >= 5_000L);
+        assertTrue(shortBudget <= 8_000L);
+        assertEquals(18_000L, longBudget);
+    }
+
+    @Test
+    void limitsShortNumericHeavyChineseSentencesMoreAggressively() {
+        assertEquals(5_000L, TtsTextNormalizer.maxForwardAudioMs("x".repeat(10), "zh-CN"));
+        assertEquals(6_000L, TtsTextNormalizer.maxForwardAudioMs("x".repeat(28), "zh-CN"));
+        assertEquals(10_350L, TtsTextNormalizer.maxForwardAudioMs("x".repeat(57), "zh-CN"));
+        assertEquals(45_000L, TtsTextNormalizer.maxForwardAudioMs("x".repeat(57), "id"));
     }
 
     @Test

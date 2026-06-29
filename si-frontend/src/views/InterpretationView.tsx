@@ -22,7 +22,7 @@ import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
 import { LANGUAGE_OPTIONS } from '../types'
-import type { Meeting, UserVoice, WsMessage } from '../types'
+import type { Meeting, TtsPlaybackLog, UserVoice, WsMessage } from '../types'
 import './InterpretationView.css'
 
 interface TranscriptTranslation {
@@ -222,6 +222,12 @@ export default function InterpretationView() {
     wsRef.current?.setVoice(sid, speakerId, voiceId)
   }
 
+  const reportTtsPlaybackLog = useCallback((event: TtsPlaybackLog) => {
+    const activeSessionId = sessionIdRef.current
+    if (!activeSessionId) return
+    wsRef.current?.sendTtsPlaybackLog(activeSessionId, event)
+  }, [])
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     const messageSpeakerId =
       normalizeVoiceCode(msg.speakerId) ||
@@ -332,10 +338,28 @@ export default function InterpretationView() {
             if (msg.chunkIndex === 0) {
               console.log('[tts route] taskId=%s targetLanguage=%s', msg.ttsTaskId, msg.targetLanguage)
             }
-            if (msg.chunkIndex <= lastIndex) break
+            if (msg.chunkIndex <= lastIndex) {
+              reportTtsPlaybackLog({
+                event: 'duplicate_chunk',
+                targetLanguage: msg.targetLanguage,
+                ttsTaskId: msg.ttsTaskId,
+                ttsSequence: msg.ttsSequence,
+                chunkIndex: msg.chunkIndex,
+                detail: `lastIndex=${lastIndex}`,
+              })
+              break
+            }
             if (msg.chunkIndex > lastIndex + 1) {
               console.warn('[InterpretationView] possible missing chunk, taskId=%s expected=%d got=%d',
                 msg.ttsTaskId, lastIndex + 1, msg.chunkIndex)
+              reportTtsPlaybackLog({
+                event: 'possible_missing_chunk',
+                targetLanguage: msg.targetLanguage,
+                ttsTaskId: msg.ttsTaskId,
+                ttsSequence: msg.ttsSequence,
+                chunkIndex: msg.chunkIndex,
+                detail: `expected=${lastIndex + 1} got=${msg.chunkIndex}`,
+              })
             }
             ttsChunkIndexByTaskRef.current.set(msg.ttsTaskId, msg.chunkIndex)
           }
@@ -373,7 +397,7 @@ export default function InterpretationView() {
         setError(msg.message || '发生错误')
         break
     }
-  }, [rememberSpeakerName, resolveSpeakerName])
+  }, [rememberSpeakerName, reportTtsPlaybackLog, resolveSpeakerName])
 
   const resumeStoredSessionId = async () => {
     const storedSessionId = localStorage.getItem(STORAGE_KEYS.CURRENT_SESSION_ID)
@@ -402,7 +426,9 @@ export default function InterpretationView() {
     ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
 
     // Confirm VB-CABLE outputs before starting capture; never fall back to the default speaker.
-    const vbCable = new VbCableOutput()
+    const vbCable = new VbCableOutput(event => {
+      ws.sendTtsPlaybackLog(sessionIdRef.current || sid, event)
+    })
 
     vbCableRef.current = vbCable
     ttsChunkIndexByTaskRef.current.clear()

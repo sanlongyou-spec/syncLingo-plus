@@ -1,6 +1,8 @@
 import { TTS_OUTPUT_CABLE, TTS_OUTPUT_SAMPLE_RATE } from '../api/constants'
+import type { TtsPlaybackLog } from '../types'
 
 type OutputLang = 'zh' | 'id' | 'en'
+type PlaybackLogger = (event: TtsPlaybackLog) => void
 
 interface PlaybackMeta {
   taskId?: string
@@ -26,6 +28,8 @@ const SCHEDULE_LEAD_SECONDS = 0.08
  * bridge that feeds CABLE Input / CABLE-A Input / CABLE-B Input.
  */
 export class VbCableOutput {
+  constructor(private readonly playbackLogger?: PlaybackLogger) {}
+
   private context: AudioContext | null = null
   private readonly channels: Record<OutputLang, OutputChannel> = {
     zh: VbCableOutput.emptyChannel(),
@@ -68,17 +72,32 @@ export class VbCableOutput {
         if (channel.sinkReady && channel.pending.size > 0) {
           console.warn('[VbCableOutput] audio element paused with pending audio, lang=%s pending=%d',
             lang, channel.pending.size)
+          this.emit('audio_element_paused', lang, undefined, {}, {
+            pendingCount: channel.pending.size,
+            audioPaused: el.paused,
+            sinkReady: channel.sinkReady,
+          })
         }
       }
       el.onended = () => {
         if (channel.sinkReady && channel.pending.size > 0) {
           console.warn('[VbCableOutput] audio element ended with pending audio, lang=%s pending=%d',
             lang, channel.pending.size)
+          this.emit('audio_element_ended', lang, undefined, {}, {
+            pendingCount: channel.pending.size,
+            audioPaused: el.paused,
+            sinkReady: channel.sinkReady,
+          })
         }
       }
       el.onerror = () => {
         console.warn('[VbCableOutput] audio element error, lang=%s code=%s message=%s',
           lang, el.error?.code ?? 'unknown', el.error?.message ?? '')
+        this.emit('audio_element_error', lang, undefined, {}, {
+          audioPaused: el.paused,
+          sinkReady: channel.sinkReady,
+          detail: `code=${el.error?.code ?? 'unknown'} message=${el.error?.message ?? ''}`,
+        })
       }
       channel.audioEl = el
     }
@@ -110,15 +129,24 @@ export class VbCableOutput {
     console.log('[VbCableOutput] devices found:', cableOutputs.map(d => d.label))
     console.log('[VbCableOutput] matched: zh="%s" id="%s" en="%s"',
       zhDevice?.label ?? '(none)', idDevice?.label ?? '(none)', enDevice?.label ?? '(none)')
+    this.emit('devices_matched', 'zh', undefined, {}, {
+      detail: `zh=${zhDevice?.label ?? '(none)'}; id=${idDevice?.label ?? '(none)'}; en=${enDevice?.label ?? '(none)'}`,
+    })
     if (zhDevice && idDevice && zhDevice.deviceId === idDevice.deviceId) {
       console.error('[VbCableOutput] zh and id resolved to the same VB-CABLE device:', zhDevice.label)
+      this.emit('device_mapping_conflict', 'zh', undefined, {}, {
+        detail: `zh and id resolved to ${zhDevice.label}`,
+      })
     }
 
-    this.channels.zh.sinkReady = zhDevice ? await this.setSink('zh', this.channels.zh, zhDevice.deviceId) : false
-    this.channels.id.sinkReady = idDevice ? await this.setSink('id', this.channels.id, idDevice.deviceId) : false
-    this.channels.en.sinkReady = enDevice ? await this.setSink('en', this.channels.en, enDevice.deviceId) : false
+    this.channels.zh.sinkReady = zhDevice ? await this.setSink('zh', this.channels.zh, zhDevice) : false
+    this.channels.id.sinkReady = idDevice ? await this.setSink('id', this.channels.id, idDevice) : false
+    this.channels.en.sinkReady = enDevice ? await this.setSink('en', this.channels.en, enDevice) : false
     console.log('[VbCableOutput] sinks applied, zh=%s id=%s en=%s',
       this.channels.zh.sinkReady, this.channels.id.sinkReady, this.channels.en.sinkReady)
+    this.emit('sinks_applied', 'zh', undefined, {}, {
+      detail: `zh=${this.channels.zh.sinkReady}; id=${this.channels.id.sinkReady}; en=${this.channels.en.sinkReady}`,
+    })
   }
 
   isReady(): boolean {
@@ -129,20 +157,20 @@ export class VbCableOutput {
     const lang = VbCableOutput.resolveLang(targetLang)
     const channel = this.channels[lang]
     if (!this.context || !channel.dest || !channel.sinkReady) {
-      VbCableOutput.logDroppedChunk('not_ready', lang, targetLang, meta)
+      this.logDroppedChunk('not_ready', lang, targetLang, meta)
       return
     }
     if (pcmData.length === 0) {
-      VbCableOutput.logDroppedChunk('empty_pcm', lang, targetLang, meta)
+      this.logDroppedChunk('empty_pcm', lang, targetLang, meta)
       return
     }
     if (this.context.state === 'closed') {
-      VbCableOutput.logDroppedChunk('context_closed', lang, targetLang, meta)
+      this.logDroppedChunk('context_closed', lang, targetLang, meta)
       return
     }
 
     const ctx = this.context
-    this.ensureOutputActive(lang, channel, meta)
+    this.ensureOutputActive(lang, targetLang, channel, meta)
 
     const floatData = new Float32Array(pcmData.length)
     for (let i = 0; i < pcmData.length; i += 1) {
@@ -173,6 +201,15 @@ export class VbCableOutput {
       channel.pending.delete(source)
       console.warn('[VbCableOutput] source start failed, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
+      this.emit('source_start_failed', lang, targetLang, meta, {
+        durationMs,
+        scheduledAheadMs,
+        pendingCount: channel.pending.size,
+        contextState: ctx.state,
+        audioPaused: channel.audioEl?.paused ?? true,
+        sinkReady: channel.sinkReady,
+        detail: err instanceof Error ? err.message : String(err),
+      })
       return
     }
 
@@ -185,6 +222,14 @@ export class VbCableOutput {
       console.info('[VbCableOutput] schedule checkpoint, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s audioPaused=%s',
         lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '',
         durationMs, scheduledAheadMs, channel.pending.size, ctx.state, channel.audioEl?.paused ?? true)
+      this.emit('schedule_checkpoint', lang, targetLang, meta, {
+        durationMs,
+        scheduledAheadMs,
+        pendingCount: channel.pending.size,
+        contextState: ctx.state,
+        audioPaused: channel.audioEl?.paused ?? true,
+        sinkReady: channel.sinkReady,
+      })
     }
   }
 
@@ -197,6 +242,13 @@ export class VbCableOutput {
       if (channel.pending.size > 0 || scheduledAheadMs > 0) {
         console.warn('[VbCableOutput] stop clears queued audio, lang=%s pending=%d scheduledAheadMs=%d',
           lang, channel.pending.size, scheduledAheadMs)
+        this.emit('stop_clears_queued_audio', lang, undefined, {}, {
+          scheduledAheadMs,
+          pendingCount: channel.pending.size,
+          contextState: this.context?.state,
+          audioPaused: channel.audioEl?.paused ?? true,
+          sinkReady: channel.sinkReady,
+        })
       }
 
       channel.sinkReady = false
@@ -216,29 +268,50 @@ export class VbCableOutput {
     this.context = null
   }
 
-  private async setSink(lang: OutputLang, channel: OutputChannel, deviceId: string): Promise<boolean> {
+  private async setSink(lang: OutputLang, channel: OutputChannel, device: MediaDeviceInfo): Promise<boolean> {
     const el = channel.audioEl
     if (!el || !('setSinkId' in el)) {
       console.warn('[VbCableOutput] setSinkId unsupported, lang=%s', lang)
+      this.emit('set_sink_unsupported', lang, undefined, {}, {
+        sinkReady: false,
+        detail: device.label,
+      })
       return false
     }
     try {
-      await (el as HTMLAudioElement & { setSinkId: (id: string) => Promise<void> }).setSinkId(deviceId)
+      await (el as HTMLAudioElement & { setSinkId: (id: string) => Promise<void> }).setSinkId(device.deviceId)
       el.volume = 1
       el.autoplay = true
       await el.play()
       await this.resumeContext(lang)
       console.log('[VbCableOutput] sink ready, lang=%s contextState=%s audioPaused=%s',
         lang, this.context?.state ?? 'none', el.paused)
+      this.emit('sink_ready', lang, undefined, {}, {
+        contextState: this.context?.state ?? 'none',
+        audioPaused: el.paused,
+        sinkReady: true,
+        detail: device.label,
+      })
       return true
     } catch (err) {
       console.warn('[VbCableOutput] setSinkId/play failed, lang=%s:', lang, err)
+      this.emit('set_sink_failed', lang, undefined, {}, {
+        contextState: this.context?.state ?? 'none',
+        audioPaused: el.paused,
+        sinkReady: false,
+        detail: `${device.label}: ${err instanceof Error ? err.message : String(err)}`,
+      })
       this.muteAndPause(channel)
       return false
     }
   }
 
-  private ensureOutputActive(lang: OutputLang, channel: OutputChannel, meta: PlaybackMeta): void {
+  private ensureOutputActive(
+    lang: OutputLang,
+    targetLang: string,
+    channel: OutputChannel,
+    meta: PlaybackMeta,
+  ): void {
     void this.resumeContext(lang, meta)
     const el = channel.audioEl
     if (!el || (!el.paused && !el.ended)) return
@@ -248,10 +321,21 @@ export class VbCableOutput {
       .then(() => {
         console.warn('[VbCableOutput] resumed audio element, lang=%s taskId=%s sequence=%s chunk=%s',
           lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
+        this.emit('audio_element_resumed', lang, targetLang, meta, {
+          pendingCount: channel.pending.size,
+          audioPaused: el.paused,
+          sinkReady: channel.sinkReady,
+        })
       })
       .catch(err => {
         console.warn('[VbCableOutput] resume audio element failed, lang=%s taskId=%s sequence=%s chunk=%s',
           lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
+        this.emit('audio_element_resume_failed', lang, targetLang, meta, {
+          pendingCount: channel.pending.size,
+          audioPaused: el.paused,
+          sinkReady: channel.sinkReady,
+          detail: err instanceof Error ? err.message : String(err),
+        })
       })
   }
 
@@ -262,9 +346,18 @@ export class VbCableOutput {
       await ctx.resume()
       console.warn('[VbCableOutput] resumed AudioContext, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
+      this.emit('audio_context_resumed', lang, undefined, meta, {
+        contextState: ctx.state,
+        sampleRate: ctx.sampleRate,
+      })
     } catch (err) {
       console.warn('[VbCableOutput] resume AudioContext failed, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
+      this.emit('audio_context_resume_failed', lang, undefined, meta, {
+        contextState: ctx.state,
+        sampleRate: ctx.sampleRate,
+        detail: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -295,7 +388,7 @@ export class VbCableOutput {
       || (typeof meta.chunkIndex === 'number' && meta.chunkIndex > 0 && meta.chunkIndex % 25 === 0)
   }
 
-  private static logDroppedChunk(
+  private logDroppedChunk(
     reason: string,
     lang: OutputLang,
     targetLang: string,
@@ -303,6 +396,32 @@ export class VbCableOutput {
   ): void {
     console.warn('[VbCableOutput] drop chunk, reason=%s lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
       reason, lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
+    this.emit('drop_chunk', lang, targetLang, meta, {
+      reason,
+      pendingCount: this.channels[lang].pending.size,
+      contextState: this.context?.state ?? 'none',
+      audioPaused: this.channels[lang].audioEl?.paused ?? true,
+      sinkReady: this.channels[lang].sinkReady,
+    })
+  }
+
+  private emit(
+    event: string,
+    playbackLang: OutputLang,
+    targetLanguage: string | undefined,
+    meta: PlaybackMeta,
+    extra: Partial<TtsPlaybackLog> = {},
+  ): void {
+    this.playbackLogger?.({
+      event,
+      targetLanguage,
+      playbackLang,
+      ttsTaskId: meta.taskId,
+      ttsSequence: meta.sequence,
+      chunkIndex: meta.chunkIndex,
+      sampleRate: this.context?.sampleRate ?? TTS_OUTPUT_SAMPLE_RATE,
+      ...extra,
+    })
   }
 
   private static resolveLang(targetLang: string): OutputLang {

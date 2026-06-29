@@ -229,8 +229,9 @@ cartesia:
     en-male-voice-id: ${CARTESIA_EN_MALE_VOICE_ID:}
     id-male-voice-id: ${CARTESIA_ID_MALE_VOICE_ID:}
   tts:
-    model: sonic
-    sample-rate: 24000
+    model: ${CARTESIA_TTS_MODEL:${CARTESIA_TTS_MODEL_ID:sonic-3.5}}
+    model-id: ${CARTESIA_TTS_MODEL_ID:}
+    sample-rate: ${CARTESIA_TTS_SAMPLE_RATE:24000}
     container: raw
     # Cartesia max_buffer_delay_ms：合成前最多缓冲多少毫秒文本攒上下文。0=收到即合成(短句易怪音)。
     # 官方建议给小正值减少 choppy/怪音。默认 150;怪音仍多可调大(200~300),要更低延迟可调小(0~80)。

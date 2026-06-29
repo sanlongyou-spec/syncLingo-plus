@@ -1,5 +1,6 @@
 package com.si.backend.config;
 
+import com.si.backend.common.Constants;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -26,7 +27,8 @@ public class CartesiaProperties {
 
     @Data
     public static class TtsProperties {
-        private String modelId = "sonic-3";
+        private String model;
+        private String modelId;
         private int sampleRate = 24000;
         private String container = "raw";
         /**
@@ -35,6 +37,20 @@ public class CartesiaProperties {
          * 折中默认 150ms：明显降低短句怪音,首音延迟仅略增。
          */
         private int maxBufferDelayMs = 150;
+
+        public String getModelId() {
+            return firstNonBlank(modelId, model, Constants.CARTESIA_TTS_MODEL);
+        }
+
+        private static String firstNonBlank(String first, String second, String fallback) {
+            if (first != null && !first.isBlank()) {
+                return first.trim();
+            }
+            if (second != null && !second.isBlank()) {
+                return second.trim();
+            }
+            return fallback;
+        }
     }
 
     @Data

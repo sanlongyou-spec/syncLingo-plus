@@ -9,10 +9,10 @@ import java.util.regex.Pattern;
 public final class TtsTextNormalizer {
 
     private static final int PCM_BYTES_PER_SAMPLE = 2;
-    private static final long ZH_MIN_FORWARD_MS = 8_000L;
-    private static final long ZH_MAX_FORWARD_MS = 30_000L;
-    private static final long ZH_BASE_FORWARD_MS = 3_000L;
-    private static final long ZH_MS_PER_CHAR = 350L;
+    private static final long ZH_MIN_FORWARD_MS = 5_000L;
+    private static final long ZH_MAX_FORWARD_MS = 18_000L;
+    private static final long ZH_BASE_FORWARD_MS = 1_800L;
+    private static final long ZH_MS_PER_CHAR = 150L;
     private static final long DEFAULT_MAX_FORWARD_MS = 45_000L;
 
     private static final Pattern YEAR_RANGE =

@@ -10,6 +10,8 @@ export const WS_MESSAGE_TYPE = {
   STOPPED: 'stopped',
   ERROR: 'error',
   AUDIO: 'audio',
+  TTS_AUDIO: 'tts_audio',
+  TTS_PLAYBACK_LOG: 'tts_playback_log',
   START: 'start',
   STOP: 'stop',
 } as const

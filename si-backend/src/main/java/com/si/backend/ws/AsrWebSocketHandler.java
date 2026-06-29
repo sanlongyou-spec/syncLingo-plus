@@ -96,6 +96,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 case Constants.WS_MSG_TYPE_SET_VOICE -> handleSetVoice(session, msg);
                 case Constants.WS_MSG_TYPE_STOP -> handleStop(session, msg);
                 case Constants.WS_MSG_TYPE_TRANSLATE_TEXT -> handleTranslate(session, msg);
+                case Constants.WS_MSG_TYPE_TTS_PLAYBACK_LOG -> handleTtsPlaybackLog(session, msg);
                 default -> sendError(session, msg.getSessionId(), Constants.WS_ERROR_UNKNOWN_MESSAGE_TYPE,
                         "未知的消息类型: " + type);
             }
@@ -257,6 +258,30 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         sendMessage(session, reply);
     }
 
+    private void handleTtsPlaybackLog(WebSocketSession session, WsMessage msg) {
+        String sessionId = msg.getSessionId();
+        if (!requireBoundSession(session, sessionId, true)) {
+            return;
+        }
+        String event = safeLogText(msg.getEvent(), 64);
+        String reason = safeLogText(msg.getReason(), 96);
+        String detail = safeLogText(msg.getDetail(), 240);
+        boolean warning = isPlaybackWarning(event, reason);
+        if (warning) {
+            log.warn("[AsrWebSocketHandler] tts-playback-client, sessionId={}, wsSessionId={}, event={}, reason={}, taskId={}, sequence={}, chunkIndex={}, targetLang={}, playbackLang={}, durationMs={}, scheduledAheadMs={}, pendingCount={}, contextState={}, audioPaused={}, sinkReady={}, sampleRate={}, detail='{}'",
+                    sessionId, session.getId(), event, reason, msg.getTtsTaskId(), msg.getTtsSequence(),
+                    msg.getChunkIndex(), msg.getTargetLanguage(), msg.getPlaybackLang(), msg.getDurationMs(),
+                    msg.getScheduledAheadMs(), msg.getPendingCount(), msg.getContextState(),
+                    msg.getAudioPaused(), msg.getSinkReady(), msg.getSampleRate(), detail);
+            return;
+        }
+        log.info("[AsrWebSocketHandler] tts-playback-client, sessionId={}, wsSessionId={}, event={}, reason={}, taskId={}, sequence={}, chunkIndex={}, targetLang={}, playbackLang={}, durationMs={}, scheduledAheadMs={}, pendingCount={}, contextState={}, audioPaused={}, sinkReady={}, sampleRate={}, detail='{}'",
+                sessionId, session.getId(), event, reason, msg.getTtsTaskId(), msg.getTtsSequence(),
+                msg.getChunkIndex(), msg.getTargetLanguage(), msg.getPlaybackLang(), msg.getDurationMs(),
+                msg.getScheduledAheadMs(), msg.getPendingCount(), msg.getContextState(),
+                msg.getAudioPaused(), msg.getSinkReady(), msg.getSampleRate(), detail);
+    }
+
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("[AsrWebSocketHandler] connection closed, sessionId={}, status={}", session.getId(), status);
@@ -317,6 +342,29 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (sessionId != null) {
             shareWebSocketHandler.broadcast(sessionId, msg);
         }
+    }
+
+    private static boolean isPlaybackWarning(String event, String reason) {
+        String joined = ((event == null ? "" : event) + " " + (reason == null ? "" : reason)).toLowerCase();
+        return joined.contains("fail")
+                || joined.contains("error")
+                || joined.contains("drop")
+                || joined.contains("missing")
+                || joined.contains("duplicate")
+                || joined.contains("pause")
+                || joined.contains("ended")
+                || joined.contains("stop");
+    }
+
+    private static String safeLogText(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        String compact = value.replaceAll("\\s+", " ").trim();
+        if (compact.length() <= maxChars) {
+            return compact;
+        }
+        return compact.substring(0, Math.max(0, maxChars - 3)) + "...";
     }
 
     private boolean bindOwnedSession(WebSocketSession session, String businessSessionId) {

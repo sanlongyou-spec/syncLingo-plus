@@ -20,6 +20,17 @@ public class WsMessage {
     private String ttsTaskId;
     private Long ttsSequence;
     private Integer chunkIndex;
+    private String event;
+    private String reason;
+    private String playbackLang;
+    private Long durationMs;
+    private Long scheduledAheadMs;
+    private Integer pendingCount;
+    private String contextState;
+    private Boolean audioPaused;
+    private Boolean sinkReady;
+    private Integer sampleRate;
+    private String detail;
     private String code;
     private String message;
 }

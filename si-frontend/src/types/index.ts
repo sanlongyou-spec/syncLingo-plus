@@ -34,8 +34,37 @@ export interface WsMessage {
   ttsTaskId?: string
   ttsSequence?: number
   chunkIndex?: number
+  event?: string
+  reason?: string
+  playbackLang?: string
+  durationMs?: number
+  scheduledAheadMs?: number
+  pendingCount?: number
+  contextState?: string
+  audioPaused?: boolean
+  sinkReady?: boolean
+  sampleRate?: number
+  detail?: string
   code?: string
   message?: string
+}
+
+export interface TtsPlaybackLog {
+  event: string
+  reason?: string
+  targetLanguage?: string
+  playbackLang?: string
+  ttsTaskId?: string
+  ttsSequence?: number
+  chunkIndex?: number
+  durationMs?: number
+  scheduledAheadMs?: number
+  pendingCount?: number
+  contextState?: string
+  audioPaused?: boolean
+  sinkReady?: boolean
+  sampleRate?: number
+  detail?: string
 }
 
 export interface StartInterpretationParams {

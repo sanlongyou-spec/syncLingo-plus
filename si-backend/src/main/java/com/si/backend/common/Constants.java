@@ -100,6 +100,7 @@ public final class Constants {
     public static final String WS_MSG_TYPE_ERROR = "error";
     public static final String WS_MSG_TYPE_TRANSLATE_TEXT = "translate_text";
     public static final String WS_MSG_TYPE_TTS_AUDIO = "tts_audio";
+    public static final String WS_MSG_TYPE_TTS_PLAYBACK_LOG = "tts_playback_log";
     public static final String WS_MSG_TYPE_SET_VOICE = "set_voice";
 
     // ═══════════════════════════════════════════════════════════
@@ -217,7 +218,7 @@ public final class Constants {
     // Cartesia API
     // ═══════════════════════════════════════════════════════════
 
-    public static final String CARTESIA_TTS_MODEL = "sonic-3";
+    public static final String CARTESIA_TTS_MODEL = "sonic-3.5";
     public static final String CARTESIA_CONTAINER = "raw";
     public static final String CARTESIA_API_ENDPOINT = "https://api.cartesia.ai";
     public static final String CARTESIA_VERSION_HEADER = "2026-03-01";

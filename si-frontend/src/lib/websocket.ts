@@ -2,7 +2,7 @@
  * WebSocket 客户端封装
  * 管理 ASR 实时语音 WebSocket 连接（重连、超时、消息序列化）
  */
-import type { WsMessage } from '../types'
+import type { TtsPlaybackLog, WsMessage } from '../types'
 import { WS_DEFAULTS } from '../api/constants'
 import { mintWsTicket } from '../api'
 
@@ -91,6 +91,28 @@ export class AsrWebSocket {
 
   setVoice(sessionId: string, speakerId: string, voiceId?: string): void {
     this.send({ type: 'set_voice', sessionId, speakerId, voiceId: voiceId || '' })
+  }
+
+  sendTtsPlaybackLog(sessionId: string, log: TtsPlaybackLog): void {
+    this.send({
+      type: 'tts_playback_log',
+      sessionId,
+      targetLanguage: log.targetLanguage,
+      playbackLang: log.playbackLang,
+      ttsTaskId: log.ttsTaskId,
+      ttsSequence: log.ttsSequence,
+      chunkIndex: log.chunkIndex,
+      event: log.event,
+      reason: log.reason,
+      durationMs: log.durationMs,
+      scheduledAheadMs: log.scheduledAheadMs,
+      pendingCount: log.pendingCount,
+      contextState: log.contextState,
+      audioPaused: log.audioPaused,
+      sinkReady: log.sinkReady,
+      sampleRate: log.sampleRate,
+      detail: log.detail,
+    })
   }
 
   close(): void {
