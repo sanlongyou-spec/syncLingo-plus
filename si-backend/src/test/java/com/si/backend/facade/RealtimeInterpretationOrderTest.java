@@ -130,13 +130,12 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
-    void unsynthesizedLaterSentenceCanBeSkippedAfterLongOrderedWait() throws Exception {
+    void laterSentenceSynthesizesWhileEarlierPlaybackIsStillWaiting() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
         TranslationService translationService = mock(TranslationService.class);
         InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
         CartesiaProperties cartesiaProperties = new CartesiaProperties();
-        cartesiaProperties.getTts().setUnsynthesizedSkipWaitMs(50L);
         InterpretationRecordService recordService = mock(InterpretationRecordService.class);
         AudioRecordService audioRecordService = mock(AudioRecordService.class);
         SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
@@ -168,18 +167,28 @@ class RealtimeInterpretationOrderTest {
 
         CountDownLatch firstSynthStarted = new CountDownLatch(1);
         CountDownLatch releaseFirstSynth = new CountDownLatch(1);
+        CountDownLatch secondSynthStarted = new CountDownLatch(1);
         AtomicInteger synthCalls = new AtomicInteger();
         doAnswer(invocation -> {
             String text = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
             synthCalls.incrementAndGet();
             if ("first-translated".equals(text)) {
                 firstSynthStarted.countDown();
                 assertTrue(releaseFirstSynth.await(5, TimeUnit.SECONDS));
-                Runnable onComplete = invocation.getArgument(6);
+                onChunk.accept(new byte[]{1});
                 onComplete.run();
                 return null;
             }
-            throw new AssertionError("Second sentence should be skipped before TTS synthesis");
+            if ("second-translated".equals(text)) {
+                secondSynthStarted.countDown();
+                onChunk.accept(new byte[]{2});
+                onComplete.run();
+                return null;
+            }
+            throw new AssertionError("Unexpected TTS text: " + text);
         }).when(ttsService).synthesizeStream(
                 anyString(),
                 anyString(),
@@ -191,6 +200,15 @@ class RealtimeInterpretationOrderTest {
                 any()
         );
 
+        List<Long> playedSequences = new CopyOnWriteArrayList<>();
+        CountDownLatch played = new CountDownLatch(2);
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (chunkIndex == 0) {
+                playedSequences.add(sequence);
+                played.countDown();
+            }
+        });
+
         facade.translateAndStreamTts(
                 "first", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
         );
@@ -200,12 +218,13 @@ class RealtimeInterpretationOrderTest {
                 "second", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
         );
 
-        Thread.sleep(200);
-        assertEquals(1, synthCalls.get());
+        assertTrue(secondSynthStarted.await(5, TimeUnit.SECONDS));
+        assertEquals(2, synthCalls.get());
+        assertEquals(List.of(), playedSequences);
 
         releaseFirstSynth.countDown();
-        Thread.sleep(200);
-        assertEquals(1, synthCalls.get());
+        assertTrue(played.await(5, TimeUnit.SECONDS));
+        assertEquals(List.of(1L, 2L), playedSequences);
     }
 
     @SuppressWarnings("unchecked")

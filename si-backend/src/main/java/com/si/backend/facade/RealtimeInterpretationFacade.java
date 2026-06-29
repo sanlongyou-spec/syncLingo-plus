@@ -25,9 +25,9 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 @Component
@@ -431,25 +431,9 @@ public class RealtimeInterpretationFacade {
         BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
         final AtomicLong firstChunkGenMs = new AtomicLong(0);
         final AtomicLong totalPcmBytes = new AtomicLong(0);
+        final AtomicReference<String> terminalReason = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
-            long orderedWaitStart = System.currentTimeMillis();
-            long maxUnsynthesizedWaitMs = Math.max(0L, cartesiaProperties.getTts().getUnsynthesizedSkipWaitMs());
-            try {
-                if (!awaitPreviousTtsReservation(reservation, maxUnsynthesizedWaitMs)) {
-                    long waitedMs = System.currentTimeMillis() - orderedWaitStart;
-                    log.warn("[RealtimeInterpretationFacade] TTS unsynthesized skipped, sessionId={}, taskId={}, sequence={}, waitMs={}, maxWaitMs={}",
-                            sessionId, ttsTaskId, ttsSequence, waitedMs, maxUnsynthesizedWaitMs);
-                    reservation.previous().whenComplete((ignored, error) ->
-                            completeTtsReservation(reservation, "skip_unsynthesized_wait"));
-                    return;
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                completeTtsReservation(reservation, "ordered_wait_interrupted");
-                return;
-            }
-            long orderedWaitMs = System.currentTimeMillis() - orderedWaitStart;
             if (!isPipelineActive(sessionId, "before_tts_synth")) {
                 completeTtsReservation(reservation, "inactive_before_tts_synth");
                 return;
@@ -468,8 +452,8 @@ public class RealtimeInterpretationFacade {
                             if (firstChunkLogged.compareAndSet(false, true)) {
                                 long firstChunkMs = System.currentTimeMillis();
                                 firstChunkGenMs.set(firstChunkMs);
-                                log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, orderedWaitMs={}, costMs={}, bytes={}",
-                                        sessionId, ttsTaskId, ttsSequence, orderedWaitMs, firstChunkMs - ttsStart, pcm.length);
+                                log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, prevDoneAtFirstChunk={}, costMs={}, bytes={}",
+                                        sessionId, ttsTaskId, ttsSequence, reservation.previous().isDone(), firstChunkMs - ttsStart, pcm.length);
                                 log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
                                         sessionId, finalTargetLang, firstChunkMs - speechStartAtMs, finalTranslated.length());
                                 log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, taskId={}, sequence={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
@@ -494,6 +478,7 @@ public class RealtimeInterpretationFacade {
                                     sessionId, ttsTaskId, finalTargetLang, audioDurationMs,
                                     translateStart - speechStartAtMs, finalTranslated.length());
                         } finally {
+                            terminalReason.compareAndSet(null, "synth_complete");
                             audioQueue.offer(TTS_END);
                         }
                     },
@@ -502,9 +487,25 @@ public class RealtimeInterpretationFacade {
                             log.error("[RealtimeInterpretationFacade] TTS synth error, sessionId={}, taskId={}, sequence={}, error={}",
                                     sessionId, ttsTaskId, ttsSequence, err);
                         } finally {
+                            terminalReason.compareAndSet(null, "synth_error");
                             audioQueue.offer(TTS_END);
                         }
                     });
+            try {
+                long orderedWaitStart = System.currentTimeMillis();
+                awaitPreviousTtsReservation(reservation);
+                long orderedWaitMs = System.currentTimeMillis() - orderedWaitStart;
+                log.info("[RealtimeInterpretationFacade] TTS playback order ready, sessionId={}, taskId={}, sequence={}, orderedWaitMs={}, synthesizedAhead={}",
+                        sessionId, ttsTaskId, ttsSequence, orderedWaitMs, firstChunkGenMs.get() > 0);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                completeTtsReservation(reservation, "ordered_wait_interrupted");
+                return;
+            }
+            if (!isPipelineActive(sessionId, "before_tts_playback")) {
+                completeTtsReservation(reservation, "inactive_before_tts_playback");
+                return;
+            }
 
             long playbackStart = System.currentTimeMillis();
             long lastChunkTimeNanos = -1L;
@@ -519,9 +520,10 @@ public class RealtimeInterpretationFacade {
                         return;
                     }
                     if (chunk == TTS_END) {
-                        log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, costMs={}",
-                                sessionId, System.currentTimeMillis() - playbackStart);
-                        completeTtsReservation(reservation, "stream_complete");
+                        String reason = terminalReason.get() == null ? "synth_complete" : terminalReason.get();
+                        log.info("[RealtimeInterpretationFacade] TTS stream complete, sessionId={}, taskId={}, sequence={}, terminalReason={}, costMs={}",
+                                sessionId, ttsTaskId, ttsSequence, reason, System.currentTimeMillis() - playbackStart);
+                        completeTtsReservation(reservation, reason.equals("synth_complete") ? "stream_complete" : reason);
                         return;
                     }
                     if (!isPipelineActive(sessionId, "before_tts_send")) {
@@ -567,23 +569,15 @@ public class RealtimeInterpretationFacade {
         });
     }
 
-    private boolean awaitPreviousTtsReservation(TtsPlaybackReservation reservation, long maxWaitMs) throws InterruptedException {
+    private void awaitPreviousTtsReservation(TtsPlaybackReservation reservation) throws InterruptedException {
         if (reservation.previous().isDone()) {
-            return true;
+            return;
         }
         try {
-            if (maxWaitMs <= 0L) {
-                reservation.previous().get();
-            } else {
-                reservation.previous().get(maxWaitMs, TimeUnit.MILLISECONDS);
-            }
-            return true;
-        } catch (TimeoutException e) {
-            return false;
+            reservation.previous().get();
         } catch (ExecutionException e) {
             log.warn("[RealtimeInterpretationFacade] previous TTS reservation completed exceptionally, sessionId={}, taskId={}, reason={}",
                     reservation.sessionId(), reservation.taskId(), e.getMessage());
-            return true;
         }
     }
 

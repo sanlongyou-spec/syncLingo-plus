@@ -35,11 +35,6 @@ public class CartesiaProperties {
          * 折中默认 150ms：明显降低短句怪音,首音延迟仅略增。
          */
         private int maxBufferDelayMs = 150;
-        /**
-         * Later TTS items wait for earlier audio before synthesis starts. If the wait exceeds this
-         * value, the item is skipped before any audio is generated or sent. 0 disables this gate.
-         */
-        private long unsynthesizedSkipWaitMs = 12000L;
     }
 
     @Data

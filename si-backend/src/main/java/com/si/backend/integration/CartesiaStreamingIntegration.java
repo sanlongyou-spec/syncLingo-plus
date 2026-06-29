@@ -233,8 +233,8 @@ public class CartesiaStreamingIntegration {
          * 避免把 TTS 请求 send 进一个表面 open 实际已死的 socket（send 会成功入队但永无响应）。
          */
         private static final long WS_IDLE_STALE_MS = 15_000L;
-        /** 单次合成的看门狗超时：超时仍未收到 DONE，判定连接失效并回调失败，防止借出的连接永不归还。 */
-        private static final int WS_GENERATION_TIMEOUT_SECONDS = 30;
+        /** 单次合成的空闲看门狗：该时间内无连接活动才判定失效；持续收音频时不会硬切长句。 */
+        private static final int WS_GENERATION_IDLE_TIMEOUT_SECONDS = 30;
 
         /** 所有 CartesiaWsClient 共享同一 OkHttpClient，复用连接池，避免每次合成重建 TCP 连接 */
         private static final okhttp3.OkHttpClient WS_HTTP_CLIENT = new okhttp3.OkHttpClient.Builder()
@@ -265,6 +265,8 @@ public class CartesiaStreamingIntegration {
         private volatile boolean generationActive = false;
         /** 最近一次连接活动（onOpen / 收到音频块 / DONE）时间，用于判断空闲死连接 */
         private volatile long lastActivityMs = 0L;
+        /** 当前在途合成的 Cartesia context_id，用于忽略复用连接上的迟到帧。 */
+        private volatile String currentContextId;
         /** 当前合成的看门狗任务句柄，DONE/ERROR 时取消 */
         private volatile java.util.concurrent.ScheduledFuture<?> watchdogTask;
         /**
@@ -311,10 +313,12 @@ public class CartesiaStreamingIntegration {
 
             String currentVoiceId = (voiceId != null && !voiceId.isBlank()) ? voiceId : Constants.VOICE_ID_DEFAULT;
             String contextId = java.util.UUID.randomUUID().toString();
+            this.currentContextId = contextId;
             String payload = toJson(buildTtsRequest(text, sampleRate, speed, language, currentVoiceId, contextId));
 
             // 健康检查：空闲过久的连接可能已静默死亡（send 仍会成功入队但永无响应），强制重建
-            boolean stale = (System.currentTimeMillis() - lastActivityMs) > WS_IDLE_STALE_MS;
+            boolean stale = lastActivityMs > 0L && (System.currentTimeMillis() - lastActivityMs) > WS_IDLE_STALE_MS;
+            markGenerationActivity();
             okhttp3.WebSocket ws = this.webSocket;
             boolean reused = !stale && open && ws != null && safeSend(ws, payload);
             if (stale && open) {
@@ -324,16 +328,23 @@ public class CartesiaStreamingIntegration {
             if (!reused) {
                 openAndSend(payload);
             }
-            scheduleWatchdog();
         }
 
-        /** 启动单次合成看门狗：超时仍 generationActive 则判定连接失效并回调失败。 */
-        private void scheduleWatchdog() {
+        /** 记录合成活动并重置空闲看门狗，避免长句在持续出块时被固定总时长截断。 */
+        private void markGenerationActivity() {
+            lastActivityMs = System.currentTimeMillis();
+            scheduleIdleWatchdog();
+        }
+
+        /** 启动单次合成空闲看门狗：长时间无任何连接活动才判定连接失效。 */
+        private synchronized void scheduleIdleWatchdog() {
+            if (!generationActive) return;
             cancelWatchdog();
             watchdogTask = WATCHDOG.schedule(() -> {
                 if (!generationActive) return;
-                log.error("[CartesiaWsClient] generation watchdog timeout after {}s, invalidating connection, voiceId={}",
-                        WS_GENERATION_TIMEOUT_SECONDS, voiceId);
+                long idleMs = System.currentTimeMillis() - lastActivityMs;
+                log.error("[CartesiaWsClient] generation idle watchdog timeout after {}s, idleMs={}, invalidating connection, voiceId={}, contextId={}",
+                        WS_GENERATION_IDLE_TIMEOUT_SECONDS, idleMs, voiceId, currentContextId);
                 okhttp3.WebSocket dead;
                 synchronized (this) {
                     open = false;
@@ -343,11 +354,11 @@ public class CartesiaStreamingIntegration {
                 if (dead != null) {
                     try { dead.cancel(); } catch (Exception ignored) { /* 忽略取消异常 */ }
                 }
-                completeOnce(false, "TTS 合成超时");
-            }, WS_GENERATION_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+                completeOnce(false, "TTS 合成空闲超时");
+            }, WS_GENERATION_IDLE_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
         }
 
-        private void cancelWatchdog() {
+        private synchronized void cancelWatchdog() {
             java.util.concurrent.ScheduledFuture<?> t = watchdogTask;
             if (t != null) {
                 t.cancel(false);
@@ -395,7 +406,7 @@ public class CartesiaStreamingIntegration {
                 public void onOpen(okhttp3.WebSocket ws, okhttp3.Response response) {
                     if (myEpoch != connEpoch) { ws.cancel(); return; }   // 已被更新的连接取代
                     open = true;
-                    lastActivityMs = System.currentTimeMillis();
+                    markGenerationActivity();
                     String p = pendingPayload;
                     pendingPayload = null;
                     if (p != null) {
@@ -414,7 +425,7 @@ public class CartesiaStreamingIntegration {
                 public void onMessage(okhttp3.WebSocket ws, okio.ByteString bytes) {
                     if (myEpoch != connEpoch) return;   // 过期连接的迟到音频，忽略
                     byte[] pcm = bytes.toByteArray();
-                    lastActivityMs = System.currentTimeMillis();
+                    markGenerationActivity();
                     int idx = ++chunkCount;
                     totalPcmBytes += pcm.length;
                     if (idx == 1) {
@@ -462,12 +473,17 @@ public class CartesiaStreamingIntegration {
         private void handleTextMessage(okhttp3.WebSocket ws, String msg) {
             try {
                 JsonNode node = objectMapper.readTree(msg);
+                if (!messageContextMatches(node, currentContextId)) {
+                    log.debug("[CartesiaWsClient] ignore stale context message, currentContextId={}, messageContextId={}",
+                            currentContextId, node.path(Constants.CARTESIA_FIELD_CONTEXT_ID).asText(""));
+                    return;
+                }
                 String type = node.path(Constants.CARTESIA_FIELD_TYPE).asText();
                 switch (type) {
                     case Constants.CARTESIA_MSG_TYPE_CHUNK -> {
                         String audioData = node.path(Constants.CARTESIA_FIELD_AUDIO).asText();
                         if (!audioData.isBlank()) {
-                            lastActivityMs = System.currentTimeMillis();
+                            markGenerationActivity();
                             byte[] pcm = java.util.Base64.getDecoder().decode(audioData);
                             int idx = ++chunkCount;
                             totalPcmBytes += pcm.length;
@@ -483,7 +499,7 @@ public class CartesiaStreamingIntegration {
                         }
                     }
                     case Constants.CARTESIA_MSG_TYPE_DONE -> {
-                        lastActivityMs = System.currentTimeMillis();
+                        markGenerationActivity();
                         log.debug("[CartesiaWsClient] done voiceId={} chunks={} totalBytes={} totalMs={}",
                                 voiceId, chunkCount, totalPcmBytes, System.currentTimeMillis() - synthStartMs);
                         // 不关连接：保留长连接给下一句复用（Cartesia 推荐）。
@@ -508,21 +524,36 @@ public class CartesiaStreamingIntegration {
             }
         }
 
+        static boolean messageContextMatches(JsonNode node, String currentContextId) {
+            if (currentContextId == null || currentContextId.isBlank()) {
+                return true;
+            }
+            String messageContextId = node.path(Constants.CARTESIA_FIELD_CONTEXT_ID).asText("");
+            return messageContextId.isBlank() || currentContextId.equals(messageContextId);
+        }
+
         /** 终态回调恰好触发一次（DONE→onComplete，其余→onError），避免重复归还或漏归还连接池连接。 */
         private void completeOnce(boolean success, String err) {
             boolean fire;
+            Runnable completeCallback;
+            java.util.function.Consumer<String> errorCallback;
             synchronized (this) {
                 fire = generationActive;
                 generationActive = false;
+                completeCallback = curOnComplete;
+                errorCallback = curOnError;
+                curOnChunk = null;
+                curOnComplete = null;
+                curOnError = null;
+                pendingPayload = null;
+                currentContextId = null;
             }
             if (!fire) return;
             cancelWatchdog();
             if (success) {
-                Runnable cb = curOnComplete;
-                if (cb != null) cb.run();
+                if (completeCallback != null) completeCallback.run();
             } else {
-                java.util.function.Consumer<String> cb = curOnError;
-                if (cb != null) cb.accept(err);
+                if (errorCallback != null) errorCallback.accept(err);
             }
         }
 
