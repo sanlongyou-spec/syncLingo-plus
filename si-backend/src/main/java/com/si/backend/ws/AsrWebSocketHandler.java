@@ -53,7 +53,10 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final Map<String, ScheduledFuture<?>> pendingTransientCleanupTasks = new ConcurrentHashMap<>();
 
     private static final int TEXT_QUEUE_CAPACITY = 1000;
-    private static final int AUDIO_QUEUE_CAPACITY = 400;
+    /** 出站音频队列容量：加大以吸收链路抖动/瞬时写阻塞，避免句尾块被丢弃("读一半")。 */
+    private static final int AUDIO_QUEUE_CAPACITY = 1200;
+    /** 音频队列满时的背压等待上限：先给发送线程一点时间排空，超时仍满才丢最旧块。 */
+    private static final long AUDIO_OFFER_BACKPRESSURE_MS = 300L;
     private static final int TRANSIENT_DISCONNECT_GRACE_SECONDS = 600;
     private static final ExecutorService OUTBOUND_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable);
@@ -433,7 +436,43 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             if (!running.get()) {
                 return false;
             }
-            boolean queued = message.audio() ? audioQueue.offer(message) : textQueue.offer(message);
+            if (!message.audio()) {
+                boolean queued = textQueue.offer(message);
+                if (queued) {
+                    availableMessages.release();
+                }
+                return queued;
+            }
+            return offerAudio(message);
+        }
+
+        /**
+         * 音频出站三档策略，避免丢句尾导致"读一半"：
+         * ① 直接入队；② 满则短暂背压等待发送线程排空；③ 仍满则丢【队首最旧】块、保住当前句尾。
+         */
+        private boolean offerAudio(OutboundMessage message) {
+            if (audioQueue.offer(message)) {
+                availableMessages.release();
+                return true;
+            }
+            try {
+                if (audioQueue.offer(message, AUDIO_OFFER_BACKPRESSURE_MS, TimeUnit.MILLISECONDS)) {
+                    availableMessages.release();
+                    return true;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            // 背压超时仍满：丢最旧块(它的信号量许可复用给新块)，保住正在播放的句尾，把"读一半"降级为"丢中间一小段"。
+            OutboundMessage dropped = audioQueue.poll();
+            if (dropped != null) {
+                availableMessages.tryAcquire();
+                log.warn("[AsrWebSocketHandler] audio queue full, drop-oldest, sessionId={}, droppedTask={}, droppedChunk={}, keepTask={}, keepChunk={}",
+                        session.getId(), dropped.source().getTtsTaskId(), dropped.source().getChunkIndex(),
+                        message.source().getTtsTaskId(), message.source().getChunkIndex());
+            }
+            boolean queued = audioQueue.offer(message);
             if (queued) {
                 availableMessages.release();
             }
