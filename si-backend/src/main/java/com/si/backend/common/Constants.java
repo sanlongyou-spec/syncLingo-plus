@@ -102,6 +102,11 @@ public final class Constants {
     public static final String WS_MSG_TYPE_TTS_AUDIO = "tts_audio";
     public static final String WS_MSG_TYPE_TTS_PLAYBACK_LOG = "tts_playback_log";
     public static final String WS_MSG_TYPE_SET_VOICE = "set_voice";
+    public static final String WS_MSG_TYPE_SWITCH_ENGINE = "switch_engine";
+    public static final String WS_MSG_TYPE_ENGINE_STATUS = "engine_status";
+
+    public static final String REALTIME_ENGINE_PRIMARY = "primary";
+    public static final String REALTIME_ENGINE_OPENAI = "openai_realtime";
 
     // ═══════════════════════════════════════════════════════════
     // WebSocket 错误码

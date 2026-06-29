@@ -22,6 +22,9 @@ public class WsMessage {
     private Integer chunkIndex;
     private String event;
     private String reason;
+    private String engine;
+    private String activeEngine;
+    private Boolean available;
     private String playbackLang;
     private Long durationMs;
     private Long scheduledAheadMs;

@@ -7,6 +7,7 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.RealtimeFallbackCoordinator;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TtsTextNormalizer;
@@ -57,6 +58,8 @@ class RealtimeInterpretationOrderTest {
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
         com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
                 mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        RealtimeFallbackCoordinator realtimeFallbackCoordinator = mock(RealtimeFallbackCoordinator.class);
+        when(realtimeFallbackCoordinator.shouldEmitPrimaryOutput(anyString())).thenReturn(true);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -68,7 +71,8 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                realtimeFallbackCoordinator
         );
 
         String sessionId = "order-test-session";
@@ -147,6 +151,8 @@ class RealtimeInterpretationOrderTest {
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
         com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
                 mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        RealtimeFallbackCoordinator realtimeFallbackCoordinator = mock(RealtimeFallbackCoordinator.class);
+        when(realtimeFallbackCoordinator.shouldEmitPrimaryOutput(anyString())).thenReturn(true);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -158,7 +164,8 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                realtimeFallbackCoordinator
         );
 
         String sessionId = "skip-wait-session";
@@ -245,6 +252,8 @@ class RealtimeInterpretationOrderTest {
         UserVoiceService userVoiceService = mock(UserVoiceService.class);
         com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
                 mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        RealtimeFallbackCoordinator realtimeFallbackCoordinator = mock(RealtimeFallbackCoordinator.class);
+        when(realtimeFallbackCoordinator.shouldEmitPrimaryOutput(anyString())).thenReturn(true);
 
         RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
                 asrService,
@@ -256,7 +265,8 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                realtimeFallbackCoordinator
         );
 
         String sessionId = "duration-guard-session";

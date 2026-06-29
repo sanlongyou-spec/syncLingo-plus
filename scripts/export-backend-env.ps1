@@ -25,12 +25,16 @@ function Resolve-ConfigValue {
         $v = $v.Substring(1, $v.Length - 2)
     }
 
-    if ($v -match '^\$\{([^:}]+):(.*)\}$') {
+    while ($v -match '^\$\{([^:}]+):(.*)\}$') {
         $envValue = [Environment]::GetEnvironmentVariable($Matches[1])
         if (-not [string]::IsNullOrWhiteSpace($envValue)) {
             return $envValue
         }
-        return $Matches[2]
+        $next = $Matches[2]
+        if ($next -eq $v) {
+            break
+        }
+        $v = $next.Trim()
     }
 
     return $v
@@ -197,6 +201,11 @@ $envValues = [ordered]@{
     GOOGLE_TRANSLATE_API_KEY        = Get-Cfg 'google.translate.api-key'
     OPENAI_API_KEY                  = Get-Cfg 'openai.api-key'
     OPENAI_BASE_URL                 = Get-Cfg 'openai.base-url' 'https://api.openai.com/v1'
+    OPENAI_REALTIME_ENABLED         = Get-Cfg 'openai.realtime.enabled' 'false'
+    OPENAI_REALTIME_API_KEY         = Get-Cfg 'openai.realtime.api-key'
+    OPENAI_REALTIME_URL             = Get-Cfg 'openai.realtime.url' 'wss://api.openai.com/v1/realtime/translations'
+    OPENAI_REALTIME_MODEL           = Get-Cfg 'openai.realtime.model' 'gpt-realtime-translate'
+    OPENAI_REALTIME_TRANSCRIPTION_MODEL = Get-Cfg 'openai.realtime.input-transcription-model' 'gpt-realtime-whisper'
     OPENAI_REFERER                  = Get-Cfg 'openai.referer'
     OPENAI_TITLE                    = Get-Cfg 'openai.title' 'syncLingo-plus'
     OPENAI_COMPRESSION_ENABLED      = Get-Cfg 'openai.compression-enabled' 'true'

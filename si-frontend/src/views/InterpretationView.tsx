@@ -67,6 +67,17 @@ function IconHeadset() {
   )
 }
 
+function IconSwitch() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M7 7h10l-3-3 1.4-1.4L20.8 8l-5.4 5.4L14 12l3-3H7V7zm10 10H7l3 3-1.4 1.4L3.2 16l5.4-5.4L10 12l-3 3h10v2z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+}
+
 const normalizeVoiceCode = (code?: string | null) => {
   const trimmed = code?.trim()
   if (!trimmed) return ''
@@ -78,6 +89,9 @@ const normalizeVoiceCode = (code?: string | null) => {
 const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
 const RUNNING_STATUS = 'running'
+const ENGINE_PRIMARY = 'primary'
+const ENGINE_OPENAI_REALTIME = 'openai_realtime'
+type RealtimeEngine = typeof ENGINE_PRIMARY | typeof ENGINE_OPENAI_REALTIME
 
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
@@ -99,6 +113,10 @@ export default function InterpretationView() {
   const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
   const [selectedHotwordIds, setSelectedHotwordIds] = useState<number[]>([])
   const [enabledLanguages, setEnabledLanguages] = useState<string[]>([LANGUAGE.ZH_CN, LANGUAGE.ID_ID])
+  const [activeEngine, setActiveEngine] = useState<RealtimeEngine>(ENGINE_PRIMARY)
+  const [openAiFallbackAvailable, setOpenAiFallbackAvailable] = useState(false)
+  const [engineSwitching, setEngineSwitching] = useState(false)
+  const [engineStatusMessage, setEngineStatusMessage] = useState('')
 
   // ── Meeting & speaker summary ─────────────────────────────
   const [meetings, setMeetings] = useState<Meeting[]>([])
@@ -378,9 +396,19 @@ export default function InterpretationView() {
         }
         break
       }
+      case 'engine_status': {
+        const nextEngine = msg.activeEngine === ENGINE_OPENAI_REALTIME ? ENGINE_OPENAI_REALTIME : ENGINE_PRIMARY
+        setActiveEngine(nextEngine)
+        setOpenAiFallbackAvailable(Boolean(msg.available))
+        setEngineSwitching(false)
+        setEngineStatusMessage(msg.message || '')
+        break
+      }
       case 'started':
         setIsRunning(true)
         setError('')
+        setActiveEngine(ENGINE_PRIMARY)
+        setEngineSwitching(false)
         setCurrentSpeakerId('')
         setSelectedVoiceId('')
         setSpeakerNameMap({})
@@ -392,8 +420,12 @@ export default function InterpretationView() {
         break
       case 'stopped':
         setIsRunning(false)
+        setActiveEngine(ENGINE_PRIMARY)
+        setOpenAiFallbackAvailable(false)
+        setEngineSwitching(false)
         break
       case 'error':
+        setEngineSwitching(false)
         setError(msg.message || '发生错误')
         break
     }
@@ -418,6 +450,10 @@ export default function InterpretationView() {
     setSessionId(sid)
     sessionIdRef.current = sid
     localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
+    setActiveEngine(ENGINE_PRIMARY)
+    setOpenAiFallbackAvailable(false)
+    setEngineSwitching(false)
+    setEngineStatusMessage('')
 
     const ws = new AsrWebSocket()
     wsRef.current = ws
@@ -446,6 +482,14 @@ export default function InterpretationView() {
     })
     audioRef.current = audio
     await audio.start()
+  }
+
+  const switchRealtimeEngine = () => {
+    if (!sessionId || engineSwitching) return
+    const nextEngine = activeEngine === ENGINE_OPENAI_REALTIME ? ENGINE_PRIMARY : ENGINE_OPENAI_REALTIME
+    setEngineSwitching(true)
+    setEngineStatusMessage(nextEngine === ENGINE_OPENAI_REALTIME ? '正在切换到 OpenAI 兜底' : '正在切回主链路')
+    wsRef.current?.switchEngine(sessionId, nextEngine)
   }
 
   const startSession = async () => {
@@ -518,6 +562,10 @@ export default function InterpretationView() {
     sessionIdRef.current = null
     localStorage.removeItem(STORAGE_KEYS.CURRENT_SESSION_ID)
     setIsRunning(false)
+    setActiveEngine(ENGINE_PRIMARY)
+    setOpenAiFallbackAvailable(false)
+    setEngineSwitching(false)
+    setEngineStatusMessage('')
     setCurrentSource('')
     setCurrentTranslated('')
     setDetectedLang('')
@@ -577,6 +625,20 @@ export default function InterpretationView() {
       window.location.hash = ROUTES.LOGIN
     }
   }
+
+  const isOpenAiActive = activeEngine === ENGINE_OPENAI_REALTIME
+  const canSwitchRealtimeEngine = isOpenAiActive || openAiFallbackAvailable
+  const engineButtonText = isOpenAiActive ? '主链路' : 'OpenAI'
+  const engineStatusText = isOpenAiActive
+    ? 'OpenAI 兜底'
+    : openAiFallbackAvailable
+      ? '主链路'
+      : '主链路'
+  const engineButtonTitle = isOpenAiActive
+    ? '切回现有 Azure / 翻译 / Cartesia 主链路'
+    : openAiFallbackAvailable
+      ? '切换到 OpenAI Realtime 兜底'
+      : engineStatusMessage || 'OpenAI Realtime 兜底未就绪'
 
   return (
     <div className="si-root">
@@ -781,8 +843,20 @@ export default function InterpretationView() {
               <div className="si-run-control">
                 <div className="si-run-status">
                   <span className={`si-run-dot ${isRunning ? 'is-running' : ''}`} />
-                  <span>{isRunning ? '运行中' : isLoading ? '启动中' : '待机'}</span>
+                  <span>{isRunning ? engineStatusText : isLoading ? '启动中' : '待机'}</span>
                 </div>
+                {isRunning && (
+                  <button
+                    type="button"
+                    className={`si-engine-btn ${isOpenAiActive ? 'is-openai' : ''}`}
+                    onClick={switchRealtimeEngine}
+                    disabled={engineSwitching || !canSwitchRealtimeEngine}
+                    title={engineButtonTitle}
+                  >
+                    <IconSwitch />
+                    <span>{engineSwitching ? '切换中' : engineButtonText}</span>
+                  </button>
+                )}
                 {!isRunning ? (
                   <button type="button" className="si-tri-btn" onClick={startSession} disabled={isLoading}>
                     <IconPlay />

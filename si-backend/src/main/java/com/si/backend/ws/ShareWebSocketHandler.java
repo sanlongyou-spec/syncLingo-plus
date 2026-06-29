@@ -62,6 +62,10 @@ public class ShareWebSocketHandler extends TextWebSocketHandler {
         if (sessionId == null || sessionId.isBlank()) {
             return;
         }
+        if (Constants.WS_MSG_TYPE_TTS_AUDIO.equals(msg.getType())) {
+            log.warn("[ShareWebSocketHandler] blocked tts_audio broadcast, sessionId={}", sessionId);
+            return;
+        }
         Set<WebSocketSession> subscribers = sessionSubscribers.get(sessionId);
         if (subscribers == null || subscribers.isEmpty()) {
             return;

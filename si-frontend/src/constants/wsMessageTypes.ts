@@ -12,6 +12,8 @@ export const WS_MESSAGE_TYPE = {
   AUDIO: 'audio',
   TTS_AUDIO: 'tts_audio',
   TTS_PLAYBACK_LOG: 'tts_playback_log',
+  SWITCH_ENGINE: 'switch_engine',
+  ENGINE_STATUS: 'engine_status',
   START: 'start',
   STOP: 'stop',
 } as const

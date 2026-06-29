@@ -5,6 +5,7 @@ import com.si.backend.common.Constants;
 import com.si.backend.dto.WsMessage;
 import com.si.backend.facade.RealtimeInterpretationFacade;
 import com.si.backend.security.AuthenticatedActor;
+import com.si.backend.service.FallbackEngineStatus;
 import com.si.backend.service.ResourceOwnershipPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -97,6 +98,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 case Constants.WS_MSG_TYPE_STOP -> handleStop(session, msg);
                 case Constants.WS_MSG_TYPE_TRANSLATE_TEXT -> handleTranslate(session, msg);
                 case Constants.WS_MSG_TYPE_TTS_PLAYBACK_LOG -> handleTtsPlaybackLog(session, msg);
+                case Constants.WS_MSG_TYPE_SWITCH_ENGINE -> handleSwitchEngine(session, msg);
                 default -> sendError(session, msg.getSessionId(), Constants.WS_ERROR_UNKNOWN_MESSAGE_TYPE,
                         "未知的消息类型: " + type);
             }
@@ -179,6 +181,8 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setChunkIndex(chunkIndex);
                     sendMessage(session, out);
                 },
+                // onEngineStatus
+                status -> sendEngineStatus(session, status),
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)
         );
@@ -188,6 +192,25 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         reply.setSessionId(sessionId);
         sendMessage(session, reply);
         shareWebSocketHandler.broadcast(sessionId, reply);
+    }
+
+    private void handleSwitchEngine(WebSocketSession session, WsMessage msg) {
+        String sessionId = msg.getSessionId();
+        if (!requireBoundSession(session, sessionId, true)) {
+            return;
+        }
+        String requestedEngine = msg.getEngine();
+        log.info("[AsrWebSocketHandler] handleSwitchEngine, sessionId={}, engine={}", sessionId, requestedEngine);
+        try {
+            FallbackEngineStatus status = realtimeFacade.switchRealtimeEngine(sessionId, requestedEngine);
+            if (status != null && status.message() != null && status.message().contains("no fallback state")) {
+                sendEngineStatus(session, status);
+            }
+        } catch (Exception e) {
+            log.warn("[AsrWebSocketHandler] handleSwitchEngine failed, sessionId={}, engine={}",
+                    sessionId, requestedEngine, e);
+            sendError(session, sessionId, Constants.WS_ERROR_INVALID_STATE, e.getMessage());
+        }
     }
 
     private void handleSetVoice(WebSocketSession session, WsMessage msg) {
@@ -342,6 +365,17 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (sessionId != null) {
             shareWebSocketHandler.broadcast(sessionId, msg);
         }
+    }
+
+    private void sendEngineStatus(WebSocketSession session, FallbackEngineStatus status) {
+        WsMessage msg = new WsMessage();
+        msg.setType(Constants.WS_MSG_TYPE_ENGINE_STATUS);
+        msg.setSessionId(status.sessionId());
+        msg.setActiveEngine(status.activeEngine());
+        msg.setAvailable(status.available());
+        msg.setMessage(status.message());
+        sendMessage(session, msg);
+        shareWebSocketHandler.broadcast(status.sessionId(), msg);
     }
 
     private static boolean isPlaybackWarning(String event, String reason) {

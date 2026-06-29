@@ -138,6 +138,20 @@ google:
 openai:
   api-key: ${OPENAI_API_KEY:}
   base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+  realtime:
+    enabled: ${OPENAI_REALTIME_ENABLED:false}
+    api-key: ${OPENAI_REALTIME_API_KEY:${OPENAI_API_KEY:}}
+    url: ${OPENAI_REALTIME_URL:wss://api.openai.com/v1/realtime/translations}
+    model: ${OPENAI_REALTIME_MODEL:gpt-realtime-translate}
+    input-transcription-model: ${OPENAI_REALTIME_TRANSCRIPTION_MODEL:gpt-realtime-whisper}
+    max-pending-frames: ${OPENAI_REALTIME_MAX_PENDING_FRAMES:1000}
+    flush-delay-ms: ${OPENAI_REALTIME_FLUSH_DELAY_MS:1500}
+    max-segment-ms: ${OPENAI_REALTIME_MAX_SEGMENT_MS:7000}
+    close-grace-ms: ${OPENAI_REALTIME_CLOSE_GRACE_MS:1500}
+    reconnect-window-ms: ${OPENAI_REALTIME_RECONNECT_WINDOW_MS:120000}
+    max-reconnects-per-window: ${OPENAI_REALTIME_MAX_RECONNECTS_PER_WINDOW:6}
+    reconnect-base-delay-ms: ${OPENAI_REALTIME_RECONNECT_BASE_DELAY_MS:500}
+    reconnect-max-delay-ms: ${OPENAI_REALTIME_RECONNECT_MAX_DELAY_MS:5000}
   referer: ${OPENAI_REFERER:}
   title: ${OPENAI_TITLE:syncLingo-plus}
   compression-enabled: ${OPENAI_COMPRESSION_ENABLED:true}

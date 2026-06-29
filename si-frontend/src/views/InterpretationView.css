@@ -631,7 +631,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  min-width: 5.8rem;
+  min-width: 6.6rem;
   padding-left: 0.75rem;
   color: #475467;
   font-size: 0.78rem;
@@ -647,6 +647,41 @@ body {
 
 .si-run-dot.is-running {
   background: #22c55e;
+}
+
+.si-engine-btn {
+  min-width: 5.7rem;
+  min-height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s;
+}
+
+.si-engine-btn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.si-engine-btn.is-openai {
+  border-color: #0f766e;
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.si-engine-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .si-setup-rail {

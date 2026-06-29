@@ -10,6 +10,9 @@ import com.si.backend.service.IndonesianIncompleteGuard;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.FallbackEngineStatus;
+import com.si.backend.service.RealtimeFallbackCallbacks;
+import com.si.backend.service.RealtimeFallbackCoordinator;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TtsTextNormalizer;
@@ -47,6 +50,7 @@ public class RealtimeInterpretationFacade {
     private final SpeakerTurnService speakerTurnService;
     private final UserVoiceService userVoiceService;
     private final IndonesianIncompleteGuard indonesianIncompleteGuard;
+    private final RealtimeFallbackCoordinator realtimeFallbackCoordinator;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -94,7 +98,8 @@ public class RealtimeInterpretationFacade {
     public void startInterpretation(
             String sessionId, String sourceLang, String targetLang, String voiceId,
             AsrRecognitionCallback onRecognizing, AsrRecognitionCallback onRecognized,
-            TranslationResultCallback onTranslated, TtsAudioCallback onTtsAudio, AsrErrorCallback onError) {
+            TranslationResultCallback onTranslated, TtsAudioCallback onTtsAudio,
+            RealtimeEngineStatusCallback onEngineStatus, AsrErrorCallback onError) {
         log.info("[RealtimeInterpretationFacade] startInterpretation, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
         sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
@@ -112,6 +117,11 @@ public class RealtimeInterpretationFacade {
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
         sessionErrorCallbackMap.put(sessionId, onError);
+        realtimeFallbackCoordinator.startSession(
+                sessionId,
+                resolveFallbackTargetLangs(sessionId, targetLang),
+                fallbackCallbacks(sessionId, onRecognizing, onRecognized, onTranslated, onTtsAudio, onEngineStatus, onError)
+        );
         asrService.startRecognition(
                 sessionId,
                 sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L),
@@ -121,16 +131,69 @@ public class RealtimeInterpretationFacade {
                 (text, lang, speakerId) -> {
                     sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
                             .compareAndSet(0, System.currentTimeMillis());
-                    onRecognizing.accept(text, lang, speakerId);
+                    realtimeFallbackCoordinator.observeSourceLanguage(sessionId, lang);
+                    if (realtimeFallbackCoordinator.shouldEmitPrimaryOutput(sessionId)) {
+                        onRecognizing.accept(text, lang, speakerId);
+                    }
                 },
                 (text, lang, speakerId) -> {
-                    onRecognized.accept(text, lang, speakerId);
+                    realtimeFallbackCoordinator.observeSourceLanguage(sessionId, lang);
+                    if (realtimeFallbackCoordinator.shouldEmitPrimaryOutput(sessionId)) {
+                        onRecognized.accept(text, lang, speakerId);
+                    }
                     long startedMs = sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0)).getAndSet(0);
                     long speechStartAtMs = startedMs > 0 ? startedMs : System.currentTimeMillis();
                     enqueueFinalRecognition(text, lang, speakerId, sessionId, voiceId, speechStartAtMs);
                 },
                 errorMessage -> onError.accept(errorMessage));
         log.info("[RealtimeInterpretationFacade] startInterpretation done, sessionId={}", sessionId);
+    }
+
+    private RealtimeFallbackCallbacks fallbackCallbacks(
+            String sessionId,
+            AsrRecognitionCallback onRecognizing,
+            AsrRecognitionCallback onRecognized,
+            TranslationResultCallback onTranslated,
+            TtsAudioCallback onTtsAudio,
+            RealtimeEngineStatusCallback onEngineStatus,
+            AsrErrorCallback onError
+    ) {
+        return new RealtimeFallbackCallbacks() {
+            @Override
+            public void onRecognizing(String text, String language, String speakerId) {
+                onRecognizing.accept(text, language, speakerId);
+            }
+
+            @Override
+            public void onRecognized(String text, String language, String speakerId) {
+                onRecognized.accept(text, language, speakerId);
+            }
+
+            @Override
+            public void onTranslated(String originalText, String translatedText, String sourceLang,
+                                     String targetLang, String speakerId, String speakerName) {
+                recordService.saveTranslatedRecord(sessionId, sourceLang, targetLang, originalText, translatedText);
+                onTranslated.accept(originalText, translatedText, sourceLang, targetLang, speakerId, speakerName);
+            }
+
+            @Override
+            public void onTtsAudio(byte[] pcmData, String targetLang, String ttsTaskId,
+                                   Long ttsSequence, Integer chunkIndex, long speechStartAtMs) {
+                onTtsAudio.accept(pcmData, targetLang, ttsTaskId, ttsSequence, chunkIndex, speechStartAtMs);
+            }
+
+            @Override
+            public void onStatus(FallbackEngineStatus status) {
+                log.info("[RealtimeInterpretationFacade] fallback status, sessionId={}, activeEngine={}, available={}, message={}",
+                        status.sessionId(), status.activeEngine(), status.available(), status.message());
+                onEngineStatus.accept(status);
+            }
+
+            @Override
+            public void onError(String message) {
+                onError.accept(message);
+            }
+        };
     }
 
     public void setManualVoice(String sessionId, String speakerId, String voiceId) {
@@ -160,9 +223,22 @@ public class RealtimeInterpretationFacade {
                 sessionId, normalizedSpeakerId, resolvedVoiceId);
     }
 
+    public FallbackEngineStatus switchRealtimeEngine(String sessionId, String engine) {
+        log.info("[RealtimeInterpretationFacade] switchRealtimeEngine start, sessionId={}, engine={}", sessionId, engine);
+        FallbackEngineStatus status = realtimeFallbackCoordinator.switchEngine(sessionId, engine);
+        log.info("[RealtimeInterpretationFacade] switchRealtimeEngine end, sessionId={}, activeEngine={}, available={}",
+                sessionId, status.activeEngine(), status.available());
+        return status;
+    }
+
+    public FallbackEngineStatus currentRealtimeEngineStatus(String sessionId) {
+        return realtimeFallbackCoordinator.currentStatus(sessionId);
+    }
+
     public void pushAudio(String sessionId, byte[] pcmFrame) {
         if (!sessionService.isSessionActive(sessionId)) return;
         asrService.pushAudio(sessionId, pcmFrame);
+        realtimeFallbackCoordinator.pushAudio(sessionId, pcmFrame);
         if (pcmFrame != null && pcmFrame.length > 0) {
             audioRecordService.appendPcm(sessionId, pcmFrame);
             long audioMs = Math.round((double) pcmFrame.length * 1000
@@ -190,6 +266,7 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         sessionCurrentSpeakerId.remove(sessionId);
         sessionManualVoiceBindings.remove(sessionId);
+        realtimeFallbackCoordinator.stopSession(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
@@ -294,6 +371,22 @@ public class RealtimeInterpretationFacade {
         return enabledLanguages.stream()
                 .map(this::normalizeAsrLang)
                 .filter(lang -> !isSameLanguage(sourceLang, lang))
+                .distinct()
+                .toList();
+    }
+
+    private List<String> resolveFallbackTargetLangs(String sessionId, String targetLang) {
+        String requestedTargetLang = normalizeTargetLang(targetLang);
+        if (!isAutoTargetLang(requestedTargetLang)) {
+            return List.of(requestedTargetLang);
+        }
+        return sessionService.getSession(sessionId)
+                .map(InterpretationSession::getEnabledLanguages)
+                .map(this::parseEnabledLanguages)
+                .orElse(List.of(Constants.LANG_ZH_CN, Constants.LANG_ID_SHORT))
+                .stream()
+                .map(this::normalizeAsrLang)
+                .filter(lang -> !Constants.LANG_AUTO.equalsIgnoreCase(lang))
                 .distinct()
                 .toList();
     }
@@ -412,7 +505,9 @@ public class RealtimeInterpretationFacade {
         InterpretationRecord record = recordService.saveTranslatedRecord(sessionId, sourceLang, targetLang, text, translated);
 
         TranslationResultCallback onTranslated = sessionTranslatedCallbackMap.get(sessionId);
-        if (onTranslated != null && isPipelineActive(sessionId, "before_translated_callback")) {
+        if (onTranslated != null
+                && realtimeFallbackCoordinator.shouldEmitPrimaryOutput(sessionId)
+                && isPipelineActive(sessionId, "before_translated_callback")) {
             onTranslated.accept(text, translated, sourceLang, targetLang, speakerId, speakerName);
         }
 
@@ -584,7 +679,7 @@ public class RealtimeInterpretationFacade {
                         if (chunkGapNanos > 0) sleepUntil(lastSendTimeNanos + chunkGapNanos);
                     }
                     TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
-                    if (onTtsAudio != null) {
+                    if (onTtsAudio != null && realtimeFallbackCoordinator.shouldEmitPrimaryOutput(sessionId)) {
                         onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(), speechStartAtMs);
                     }
                     if (!firstSentLogged) {
@@ -822,6 +917,7 @@ public class RealtimeInterpretationFacade {
         sessionUtteranceStartMs.remove(sessionId);
         sessionCurrentSpeakerId.remove(sessionId);
         sessionManualVoiceBindings.remove(sessionId);
+        realtimeFallbackCoordinator.stopSession(sessionId);
         audioRecordService.finalizeRecording(sessionId);
         recordService.cleanupSession(sessionId);
         speakerTurnService.flushSession(sessionId);
@@ -913,5 +1009,10 @@ public class RealtimeInterpretationFacade {
     @FunctionalInterface
     public interface TtsAudioCallback {
         void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex, long speechStartAtMs);
+    }
+
+    @FunctionalInterface
+    public interface RealtimeEngineStatusCallback {
+        void accept(FallbackEngineStatus status);
     }
 }

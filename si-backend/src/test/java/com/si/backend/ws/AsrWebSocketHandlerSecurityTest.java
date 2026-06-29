@@ -89,6 +89,7 @@ class AsrWebSocketHandlerSecurityTest {
                 any(),
                 any(),
                 any(),
+                any(),
                 any()
         );
     }
@@ -107,7 +108,46 @@ class AsrWebSocketHandlerSecurityTest {
         ));
 
         verify(realtimeFacade, never()).startInterpretation(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(session).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    void boundSwitchEngine_isAcceptedForOwnedSession() throws Exception {
+        session = session("ws-switch-1", 5L);
+        InterpretationSession owned = new InterpretationSession();
+        owned.setSessionId("s-switch");
+        owned.setUserId(5L);
+        when(ownershipPolicy.requireOwnedSession(new AuthenticatedActor(5L), "s-switch")).thenReturn(owned);
+        handler.afterConnectionEstablished(session);
+        handler.handleTextMessage(session, message(
+                "start",
+                "s-switch",
+                "\"sourceLang\":\"zh-CN\",\"targetLang\":\"id-ID\""
+        ));
+
+        handler.handleTextMessage(session, message(
+                "switch_engine",
+                "s-switch",
+                "\"engine\":\"openai_realtime\""
+        ));
+
+        verify(realtimeFacade).switchRealtimeEngine("s-switch", "openai_realtime");
+        verify(session, never()).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    void switchEngineBeforeStart_isRejectedAndConnectionClosed() throws Exception {
+        session = session("ws-switch-2", 5L);
+        handler.afterConnectionEstablished(session);
+
+        handler.handleTextMessage(session, message(
+                "switch_engine",
+                "s-switch-2",
+                "\"engine\":\"openai_realtime\""
+        ));
+
+        verify(realtimeFacade, never()).switchRealtimeEngine(any(), any());
         verify(session).close(CloseStatus.POLICY_VIOLATION);
     }
 

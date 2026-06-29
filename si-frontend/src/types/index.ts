@@ -36,6 +36,9 @@ export interface WsMessage {
   chunkIndex?: number
   event?: string
   reason?: string
+  engine?: string
+  activeEngine?: string
+  available?: boolean
   playbackLang?: string
   durationMs?: number
   scheduledAheadMs?: number
