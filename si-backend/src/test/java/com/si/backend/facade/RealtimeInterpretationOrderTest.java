@@ -8,6 +8,7 @@ import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsService;
+import com.si.backend.service.TtsTextNormalizer;
 import com.si.backend.service.TranslationService;
 import com.si.backend.service.UserVoiceService;
 import org.junit.jupiter.api.Test;
@@ -16,10 +17,13 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -227,6 +231,86 @@ class RealtimeInterpretationOrderTest {
         assertEquals(List.of(1L, 2L), playedSequences);
     }
 
+    @Test
+    void chineseTtsUsesNormalizedTextAndStopsForwardingAfterDurationBudget() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard
+        );
+
+        String sessionId = "duration-guard-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+
+        String translated = "弄给分区的最高施肥剂量为12.36公斤/株。";
+        TtsTextNormalizer.Result normalized = TtsTextNormalizer.normalizeForTts(translated, "zh-CN");
+        int sampleRate = cartesiaProperties.getTts().getSampleRate();
+        byte[] oneSecondPcm = new byte[sampleRate * 2];
+        int expectedForwardedChunks =
+                (int) (TtsTextNormalizer.maxForwardAudioMs(normalized.text(), "zh-CN") / 1_000L);
+
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenReturn(translated);
+
+        AtomicReference<String> synthesizedText = new AtomicReference<>();
+        doAnswer(invocation -> {
+            synthesizedText.set(invocation.getArgument(1));
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            for (int i = 0; i < 40; i++) {
+                onChunk.accept(oneSecondPcm);
+            }
+            onComplete.run();
+            return null;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        AtomicInteger forwardedChunks = new AtomicInteger();
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) ->
+                forwardedChunks.incrementAndGet());
+
+        facade.translateAndStreamTts(
+                "source", "id", "zh-CN", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+        );
+        awaitTtsChain(facade, sessionId, "zh-CN");
+
+        assertEquals(normalized.text(), synthesizedText.get());
+        assertEquals(expectedForwardedChunks, forwardedChunks.get());
+        assertTrue(forwardedChunks.get() < 40);
+    }
+
     @SuppressWarnings("unchecked")
     private void putTtsCallback(
             RealtimeInterpretationFacade facade,
@@ -236,5 +320,16 @@ class RealtimeInterpretationOrderTest {
         Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsAudioCallbackMap");
         field.setAccessible(true);
         ((Map<String, RealtimeInterpretationFacade.TtsAudioCallback>) field.get(facade)).put(sessionId, callback);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void awaitTtsChain(RealtimeInterpretationFacade facade, String sessionId, String targetLang) throws Exception {
+        Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsChain");
+        field.setAccessible(true);
+        Map<String, CompletableFuture<Void>> chain =
+                (ConcurrentHashMap<String, CompletableFuture<Void>>) field.get(facade);
+        CompletableFuture<Void> future = chain.get(sessionId + "::" + targetLang);
+        assertTrue(future != null, "TTS chain future should be reserved");
+        future.get(5, TimeUnit.SECONDS);
     }
 }
