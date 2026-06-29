@@ -1,4 +1,4 @@
-import { TTS_OUTPUT_SAMPLE_RATE, VOICEMEETER } from '../api/constants'
+import { TTS_OUTPUT_SAMPLE_RATE, TTS_OUTPUT_CABLE } from '../api/constants'
 
 type OutputLang = 'zh' | 'id' | 'en'
 
@@ -58,7 +58,7 @@ export class VoiceMeeterOutput {
   }
 
   /**
-   * 枚举音频输出设备，按 VoiceMeeter 设备标签把每种语言链路 setSinkId 到对应虚拟设备。
+   * 枚举音频输出设备，按 VB-CABLE 设备标签把每种语言链路 setSinkId 到对应 CABLE Input。
    * 设备不存在或绑定失败 → 该语言链路保持未就绪（绝不回退默认扬声器）。
    */
   async applySinks(): Promise<void> {
@@ -68,27 +68,23 @@ export class VoiceMeeterOutput {
 
     const outputs = (await navigator.mediaDevices.enumerateDevices())
       .filter(device => device.kind === 'audiooutput')
-    const voiceMeeterOutputs = outputs.filter(device => {
-      const label = device.label.toLowerCase()
-      return label.includes('voicemeeter') || label.includes('voice meeter')
-    })
+    const cableOutputs = outputs.filter(device => device.label.toLowerCase().includes('cable'))
 
-    const zhDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.ZH_DEVICE_LABEL.toLowerCase())
-      && !device.label.toLowerCase().includes('aux')
-      && !device.label.toLowerCase().includes('vaio3'),
-    ) || voiceMeeterOutputs.find(device =>
-      !device.label.toLowerCase().includes('aux') && !device.label.toLowerCase().includes('vaio3'),
+    // 中文=原始 CABLE Input(排除 CABLE-A/CABLE-B)；印尼=CABLE-A；英语=CABLE-B。
+    const zhDevice = cableOutputs.find(device =>
+      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.ZH_DEVICE_LABEL.toLowerCase())
+      && !device.label.toLowerCase().includes('cable-a')
+      && !device.label.toLowerCase().includes('cable-b'),
     )
-    const idDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.ID_DEVICE_LABEL.toLowerCase()),
-    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('aux'))
-    const enDevice = voiceMeeterOutputs.find(device =>
-      device.label.toLowerCase().includes(VOICEMEETER.EN_DEVICE_LABEL.toLowerCase()),
-    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('vaio3'))
+    const idDevice = cableOutputs.find(device =>
+      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.ID_DEVICE_LABEL.toLowerCase()),
+    ) || cableOutputs.find(device => device.label.toLowerCase().includes('cable-a'))
+    const enDevice = cableOutputs.find(device =>
+      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.EN_DEVICE_LABEL.toLowerCase()),
+    ) || cableOutputs.find(device => device.label.toLowerCase().includes('cable-b'))
 
     // 诊断：打印每种语言匹配到的具体设备，便于核对路由是否串台。
-    console.log('[VoiceMeeterOutput] devices found:', voiceMeeterOutputs.map(d => d.label))
+    console.log('[VoiceMeeterOutput] devices found:', cableOutputs.map(d => d.label))
     console.log('[VoiceMeeterOutput] matched: zh="%s" id="%s" en="%s"',
       zhDevice?.label ?? '(none)', idDevice?.label ?? '(none)', enDevice?.label ?? '(none)')
     if (zhDevice && idDevice && zhDevice.deviceId === idDevice.deviceId) {

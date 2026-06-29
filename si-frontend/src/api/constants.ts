@@ -26,14 +26,15 @@ export const PCM = {
 } as const
 
 /**
- * VoiceMeeter 虚拟设备标签：译文 TTS 按目标语言 setSinkId 到对应虚拟输入设备，
- * 由 VoiceMeeter 内部把每条虚拟输入路由到对应母线(B1/B2/B3)再灌进会议麦克风。
- * 中文→VoiceMeeter Input(B1)、印尼语→VoiceMeeter Aux Input(B2)、英语→VoiceMeeter VAIO3(B3)。
+ * 译文 TTS 输出设备标签（VB-CABLE 三根虚拟声卡）：按目标语言 setSinkId 到对应 CABLE
+ * Input，下游把每根 CABLE Output 接到需要该语言的应用(会议麦克风)。
+ * 中文→CABLE Input(原始 VB-CABLE)、印尼语→CABLE-A Input、英语→CABLE-B Input。
+ * 要改「语言↔声卡」对应关系，只需调整下面三个标签。
  */
-export const VOICEMEETER = {
-  ZH_DEVICE_LABEL: 'VoiceMeeter Input',
-  ID_DEVICE_LABEL: 'VoiceMeeter Aux Input',
-  EN_DEVICE_LABEL: 'VoiceMeeter VAIO3',
+export const TTS_OUTPUT_CABLE = {
+  ZH_DEVICE_LABEL: 'CABLE Input',
+  ID_DEVICE_LABEL: 'CABLE-A Input',
+  EN_DEVICE_LABEL: 'CABLE-B Input',
 } as const
 
 /** 译文 TTS 输出采样率（Cartesia 合成为 24kHz PCM）。 */

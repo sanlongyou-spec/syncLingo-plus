@@ -405,7 +405,7 @@ export default function InterpretationView() {
     if (!voiceMeeter.isReady()) {
       voiceMeeter.stop()
       voiceMeeterRef.current = null
-      throw new Error('未检测到就绪的 VoiceMeeter 输出设备（中文需「VoiceMeeter Input」、印尼语需「VoiceMeeter Aux Input」）。请先安装并启动 VoiceMeeter，授予浏览器音频设备权限后再开始。')
+      throw new Error('未检测到就绪的 VB-CABLE 输出设备（中文需「CABLE Input」、印尼语需「CABLE-A Input」）。请先安装 VB-CABLE 并授予浏览器音频设备权限后再开始。')
     }
 
     const audio = new AudioCapture({
