@@ -19,8 +19,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
@@ -29,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class RealtimeFallbackCoordinator {
 
     private static final String FALLBACK_SPEAKER_ID = "OpenAI";
+    private static final String DEFAULT_REALTIME_SESSION_LANGUAGE = Constants.LANG_ZH_CN;
     private static final Set<Character> SENTENCE_ENDINGS = Set.of(
             '.', '!', '?', ';', '。', '！', '？', '；'
     );
@@ -59,22 +58,16 @@ public class RealtimeFallbackCoordinator {
             log.info("[RealtimeFallbackCoordinator] startSession skipped, sessionId={}, reason=unusable", sessionId);
             return;
         }
-        if (state.targetLanguages.isEmpty()) {
-            state.emitStatus(false, "No target language configured for OpenAI Realtime");
-            log.info("[RealtimeFallbackCoordinator] startSession skipped, sessionId={}, reason=no_target", sessionId);
-            return;
-        }
-        for (String targetLanguage : state.targetLanguages) {
-            RealtimeTranslationSession openAiSession = openAiRealtimeIntegration.openSession(
-                    sessionId,
-                    targetLanguage,
-                    new OpenAiSessionListener(state, targetLanguage)
-            );
-            state.openAiSessions.put(targetLanguage, openAiSession);
-        }
-        state.emitStatus(false, "OpenAI Realtime warming up");
-        log.info("[RealtimeFallbackCoordinator] startSession end, sessionId={}, targets={}",
-                sessionId, state.targetLanguages);
+        String realtimeSessionLanguage = state.realtimeSessionLanguage();
+        RealtimeTranslationSession openAiSession = openAiRealtimeIntegration.openSession(
+                sessionId,
+                realtimeSessionLanguage,
+                new OpenAiSessionListener(state, realtimeSessionLanguage)
+        );
+        state.openAiSessions.put(realtimeSessionLanguage, openAiSession);
+        state.emitStatus(false, "OpenAI Realtime ASR warming up");
+        log.info("[RealtimeFallbackCoordinator] startSession end, sessionId={}, targets={}, realtimeSessionLanguage={}",
+                sessionId, state.targetLanguages, realtimeSessionLanguage);
     }
 
     public void pushAudio(String sessionId, byte[] pcmFrame) {
@@ -110,6 +103,10 @@ public class RealtimeFallbackCoordinator {
         return state == null || !Constants.REALTIME_ENGINE_OPENAI.equals(state.activeEngine.get());
     }
 
+    public boolean shouldFeedPrimaryAsr(String sessionId) {
+        return shouldEmitPrimaryOutput(sessionId);
+    }
+
     public FallbackEngineStatus switchEngine(String sessionId, String requestedEngine) {
         FallbackSessionState state = sessions.get(sessionId);
         if (state == null) {
@@ -134,8 +131,7 @@ public class RealtimeFallbackCoordinator {
         }
         state.activeEngine.set(Constants.REALTIME_ENGINE_OPENAI);
         state.clearTextBuffers();
-        state.restartAudioTasks();
-        FallbackEngineStatus status = state.status(true, "Switched to OpenAI Realtime fallback");
+        FallbackEngineStatus status = state.status(true, "Switched to OpenAI Realtime ASR");
         state.callbacks.onStatus(status);
         log.info("[RealtimeFallbackCoordinator] switched engine, sessionId={}, active={}", sessionId, engine);
         return status;
@@ -192,37 +188,17 @@ public class RealtimeFallbackCoordinator {
     }
 
     private void onOpenAiOutputTranscript(FallbackSessionState state, String targetLanguage, String delta) {
-        if (!state.isOpenAiActive()) {
-            return;
-        }
-        synchronized (state.textLock) {
-            if (state.segmentStartedAtMs == 0L) {
-                state.segmentStartedAtMs = System.currentTimeMillis();
-            }
-            state.outputTranscripts.computeIfAbsent(targetLanguage, ignored -> new StringBuilder()).append(delta);
-            state.scheduleFlush(shouldFlushImmediately(delta));
+        if (state.isOpenAiActive() && log.isDebugEnabled()) {
+            log.debug("[RealtimeFallbackCoordinator] discard OpenAI output transcript, sessionId={}, targetLang={}, chars={}",
+                    state.sessionId, targetLanguage, delta == null ? 0 : delta.length());
         }
     }
 
     private void onOpenAiOutputAudio(FallbackSessionState state, String targetLanguage, byte[] pcm24k) {
-        if (!state.isOpenAiActive() || pcm24k == null || pcm24k.length == 0) {
-            return;
+        if (state.isOpenAiActive() && log.isDebugEnabled()) {
+            log.debug("[RealtimeFallbackCoordinator] discard OpenAI output audio, sessionId={}, targetLang={}, bytes={}",
+                    state.sessionId, targetLanguage, pcm24k == null ? 0 : pcm24k.length);
         }
-        String sourceLanguage = state.currentSourceLanguage.get();
-        if (isSameLanguage(sourceLanguage, targetLanguage)) {
-            return;
-        }
-        FallbackAudioRoute route = state.audioRoutes.computeIfAbsent(targetLanguage,
-                ignored -> new FallbackAudioRoute(state.nextSequence.incrementAndGet()));
-        int chunkIndex = route.nextChunkIndex.getAndIncrement();
-        state.callbacks.onTtsAudio(
-                pcm24k,
-                targetLanguage,
-                state.sessionId + "-openai-" + targetLanguage + "-" + route.sequence,
-                route.sequence,
-                chunkIndex,
-                state.segmentStartedAtMs > 0 ? state.segmentStartedAtMs : System.currentTimeMillis()
-        );
     }
 
     private void flushOpenAiText(FallbackSessionState state, String reason) {
@@ -231,36 +207,22 @@ public class RealtimeFallbackCoordinator {
         }
         String sourceText;
         String sourceLanguage;
-        Map<String, String> translatedByTarget = new ConcurrentHashMap<>();
+        long speechStartAtMs;
         synchronized (state.textLock) {
             state.flushFuture = null;
             sourceText = state.inputTranscript.toString().trim();
             sourceLanguage = state.currentSourceLanguage.get();
-            state.outputTranscripts.forEach((targetLanguage, buffer) -> {
-                String translated = buffer.toString().trim();
-                if (!translated.isBlank()) {
-                    translatedByTarget.put(targetLanguage, translated);
-                }
-            });
-            if (sourceText.isBlank() && translatedByTarget.isEmpty()) {
+            speechStartAtMs = state.segmentStartedAtMs > 0 ? state.segmentStartedAtMs : System.currentTimeMillis();
+            if (sourceText.isBlank()) {
                 state.segmentStartedAtMs = 0L;
                 return;
             }
             state.inputTranscript.setLength(0);
-            state.outputTranscripts.clear();
             state.segmentStartedAtMs = 0L;
         }
-        if (!sourceText.isBlank()) {
-            state.callbacks.onRecognized(sourceText, sourceLanguage, FALLBACK_SPEAKER_ID);
-        }
-        translatedByTarget.forEach((targetLanguage, translated) -> {
-            if (!sourceText.isBlank() && !isSameLanguage(sourceLanguage, targetLanguage)) {
-                state.callbacks.onTranslated(sourceText, translated, sourceLanguage, targetLanguage,
-                        FALLBACK_SPEAKER_ID, FALLBACK_SPEAKER_ID);
-            }
-        });
-        log.info("[RealtimeFallbackCoordinator] flushed OpenAI text, sessionId={}, reason={}, sourceLen={}, targets={}",
-                state.sessionId, reason, sourceText.length(), translatedByTarget.keySet());
+        state.callbacks.onRecognized(sourceText, sourceLanguage, FALLBACK_SPEAKER_ID, speechStartAtMs);
+        log.info("[RealtimeFallbackCoordinator] flushed OpenAI ASR text, sessionId={}, reason={}, sourceLen={}, sourceLang={}",
+                state.sessionId, reason, sourceText.length(), sourceLanguage);
     }
 
     private List<String> normalizeTargetLanguages(List<String> targetLanguages) {
@@ -301,13 +263,6 @@ public class RealtimeFallbackCoordinator {
         return language;
     }
 
-    private static boolean isSameLanguage(String sourceLanguage, String targetLanguage) {
-        if (sourceLanguage == null || sourceLanguage.isBlank() || Constants.LANG_AUTO.equalsIgnoreCase(sourceLanguage)) {
-            return false;
-        }
-        return normalizeLanguage(sourceLanguage).equalsIgnoreCase(normalizeLanguage(targetLanguage));
-    }
-
     private static boolean shouldFlushImmediately(String delta) {
         if (delta == null || delta.isBlank()) {
             return false;
@@ -320,13 +275,18 @@ public class RealtimeFallbackCoordinator {
         if (text == null || text.isBlank()) {
             return null;
         }
+        boolean hasLatin = false;
         for (int i = 0; i < text.length(); i++) {
-            Character.UnicodeScript script = Character.UnicodeScript.of(text.charAt(i));
+            char ch = text.charAt(i);
+            Character.UnicodeScript script = Character.UnicodeScript.of(ch);
             if (script == Character.UnicodeScript.HAN) {
                 return Constants.LANG_ZH_CN;
             }
+            if (script == Character.UnicodeScript.LATIN && Character.isLetter(ch)) {
+                hasLatin = true;
+            }
         }
-        return null;
+        return hasLatin ? Constants.LANG_ID_SHORT : null;
     }
 
     private final class OpenAiSessionListener implements RealtimeTranslationListener {
@@ -341,8 +301,8 @@ public class RealtimeFallbackCoordinator {
         @Override
         public void onReady(String targetLanguage) {
             state.readyTargets.add(targetLanguage);
-            state.callbacks.onStatus(state.status(true, "OpenAI Realtime ready"));
-            log.info("[RealtimeFallbackCoordinator] OpenAI ready, sessionId={}, targetLang={}",
+            state.callbacks.onStatus(state.status(true, "OpenAI Realtime ASR ready"));
+            log.info("[RealtimeFallbackCoordinator] OpenAI ASR ready, sessionId={}, targetLang={}",
                     state.sessionId, targetLanguage);
         }
 
@@ -398,11 +358,8 @@ public class RealtimeFallbackCoordinator {
         private final Set<String> readyTargets = ConcurrentHashMap.newKeySet();
         private final AtomicReference<String> activeEngine = new AtomicReference<>(Constants.REALTIME_ENGINE_PRIMARY);
         private final AtomicReference<String> currentSourceLanguage = new AtomicReference<>(Constants.LANG_AUTO);
-        private final AtomicLong nextSequence = new AtomicLong();
-        private final Map<String, FallbackAudioRoute> audioRoutes = new ConcurrentHashMap<>();
         private final Object textLock = new Object();
         private final StringBuilder inputTranscript = new StringBuilder();
-        private final Map<String, StringBuilder> outputTranscripts = new ConcurrentHashMap<>();
         private ScheduledFuture<?> flushFuture;
         private long segmentStartedAtMs;
 
@@ -420,6 +377,13 @@ public class RealtimeFallbackCoordinator {
             return !readyTargets.isEmpty();
         }
 
+        private String realtimeSessionLanguage() {
+            if (targetLanguages.isEmpty()) {
+                return DEFAULT_REALTIME_SESSION_LANGUAGE;
+            }
+            return targetLanguages.get(0);
+        }
+
         private FallbackEngineStatus status(boolean available, String message) {
             return new FallbackEngineStatus(sessionId, activeEngine.get(), available, message);
         }
@@ -431,16 +395,9 @@ public class RealtimeFallbackCoordinator {
         private void clearTextBuffers() {
             synchronized (textLock) {
                 inputTranscript.setLength(0);
-                outputTranscripts.clear();
                 segmentStartedAtMs = 0L;
                 cancelFlush();
             }
-        }
-
-        private void restartAudioTasks() {
-            audioRoutes.clear();
-            targetLanguages.forEach(targetLanguage ->
-                    audioRoutes.put(targetLanguage, new FallbackAudioRoute(nextSequence.incrementAndGet())));
         }
 
         private void scheduleFlush(boolean immediate) {
@@ -464,15 +421,6 @@ public class RealtimeFallbackCoordinator {
                 flushFuture.cancel(false);
                 flushFuture = null;
             }
-        }
-    }
-
-    private static final class FallbackAudioRoute {
-        private final long sequence;
-        private final AtomicInteger nextChunkIndex = new AtomicInteger();
-
-        private FallbackAudioRoute(long sequence) {
-            this.sequence = sequence;
         }
     }
 }
