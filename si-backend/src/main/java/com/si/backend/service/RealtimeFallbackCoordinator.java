@@ -58,16 +58,9 @@ public class RealtimeFallbackCoordinator {
             log.info("[RealtimeFallbackCoordinator] startSession skipped, sessionId={}, reason=unusable", sessionId);
             return;
         }
-        String realtimeSessionLanguage = state.realtimeSessionLanguage();
-        RealtimeTranslationSession openAiSession = openAiRealtimeIntegration.openSession(
-                sessionId,
-                realtimeSessionLanguage,
-                new OpenAiSessionListener(state, realtimeSessionLanguage)
-        );
-        state.openAiSessions.put(realtimeSessionLanguage, openAiSession);
-        state.emitStatus(false, "OpenAI Realtime ASR warming up");
-        log.info("[RealtimeFallbackCoordinator] startSession end, sessionId={}, targets={}, realtimeSessionLanguage={}",
-                sessionId, state.targetLanguages, realtimeSessionLanguage);
+        state.emitStatus(true, "OpenAI Realtime ASR available");
+        log.info("[RealtimeFallbackCoordinator] startSession end, sessionId={}, targets={}, realtimeSessionLanguage={}, mode=lazy",
+                sessionId, state.targetLanguages, state.realtimeSessionLanguage());
     }
 
     public void pushAudio(String sessionId, byte[] pcmFrame) {
@@ -117,21 +110,34 @@ public class RealtimeFallbackCoordinator {
         if (Constants.REALTIME_ENGINE_PRIMARY.equals(engine)) {
             state.activeEngine.set(Constants.REALTIME_ENGINE_PRIMARY);
             state.clearTextBuffers();
-            FallbackEngineStatus status = state.status(state.hasReadyOpenAiTarget(), "Switched to primary realtime pipeline");
+            state.closeOpenAiSessions();
+            FallbackEngineStatus status = state.status(properties.isUsable(), "Switched to primary realtime pipeline");
             state.callbacks.onStatus(status);
             log.info("[RealtimeFallbackCoordinator] switched engine, sessionId={}, active={}", sessionId, engine);
             return status;
         }
-        if (!state.hasReadyOpenAiTarget()) {
+        if (!properties.isUsable()) {
             FallbackEngineStatus status = state.status(false, "OpenAI Realtime is not ready");
             state.callbacks.onStatus(status);
-            log.warn("[RealtimeFallbackCoordinator] switch rejected, sessionId={}, requested={}, reason=not_ready",
+            log.warn("[RealtimeFallbackCoordinator] switch rejected, sessionId={}, requested={}, reason=unusable",
                     sessionId, requestedEngine);
             return status;
         }
         state.activeEngine.set(Constants.REALTIME_ENGINE_OPENAI);
         state.clearTextBuffers();
-        FallbackEngineStatus status = state.status(true, "Switched to OpenAI Realtime ASR");
+        try {
+            state.openAiSessionIfNeeded();
+        } catch (Exception e) {
+            state.activeEngine.set(Constants.REALTIME_ENGINE_PRIMARY);
+            state.closeOpenAiSessions();
+            FallbackEngineStatus status = state.status(false, "OpenAI Realtime start failed, switched to primary");
+            state.callbacks.onStatus(status);
+            state.callbacks.onError("OpenAI Realtime start failed, switched to primary: " + e.getMessage());
+            log.warn("[RealtimeFallbackCoordinator] switch failed, sessionId={}, requested={}, reason=start_failed",
+                    sessionId, requestedEngine, e);
+            return status;
+        }
+        FallbackEngineStatus status = state.status(state.hasReadyOpenAiTarget(), "Switched to OpenAI Realtime ASR");
         state.callbacks.onStatus(status);
         log.info("[RealtimeFallbackCoordinator] switched engine, sessionId={}, active={}", sessionId, engine);
         return status;
@@ -143,7 +149,8 @@ public class RealtimeFallbackCoordinator {
             return new FallbackEngineStatus(sessionId, Constants.REALTIME_ENGINE_PRIMARY, false,
                     "Session has no fallback state");
         }
-        return state.status(state.hasReadyOpenAiTarget(), "");
+        boolean available = state.isOpenAiActive() ? state.hasReadyOpenAiTarget() : properties.isUsable();
+        return state.status(available, "");
     }
 
     public void stopSession(String sessionId) {
@@ -153,16 +160,7 @@ public class RealtimeFallbackCoordinator {
         }
         log.info("[RealtimeFallbackCoordinator] stopSession start, sessionId={}", sessionId);
         removed.cancelFlush();
-        removed.openAiSessions.values().forEach(session -> {
-            try {
-                session.close();
-            } catch (Exception e) {
-                log.debug("[RealtimeFallbackCoordinator] close OpenAI session failed, sessionId={}, targetLang={}",
-                        sessionId, session.targetLanguage(), e);
-            }
-        });
-        removed.openAiSessions.clear();
-        removed.readyTargets.clear();
+        removed.closeOpenAiSessions();
         log.info("[RealtimeFallbackCoordinator] stopSession end, sessionId={}", sessionId);
     }
 
@@ -324,6 +322,7 @@ public class RealtimeFallbackCoordinator {
         @Override
         public void onError(String targetLanguage, String message) {
             state.readyTargets.remove(targetLanguage);
+            state.openAiSessions.remove(targetLanguage);
             String safeMessage = message == null || message.isBlank()
                     ? "OpenAI Realtime error"
                     : message;
@@ -331,6 +330,7 @@ public class RealtimeFallbackCoordinator {
                     state.sessionId, targetLanguage, safeMessage);
             if (state.isOpenAiActive() && !state.hasReadyOpenAiTarget()) {
                 state.activeEngine.set(Constants.REALTIME_ENGINE_PRIMARY);
+                state.closeOpenAiSessions();
                 state.callbacks.onStatus(state.status(false, "OpenAI Realtime unavailable, switched to primary"));
                 state.callbacks.onError("OpenAI Realtime unavailable, switched to primary: " + safeMessage);
             } else {
@@ -341,10 +341,12 @@ public class RealtimeFallbackCoordinator {
         @Override
         public void onClosed(String targetLanguage) {
             state.readyTargets.remove(targetLanguage);
+            state.openAiSessions.remove(targetLanguage);
             log.info("[RealtimeFallbackCoordinator] OpenAI closed, sessionId={}, targetLang={}",
                     state.sessionId, targetLanguage);
             if (state.isOpenAiActive() && !state.hasReadyOpenAiTarget()) {
                 state.activeEngine.set(Constants.REALTIME_ENGINE_PRIMARY);
+                state.closeOpenAiSessions();
                 state.callbacks.onStatus(state.status(false, "OpenAI Realtime closed, switched to primary"));
             }
         }
@@ -356,6 +358,7 @@ public class RealtimeFallbackCoordinator {
         private final RealtimeFallbackCallbacks callbacks;
         private final Map<String, RealtimeTranslationSession> openAiSessions = new ConcurrentHashMap<>();
         private final Set<String> readyTargets = ConcurrentHashMap.newKeySet();
+        private final Object lifecycleLock = new Object();
         private final AtomicReference<String> activeEngine = new AtomicReference<>(Constants.REALTIME_ENGINE_PRIMARY);
         private final AtomicReference<String> currentSourceLanguage = new AtomicReference<>(Constants.LANG_AUTO);
         private final Object textLock = new Object();
@@ -382,6 +385,40 @@ public class RealtimeFallbackCoordinator {
                 return DEFAULT_REALTIME_SESSION_LANGUAGE;
             }
             return targetLanguages.get(0);
+        }
+
+        private void openAiSessionIfNeeded() {
+            synchronized (lifecycleLock) {
+                if (!openAiSessions.isEmpty()) {
+                    return;
+                }
+                String realtimeSessionLanguage = realtimeSessionLanguage();
+                RealtimeTranslationSession openAiSession = openAiRealtimeIntegration.openSession(
+                        sessionId,
+                        realtimeSessionLanguage,
+                        new OpenAiSessionListener(this, realtimeSessionLanguage)
+                );
+                openAiSessions.put(realtimeSessionLanguage, openAiSession);
+                log.info("[RealtimeFallbackCoordinator] OpenAI Realtime ASR lazy session opened, sessionId={}, targetLang={}",
+                        sessionId, realtimeSessionLanguage);
+            }
+        }
+
+        private void closeOpenAiSessions() {
+            synchronized (lifecycleLock) {
+                cancelFlush();
+                clearTextBuffers();
+                openAiSessions.values().forEach(session -> {
+                    try {
+                        session.close();
+                    } catch (Exception e) {
+                        log.debug("[RealtimeFallbackCoordinator] close OpenAI session failed, sessionId={}, targetLang={}",
+                                sessionId, session.targetLanguage(), e);
+                    }
+                });
+                openAiSessions.clear();
+                readyTargets.clear();
+            }
         }
 
         private FallbackEngineStatus status(boolean available, String message) {

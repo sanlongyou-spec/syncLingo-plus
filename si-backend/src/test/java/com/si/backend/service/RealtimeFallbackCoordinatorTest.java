@@ -26,7 +26,7 @@ import static org.mockito.Mockito.when;
 class RealtimeFallbackCoordinatorTest {
 
     @Test
-    void openAiShadowUsesSingleAsrSessionAndSuppressesPrimaryWhenSelected() {
+    void primaryModeDoesNotOpenOrFeedOpenAiUntilSelected() {
         OpenAiRealtimeProperties properties = usableProperties();
         OpenAiRealtimeTranslateIntegration integration = mock(OpenAiRealtimeTranslateIntegration.class);
         Map<String, RealtimeTranslationListener> listeners = new ConcurrentHashMap<>();
@@ -46,18 +46,56 @@ class RealtimeFallbackCoordinatorTest {
         coordinator.startSession("s1", List.of(Constants.LANG_ZH_CN, Constants.LANG_ID_SHORT), callbacks);
         coordinator.pushAudio("s1", new byte[]{1, 2, 3, 4});
 
-        assertEquals(1, openAiSessions.size());
-        FakeRealtimeSession session = openAiSessions.values().iterator().next();
-        assertEquals(1, session.audioFrames.get());
+        assertEquals(0, openAiSessions.size());
         assertTrue(coordinator.shouldEmitPrimaryOutput("s1"));
         assertTrue(coordinator.shouldFeedPrimaryAsr("s1"));
 
-        listeners.get(session.targetLanguage()).onReady(session.targetLanguage());
-        FallbackEngineStatus status = coordinator.switchEngine("s1", Constants.REALTIME_ENGINE_OPENAI);
+        FallbackEngineStatus switching = coordinator.switchEngine("s1", Constants.REALTIME_ENGINE_OPENAI);
 
-        assertEquals(Constants.REALTIME_ENGINE_OPENAI, status.activeEngine());
+        assertEquals(Constants.REALTIME_ENGINE_OPENAI, switching.activeEngine());
+        assertFalse(switching.available());
+        assertEquals(1, openAiSessions.size());
+        FakeRealtimeSession session = openAiSessions.values().iterator().next();
         assertFalse(coordinator.shouldEmitPrimaryOutput("s1"));
         assertFalse(coordinator.shouldFeedPrimaryAsr("s1"));
+
+        coordinator.pushAudio("s1", new byte[]{5, 6});
+
+        assertEquals(1, session.audioFrames.get());
+        listeners.get(session.targetLanguage()).onReady(session.targetLanguage());
+        assertTrue(coordinator.currentStatus("s1").available());
+    }
+
+    @Test
+    void switchBackToPrimaryClosesOpenAiSessionAndStopsRealtimeFeed() {
+        OpenAiRealtimeProperties properties = usableProperties();
+        OpenAiRealtimeTranslateIntegration integration = mock(OpenAiRealtimeTranslateIntegration.class);
+        Map<String, RealtimeTranslationListener> listeners = new ConcurrentHashMap<>();
+        Map<String, FakeRealtimeSession> openAiSessions = new ConcurrentHashMap<>();
+        when(integration.openSession(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            String targetLanguage = invocation.getArgument(1);
+            RealtimeTranslationListener listener = invocation.getArgument(2);
+            listeners.put(targetLanguage, listener);
+            FakeRealtimeSession session = new FakeRealtimeSession(targetLanguage);
+            openAiSessions.put(targetLanguage, session);
+            return session;
+        });
+        RealtimeFallbackCoordinator coordinator = new RealtimeFallbackCoordinator(properties, integration);
+        RecordingFallbackCallbacks callbacks = new RecordingFallbackCallbacks();
+
+        coordinator.startSession("s-primary", List.of(Constants.LANG_ID_SHORT), callbacks);
+        coordinator.switchEngine("s-primary", Constants.REALTIME_ENGINE_OPENAI);
+        FakeRealtimeSession session = openAiSessions.get(Constants.LANG_ID_SHORT);
+        listeners.get(Constants.LANG_ID_SHORT).onReady(Constants.LANG_ID_SHORT);
+
+        FallbackEngineStatus primary = coordinator.switchEngine("s-primary", Constants.REALTIME_ENGINE_PRIMARY);
+        coordinator.pushAudio("s-primary", new byte[]{7, 8});
+
+        assertEquals(Constants.REALTIME_ENGINE_PRIMARY, primary.activeEngine());
+        assertTrue(coordinator.shouldEmitPrimaryOutput("s-primary"));
+        assertTrue(coordinator.shouldFeedPrimaryAsr("s-primary"));
+        assertEquals(1, session.closeCalls.get());
+        assertEquals(0, session.audioFrames.get());
     }
 
     @Test
@@ -75,9 +113,9 @@ class RealtimeFallbackCoordinatorTest {
         RecordingFallbackCallbacks callbacks = new RecordingFallbackCallbacks();
 
         coordinator.startSession("s2", List.of(Constants.LANG_ZH_CN, Constants.LANG_ID_SHORT), callbacks);
+        coordinator.switchEngine("s2", Constants.REALTIME_ENGINE_OPENAI);
         RealtimeTranslationListener listener = listeners.values().iterator().next();
         listener.onReady(Constants.LANG_ZH_CN);
-        coordinator.switchEngine("s2", Constants.REALTIME_ENGINE_OPENAI);
 
         listener.onInputTranscriptDelta("Pupuk selesai.");
 
@@ -103,9 +141,9 @@ class RealtimeFallbackCoordinatorTest {
         RecordingFallbackCallbacks callbacks = new RecordingFallbackCallbacks();
 
         coordinator.startSession("s3", List.of(Constants.LANG_ID_SHORT), callbacks);
+        coordinator.switchEngine("s3", Constants.REALTIME_ENGINE_OPENAI);
         RealtimeTranslationListener listener = listeners.get(Constants.LANG_ID_SHORT);
         listener.onReady(Constants.LANG_ID_SHORT);
-        coordinator.switchEngine("s3", Constants.REALTIME_ENGINE_OPENAI);
 
         listener.onOutputTranscriptDelta(Constants.LANG_ID_SHORT, "ignored output.");
         listener.onOutputAudio(Constants.LANG_ID_SHORT, new byte[]{1, 2});
@@ -116,11 +154,9 @@ class RealtimeFallbackCoordinatorTest {
     }
 
     @Test
-    void switchToOpenAiIsRejectedUntilReady() {
-        OpenAiRealtimeProperties properties = usableProperties();
+    void switchToOpenAiIsRejectedWhenUnusable() {
+        OpenAiRealtimeProperties properties = new OpenAiRealtimeProperties();
         OpenAiRealtimeTranslateIntegration integration = mock(OpenAiRealtimeTranslateIntegration.class);
-        when(integration.openSession(anyString(), anyString(), any()))
-                .thenAnswer(invocation -> new FakeRealtimeSession(invocation.getArgument(1)));
         RealtimeFallbackCoordinator coordinator = new RealtimeFallbackCoordinator(properties, integration);
         RecordingFallbackCallbacks callbacks = new RecordingFallbackCallbacks();
 
@@ -131,6 +167,26 @@ class RealtimeFallbackCoordinatorTest {
         assertFalse(status.available());
         assertTrue(coordinator.shouldEmitPrimaryOutput("s4"));
         assertTrue(coordinator.shouldFeedPrimaryAsr("s4"));
+    }
+
+    @Test
+    void switchToOpenAiStartFailureFallsBackToPrimary() {
+        OpenAiRealtimeProperties properties = usableProperties();
+        OpenAiRealtimeTranslateIntegration integration = mock(OpenAiRealtimeTranslateIntegration.class);
+        when(integration.openSession(anyString(), anyString(), any()))
+                .thenThrow(new IllegalStateException("boom"));
+        RealtimeFallbackCoordinator coordinator = new RealtimeFallbackCoordinator(properties, integration);
+        RecordingFallbackCallbacks callbacks = new RecordingFallbackCallbacks();
+
+        coordinator.startSession("s5", List.of(Constants.LANG_ID_SHORT), callbacks);
+        FallbackEngineStatus status = coordinator.switchEngine("s5", Constants.REALTIME_ENGINE_OPENAI);
+
+        assertEquals(Constants.REALTIME_ENGINE_PRIMARY, status.activeEngine());
+        assertFalse(status.available());
+        assertTrue(coordinator.shouldEmitPrimaryOutput("s5"));
+        assertTrue(coordinator.shouldFeedPrimaryAsr("s5"));
+        assertEquals(1, callbacks.errors.size());
+        assertTrue(callbacks.errors.get(0).contains("OpenAI Realtime start failed"));
     }
 
     private static OpenAiRealtimeProperties usableProperties() {
@@ -145,6 +201,7 @@ class RealtimeFallbackCoordinatorTest {
     private static final class FakeRealtimeSession implements RealtimeTranslationSession {
         private final String targetLanguage;
         private final AtomicInteger audioFrames = new AtomicInteger();
+        private final AtomicInteger closeCalls = new AtomicInteger();
 
         private FakeRealtimeSession(String targetLanguage) {
             this.targetLanguage = targetLanguage;
@@ -162,7 +219,7 @@ class RealtimeFallbackCoordinatorTest {
 
         @Override
         public void close() {
-            // no-op
+            closeCalls.incrementAndGet();
         }
     }
 
@@ -173,6 +230,7 @@ class RealtimeFallbackCoordinatorTest {
         private final List<String> recognizedLanguages = new CopyOnWriteArrayList<>();
         private final List<String> recognizedSpeakers = new CopyOnWriteArrayList<>();
         private final List<Long> recognizedStartedAtMs = new CopyOnWriteArrayList<>();
+        private final List<String> errors = new CopyOnWriteArrayList<>();
 
         @Override
         public void onRecognizing(String text, String language, String speakerId) {
@@ -195,7 +253,7 @@ class RealtimeFallbackCoordinatorTest {
 
         @Override
         public void onError(String message) {
-            // no-op
+            errors.add(message);
         }
 
         private boolean awaitRecognized() throws InterruptedException {
