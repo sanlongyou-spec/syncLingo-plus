@@ -259,12 +259,15 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] processFinalRecognition done, sessionId={}", sessionId);
     }
 
-    /** TTS 合成语速：中文与印尼语按 1.1 倍速合成，其余语种用默认 1.0。 */
+    /** TTS synthesis speed by target language. */
     private double resolveTtsSpeed(String targetLang) {
         if (targetLang == null) return Constants.TTS_SPEED_DEFAULT;
         String lower = targetLang.toLowerCase();
-        if (lower.startsWith("zh") || lower.startsWith("id")) {
-            return Constants.TTS_SPEED_ZH_ID;
+        if (lower.startsWith("id")) {
+            return Constants.TTS_SPEED_ID;
+        }
+        if (lower.startsWith("zh")) {
+            return Constants.TTS_SPEED_ZH;
         }
         return Constants.TTS_SPEED_DEFAULT;
     }

@@ -1804,3 +1804,37 @@ GET    /api/admin/audit-logs
 
 - The latest local follow-up still needs a proper release commit/push and server redeploy before another live test can validate it.
 - Holding the final short fragment at session close satisfies the "all output goes through the floor" rule, but it means a terminal fragment below the floor is logged rather than emitted. If the business requirement later demands terminal flush with no exception, the floor rule and no-drop rule need an explicit priority decision.
+
+## Weekly Optimization Record: 2026-W27 TTS Indonesian Synthesis Speed
+
+### Goal
+
+- Make zh-CN -> id Indonesian TTS more compact for live interpretation by sending Cartesia `generation_config.speed=1.3` for Indonesian target audio.
+- Keep id -> zh-CN Chinese target audio at the existing 1.1 speed and keep English/default targets at 1.0.
+- Avoid changing the currently deployed pre-Realtime baseline beyond this TTS speed selection.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Split zh/id TTS speed constants | Done | Replaced the shared zh/id speed constant with `TTS_SPEED_ZH=1.1` and `TTS_SPEED_ID=1.3`. |
+| Target-language speed routing | Done | `RealtimeInterpretationFacade.resolveTtsSpeed` now returns 1.3 for `id`/`id-ID`, 1.1 for `zh*`, and 1.0 for other languages. |
+| Regression coverage | Done | Added a TTS-layer test that captures the speed passed to `TtsService.synthesizeStream` for id, id-ID, zh-CN, and en-US targets. |
+
+### Affected Modules
+
+- Backend constants: `Constants`.
+- Backend realtime orchestration: `RealtimeInterpretationFacade`.
+- Backend regression tests: `RealtimeInterpretationOrderTest`.
+
+### Acceptance Criteria
+
+- Logs for zh-CN -> id or zh-CN -> id-ID TTS queueing show `speed=1.3`.
+- Logs for id -> zh-CN TTS queueing still show `speed=1.1`.
+- Logs for English/default target TTS still show `speed=1.0`.
+- Focused `RealtimeInterpretationOrderTest` and full backend `mvn test` pass.
+
+### Residual Issues
+
+- Cartesia speed is provider guidance, not a mechanical time-stretch guarantee. A live listening test is still needed to confirm 1.3 remains intelligible for fast Indonesian output.
+- This hotfix is based on the server rollback commit `65a8e2f` to avoid reintroducing OpenAI Realtime changes.

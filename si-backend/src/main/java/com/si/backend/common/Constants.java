@@ -158,8 +158,10 @@ public final class Constants {
     public static final String CARTESIA_FIELD_SPEED = "speed";
     /** TTS 语速倍率（固定 1.0 自然语速；所有加速由前端 playbackRate ≤ 1.35 驱动） */
     public static final double TTS_SPEED_DEFAULT = 1.0;
-    /** 中文/印尼语 TTS 合成语速(略快，听感更自然紧凑)。 */
-    public static final double TTS_SPEED_ZH_ID = 1.1;
+    /** Chinese TTS synthesis speed. */
+    public static final double TTS_SPEED_ZH = 1.1;
+    /** Indonesian TTS synthesis speed for zh->id output. */
+    public static final double TTS_SPEED_ID = 1.3;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */
     public static final String CARTESIA_FIELD_AUDIO = "data";
     /** Cartesia TTS WebSocket JSON 字段：done */

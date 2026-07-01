@@ -45,6 +45,14 @@ import static org.mockito.Mockito.when;
 class RealtimeInterpretationOrderTest {
 
     @Test
+    void targetLanguageControlsTtsSynthesisSpeed() throws Exception {
+        assertTtsSpeedForTarget("id", 1.3);
+        assertTtsSpeedForTarget("id-ID", 1.3);
+        assertTtsSpeedForTarget("zh-CN", 1.1);
+        assertTtsSpeedForTarget("en-US", 1.0);
+    }
+
+    @Test
     void laterTranslationCannotPlayBeforeEarlierSentence() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
@@ -312,6 +320,77 @@ class RealtimeInterpretationOrderTest {
         assertEquals(expectedForwardedChunks, forwardedChunks.get());
         assertTrue(forwardedChunks.get() < 40);
         assertTrue(cancelReason.get() != null && cancelReason.get().contains("duration guard"));
+    }
+
+    private void assertTtsSpeedForTarget(String targetLang, double expectedSpeed) throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard
+        );
+
+        String sessionId = "speed-test-session-" + targetLang.replace('-', '_');
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenReturn("translated text");
+
+        AtomicReference<Double> capturedSpeed = new AtomicReference<>();
+        CountDownLatch ttsCalled = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            capturedSpeed.set(invocation.getArgument(3));
+            Runnable onComplete = invocation.getArgument(6);
+            onComplete.run();
+            ttsCalled.countDown();
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        String sourceLang = targetLang.toLowerCase().startsWith("zh") ? "id" : "zh-CN";
+        facade.translateAndStreamTts(
+                "source text",
+                sourceLang,
+                targetLang,
+                "explicit-voice-id",
+                sessionId,
+                "speaker-1",
+                "Speaker 1",
+                System.currentTimeMillis() - 1000
+        );
+
+        assertTrue(ttsCalled.await(5, TimeUnit.SECONDS));
+        assertEquals(expectedSpeed, capturedSpeed.get(), 0.0001);
+        awaitTtsChain(facade, sessionId, targetLang);
     }
 
     @SuppressWarnings("unchecked")

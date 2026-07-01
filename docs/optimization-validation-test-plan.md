@@ -1932,3 +1932,58 @@ Observed evidence:
 - Confirm the UI transcript no longer shows short standalone Indonesian rows for those phrases.
 - Confirm no sentence tail is duplicated into the next segment and no already-synthesized audio is skipped.
 - If the last spoken phrase is intentionally shorter than the floor, check backend logs for `pending output-floor not emitted on close` and decide whether the product wants a terminal flush exception.
+
+## Weekly Validation Record: 2026-W27 TTS Indonesian Synthesis Speed
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 TTS Indonesian Synthesis Speed`.
+
+### Validation Goals
+
+- Prove Indonesian target TTS receives speed 1.3.
+- Prove Chinese target TTS remains speed 1.1.
+- Prove English/default target TTS remains speed 1.0.
+- Prove the deployed server stays on the pre-Realtime hotfix line.
+
+### Log / Runtime Validation First
+
+```bash
+cd /opt/syncLingo
+git rev-parse --short HEAD
+docker exec si-backend printenv AZURE_ASR_MIN_SENTENCE_EMIT_ID_CHARS
+docker logs si-backend --since 20m 2>&1 | grep -E \
+  "TTS queued|speed=1.3|speed=1.1|speed=1.0|OpenAI Realtime|openai_realtime|RealtimeFallbackCoordinator|ERROR|Exception"
+```
+
+Pass criteria:
+
+- `git rev-parse --short HEAD` returns the hotfix commit based on `65a8e2f`, not the later Realtime line.
+- zh-CN -> id/id-ID target logs contain `TTS queued ... speed=1.3`.
+- id -> zh-CN target logs contain `TTS queued ... speed=1.1`.
+- English/default target logs, if exercised, contain `speed=1.0`.
+- Realtime logs (`OpenAI Realtime`, `openai_realtime`, `RealtimeFallbackCoordinator`) do not appear in the rollback deployment.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q -Dtest=RealtimeInterpretationOrderTest test
+mvn -q test
+```
+
+Pass criteria:
+
+- `targetLanguageControlsTtsSynthesisSpeed` passes and captures speed 1.3 for `id` and `id-ID`.
+- Full backend test suite passes.
+
+### Manual Validation
+
+- Run a short Chinese -> Indonesian interpretation sample and listen for whether 1.3 remains intelligible.
+- If the output sounds clipped, too rushed, or harms comprehension, compare 1.2 vs 1.3 in a follow-up change rather than changing frontend playback behavior.
+
+### Result Record
+
+- Local focused test passed: `mvn -q -Dtest=RealtimeInterpretationOrderTest test`.
+- Local full backend verification passed: `mvn -q test`.
+- Server validation pending after deployment and live test logs.
