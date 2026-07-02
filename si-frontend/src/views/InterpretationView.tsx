@@ -18,6 +18,7 @@ import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import FontSizeControl from '../components/FontSizeControl'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { VbCableOutput } from '../lib/vbCableOutput'
+import type { TtsMonitorLanguage } from '../lib/vbCableOutput'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
@@ -92,6 +93,9 @@ export default function InterpretationView() {
   const [currentTranslated, setCurrentTranslated] = useState('')
   const [voices, setVoices] = useState<UserVoice[]>([])
   const [selectedVoiceId, setSelectedVoiceId] = useState('')
+  const [monitorLanguage, setMonitorLanguage] = useState<TtsMonitorLanguage>('off')
+  const [monitorDeviceId, setMonitorDeviceId] = useState('')
+  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([])
   const [error, setError] = useState('')
   const [shareHint, setShareHint] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
@@ -113,6 +117,8 @@ export default function InterpretationView() {
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
   const selectedVoiceIdRef = useRef('')
+  const monitorLanguageRef = useRef<TtsMonitorLanguage>('off')
+  const monitorDeviceIdRef = useRef('')
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -128,10 +134,25 @@ export default function InterpretationView() {
       .catch((err: unknown) => console.warn('[InterpretationView] listUserVoices failed:', err))
   }, [])
 
+  const refreshAudioOutputs = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      setAudioOutputDevices([])
+      return
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices()
+      setAudioOutputDevices(devices.filter(device => device.kind === 'audiooutput'))
+    } catch (err: unknown) {
+      console.warn('[InterpretationView] enumerate audio outputs failed:', err)
+    }
+  }, [])
+
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
   useEffect(() => { selectedVoiceIdRef.current = selectedVoiceId }, [selectedVoiceId])
+  useEffect(() => { monitorLanguageRef.current = monitorLanguage }, [monitorLanguage])
+  useEffect(() => { monitorDeviceIdRef.current = monitorDeviceId }, [monitorDeviceId])
   useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
   useEffect(() => {
     getMeetings()
@@ -162,6 +183,18 @@ export default function InterpretationView() {
       vbCableRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    void refreshAudioOutputs()
+    const mediaDevices = navigator.mediaDevices
+    if (!mediaDevices?.addEventListener) return
+
+    const handleDeviceChange = () => {
+      void refreshAudioOutputs()
+    }
+    mediaDevices.addEventListener('devicechange', handleDeviceChange)
+    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange)
+  }, [refreshAudioOutputs])
 
   // Refresh meetings whenever an overlay is closed and user returns here
   useEffect(() => {
@@ -220,6 +253,18 @@ export default function InterpretationView() {
       return
     }
     wsRef.current?.setVoice(sid, speakerId, voiceId)
+  }
+
+  const handleMonitorLanguageChange = (language: TtsMonitorLanguage) => {
+    setMonitorLanguage(language)
+    monitorLanguageRef.current = language
+    void vbCableRef.current?.setMonitor(language, monitorDeviceIdRef.current)
+  }
+
+  const handleMonitorDeviceChange = (deviceId: string) => {
+    setMonitorDeviceId(deviceId)
+    monitorDeviceIdRef.current = deviceId
+    void vbCableRef.current?.setMonitor(monitorLanguageRef.current, deviceId)
   }
 
   const reportTtsPlaybackLog = useCallback((event: TtsPlaybackLog) => {
@@ -439,6 +484,8 @@ export default function InterpretationView() {
       vbCableRef.current = null
       throw new Error('未检测到就绪的 VB-CABLE 输出设备（中文需「CABLE Input」、印尼语需「CABLE-A Input」）。请先安装 VB-CABLE 并授予浏览器音频设备权限后再开始。')
     }
+    await vbCable.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
+    void refreshAudioOutputs()
 
     const audio = new AudioCapture({
       sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
@@ -626,6 +673,36 @@ export default function InterpretationView() {
               {voices.map(voice => (
                 <option key={voice.voiceId} value={voice.voiceId}>{voice.voiceName}</option>
               ))}
+            </select>
+          </label>
+          <label className="si-monitor-language-select">
+            <span>监听</span>
+            <select
+              value={monitorLanguage}
+              onChange={event => handleMonitorLanguageChange(event.target.value as TtsMonitorLanguage)}
+            >
+              <option value="off">关闭</option>
+              <option value="zh">中文</option>
+              <option value="id">印尼语</option>
+              <option value="en">英语</option>
+            </select>
+          </label>
+          <label className="si-monitor-device-select">
+            <span>输出</span>
+            <select
+              value={monitorDeviceId}
+              onChange={event => handleMonitorDeviceChange(event.target.value)}
+              onFocus={() => void refreshAudioOutputs()}
+              disabled={monitorLanguage === 'off'}
+            >
+              <option value="">系统默认</option>
+              {audioOutputDevices
+                .filter(device => device.deviceId !== 'default')
+                .map((device, index) => (
+                  <option key={`${device.deviceId}-${index}`} value={device.deviceId}>
+                    {device.label || `音频输出 ${index + 1}`}
+                  </option>
+                ))}
             </select>
           </label>
           <button className="si-logout-btn" type="button" onClick={handleLogout} disabled={logoutBusy}>

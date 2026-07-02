@@ -2,6 +2,7 @@ import { TTS_OUTPUT_CABLE, TTS_OUTPUT_SAMPLE_RATE } from '../api/constants'
 import type { TtsPlaybackLog } from '../types'
 
 type OutputLang = 'zh' | 'id' | 'en'
+export type TtsMonitorLanguage = OutputLang | 'off'
 type PlaybackLogger = (event: TtsPlaybackLog) => void
 
 interface PlaybackMeta {
@@ -36,6 +37,13 @@ export class VbCableOutput {
     id: VbCableOutput.emptyChannel(),
     en: VbCableOutput.emptyChannel(),
   }
+  private monitorDest: MediaStreamAudioDestinationNode | null = null
+  private monitorAudioEl: HTMLAudioElement | null = null
+  private monitorPending = new Set<AudioBufferSourceNode>()
+  private monitorLanguage: TtsMonitorLanguage = 'off'
+  private monitorDeviceId = ''
+  private monitorScheduleTime = 0
+  private monitorSinkReady = false
 
   private static emptyChannel(): OutputChannel {
     return {
@@ -149,6 +157,25 @@ export class VbCableOutput {
     })
   }
 
+  async setMonitor(language: TtsMonitorLanguage, deviceId = ''): Promise<boolean> {
+    this.monitorLanguage = language
+    this.monitorDeviceId = deviceId
+    this.stopMonitorSources()
+    this.monitorScheduleTime = 0
+
+    if (language === 'off') {
+      this.teardownMonitor()
+      return false
+    }
+
+    if (!this.context) {
+      return false
+    }
+
+    this.ensureMonitorOutput()
+    return this.applyMonitorSink()
+  }
+
   isReady(): boolean {
     return this.channels.zh.sinkReady && this.channels.id.sinkReady
   }
@@ -214,6 +241,7 @@ export class VbCableOutput {
     }
 
     channel.scheduleTime = startAt + buffer.duration
+    this.scheduleMonitor(buffer, lang, targetLang, meta)
     console.debug('[VbCableOutput] chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s',
       lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '',
       durationMs, scheduledAheadMs, channel.pending.size, ctx.state)
@@ -234,6 +262,7 @@ export class VbCableOutput {
   }
 
   stop(): void {
+    this.teardownMonitor()
     for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
       const channel = this.channels[lang]
       const scheduledAheadMs = this.context
@@ -304,6 +333,108 @@ export class VbCableOutput {
       this.muteAndPause(channel)
       return false
     }
+  }
+
+  private ensureMonitorOutput(): void {
+    if (!this.context || (this.monitorDest && this.monitorAudioEl)) {
+      return
+    }
+
+    this.monitorDest = this.context.createMediaStreamDestination()
+    const audioEl = new Audio()
+    audioEl.srcObject = this.monitorDest.stream
+    audioEl.autoplay = true
+    audioEl.volume = 1
+    this.monitorAudioEl = audioEl
+  }
+
+  private async applyMonitorSink(): Promise<boolean> {
+    const language = this.monitorLanguage
+    const el = this.monitorAudioEl
+    if (!this.context || !el || language === 'off') {
+      this.monitorSinkReady = false
+      return false
+    }
+
+    try {
+      const sinkCapable = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }
+      if (sinkCapable.setSinkId) {
+        await sinkCapable.setSinkId(this.monitorDeviceId)
+      } else if (this.monitorDeviceId) {
+        throw new Error('Browser does not support selecting monitor output device')
+      }
+      el.volume = 1
+      el.autoplay = true
+      await el.play()
+      await this.resumeContext(language)
+      this.monitorSinkReady = true
+      console.log('[VbCableOutput] monitor ready, lang=%s deviceId=%s',
+        language, this.monitorDeviceId || 'default')
+      return true
+    } catch (err) {
+      this.monitorSinkReady = false
+      console.warn('[VbCableOutput] monitor output failed, lang=%s deviceId=%s:',
+        language, this.monitorDeviceId || 'default', err)
+      return false
+    }
+  }
+
+  private scheduleMonitor(
+    buffer: AudioBuffer,
+    lang: OutputLang,
+    targetLang: string,
+    meta: PlaybackMeta,
+  ): void {
+    if (
+      !this.context ||
+      !this.monitorDest ||
+      !this.monitorAudioEl ||
+      !this.monitorSinkReady ||
+      this.monitorLanguage !== lang
+    ) {
+      return
+    }
+
+    try {
+      if (this.monitorAudioEl.paused || this.monitorAudioEl.ended) {
+        void this.monitorAudioEl.play().catch(err => {
+          this.monitorSinkReady = false
+          console.warn('[VbCableOutput] monitor audio element resume failed:', err)
+        })
+      }
+      void this.resumeContext(lang, meta)
+      const source = this.context.createBufferSource()
+      source.buffer = buffer
+      source.connect(this.monitorDest)
+      const startAt = Math.max(this.context.currentTime + SCHEDULE_LEAD_SECONDS, this.monitorScheduleTime)
+      source.start(startAt)
+      this.monitorScheduleTime = startAt + buffer.duration
+      this.monitorPending.add(source)
+      source.onended = () => this.monitorPending.delete(source)
+      console.debug('[VbCableOutput] monitor chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
+        lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
+    } catch (err) {
+      console.warn('[VbCableOutput] monitor schedule failed, lang=%s targetLang=%s:', lang, targetLang, err)
+    }
+  }
+
+  private stopMonitorSources(): void {
+    this.monitorPending.forEach(source => {
+      try { source.stop() } catch { /* already stopped */ }
+    })
+    this.monitorPending.clear()
+  }
+
+  private teardownMonitor(): void {
+    this.stopMonitorSources()
+    this.monitorSinkReady = false
+    this.monitorScheduleTime = 0
+    if (this.monitorAudioEl) {
+      try { this.monitorAudioEl.pause() } catch { /* ignored */ }
+      this.monitorAudioEl.srcObject = null
+    }
+    this.monitorAudioEl = null
+    this.monitorDest = null
   }
 
   private ensureOutputActive(

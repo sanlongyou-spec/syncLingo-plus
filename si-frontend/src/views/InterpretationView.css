@@ -156,22 +156,28 @@ body {
   gap: 0.45rem;
 }
 
-.si-manual-voice-select {
+.si-manual-voice-select,
+.si-monitor-language-select,
+.si-monitor-device-select {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
 }
 
-.si-manual-voice-select span {
+.si-manual-voice-select span,
+.si-monitor-language-select span,
+.si-monitor-device-select span {
   color: #636366;
+  flex: 0 0 auto;
   font-size: 0.72rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 
-.si-manual-voice-select select {
-  width: 11.5rem;
-  max-width: 28vw;
+.si-manual-voice-select select,
+.si-monitor-language-select select,
+.si-monitor-device-select select {
   height: 2rem;
   border: 1px solid #d1d1d6;
   border-radius: 8px;
@@ -183,13 +189,31 @@ body {
   padding: 0 0.5rem;
 }
 
-.si-manual-voice-select select:focus {
+.si-manual-voice-select select {
+  width: 11.5rem;
+  max-width: 28vw;
+}
+
+.si-monitor-language-select select {
+  width: 6.75rem;
+}
+
+.si-monitor-device-select select {
+  width: 10.5rem;
+  max-width: 24vw;
+}
+
+.si-manual-voice-select select:focus,
+.si-monitor-language-select select:focus,
+.si-monitor-device-select select:focus {
   outline: none;
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
-.si-manual-voice-select select:disabled {
+.si-manual-voice-select select:disabled,
+.si-monitor-language-select select:disabled,
+.si-monitor-device-select select:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -882,6 +906,29 @@ body {
 
 /* ========== Responsive ========== */
 @media (max-width: 768px) {
+  .si-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .si-topbar-right {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .si-manual-voice-select,
+  .si-monitor-language-select,
+  .si-monitor-device-select {
+    flex: 1 1 9.5rem;
+  }
+
+  .si-manual-voice-select select,
+  .si-monitor-language-select select,
+  .si-monitor-device-select select {
+    width: 100%;
+    max-width: none;
+  }
+
   .si-workspace {
     display: grid;
   }
