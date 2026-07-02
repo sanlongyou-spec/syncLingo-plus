@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -247,7 +248,7 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
-    void chineseTtsUsesNormalizedTextAndStopsForwardingAfterDurationBudget() throws Exception {
+    void chineseTtsUsesNormalizedTextAndKeepsAudioAfterDurationBudgetWarning() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
         TranslationService translationService = mock(TranslationService.class);
@@ -286,16 +287,16 @@ class RealtimeInterpretationOrderTest {
         TtsTextNormalizer.Result normalized = TtsTextNormalizer.normalizeForTts(translated, "zh-CN");
         int sampleRate = cartesiaProperties.getTts().getSampleRate();
         byte[] oneSecondPcm = new byte[sampleRate * 2];
-        int expectedForwardedChunks =
-                (int) (TtsTextNormalizer.maxForwardAudioMs(normalized.text(), "zh-CN") / 1_000L);
 
         when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
                 .thenReturn(translated);
 
         AtomicReference<String> synthesizedText = new AtomicReference<>();
+        AtomicReference<Double> synthesisSpeed = new AtomicReference<>();
         AtomicReference<String> cancelReason = new AtomicReference<>();
         doAnswer(invocation -> {
             synthesizedText.set(invocation.getArgument(1));
+            synthesisSpeed.set(invocation.getArgument(3));
             @SuppressWarnings("unchecked")
             Consumer<byte[]> onChunk = invocation.getArgument(5);
             Runnable onComplete = invocation.getArgument(6);
@@ -325,9 +326,9 @@ class RealtimeInterpretationOrderTest {
         awaitTtsChain(facade, sessionId, "zh-CN");
 
         assertEquals(normalized.text(), synthesizedText.get());
-        assertEquals(expectedForwardedChunks, forwardedChunks.get());
-        assertTrue(forwardedChunks.get() < 40);
-        assertTrue(cancelReason.get() != null && cancelReason.get().contains("duration guard"));
+        assertEquals(1.0, synthesisSpeed.get(), 0.0001);
+        assertEquals(40, forwardedChunks.get());
+        assertNull(cancelReason.get());
     }
 
     @Test

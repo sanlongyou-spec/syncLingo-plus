@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TtsPcmSpeedServiceTest {
 
@@ -55,14 +56,17 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void invalidPcmBytesArePreserved() {
+    void oddPcmByteIsCarriedIntoNextChunkInsteadOfSkippingWholeChunk() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("id");
-        byte[] invalid = new byte[]{1};
 
-        byte[] output = processor.process(invalid);
+        byte[] first = processor.process(new byte[]{1});
+        byte[] second = processor.process(new byte[]{2, 3, 4});
 
-        assertSame(invalid, output);
+        assertEquals(0, first.length);
+        assertTrue(second.length > 0);
+        assertEquals(0, second.length % BYTES_PER_SAMPLE);
+        assertEquals(0, processor.finish().length);
     }
 
     private static byte[] oneSecondPcm() {

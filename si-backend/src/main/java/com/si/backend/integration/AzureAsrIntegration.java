@@ -243,12 +243,12 @@ public class AzureAsrIntegration {
         private String pendingIdFloorText = "";
         private String pendingIdFloorLang = "";
         private String pendingIdFloorSpeakerId = "";
-        /** 已发 id final 文本的归一化滚动账本：跨段/跨终稿去重，防 emittedLen 回退导致的重发/前缀重叠。 */
-        private final StringBuilder idEmitLedger = new StringBuilder();
-        private long idEmitLedgerAtMs = 0;
+        /** 已发 final 文本的归一化滚动账本：跨段/跨终稿去重，防 emittedLen 回退导致的重发/前缀重叠。 */
+        private final StringBuilder emitLedger = new StringBuilder();
+        private long emitLedgerAtMs = 0;
         /** 账本滚动窗口(归一化字符数)与空闲清空 TTL。 */
-        private static final int ID_EMIT_LEDGER_MAX = 2000;
-        private static final long ID_EMIT_LEDGER_TTL_MS = 60_000L;
+        private static final int EMIT_LEDGER_MAX = 2000;
+        private static final long EMIT_LEDGER_TTL_MS = 60_000L;
         private static final int EMIT_SUFFIX_LEN = 16;
         /** 上一次中间结果全文(算稳定前缀, 连续两次未变=Azure已确认) */
         private String prevText = "";
@@ -508,11 +508,18 @@ public class AzureAsrIntegration {
                         log.debug("[AsrSession] emittedLen corrected {} → {} (ASR revision)", emittedLen, corrected);
                         emittedLen = corrected;
                     } else {
-                        // 指纹丢失（大幅修正）：回退到稳定前缀位置，防止重发已发内容
-                        log.debug("[AsrSession] emittedLen reset {} → {} (suffix lost in ASR revision)", emittedLen, stableAbs);
-                        emittedLen = stableAbs;
-                        emittedSuffix = stableAbs > 0
-                                ? text.substring(Math.max(0, stableAbs - EMIT_SUFFIX_LEN), stableAbs) : "";
+                        BoundaryAlignment emittedTextAlignment = alignFinalBoundaryByEmittedText(
+                                text, Math.min(emittedLen, text.length()), emittedTextBuffer.toString());
+                        if (emittedTextAlignment.aligned()) {
+                            int corrected = emittedTextAlignment.cutIndex();
+                            log.debug("[AsrSession] emittedLen corrected by emittedText {} -> {} (suffix lost)",
+                                    emittedLen, corrected);
+                            emittedLen = corrected;
+                            emittedSuffix = text.substring(Math.max(0, emittedLen - EMIT_SUFFIX_LEN), emittedLen);
+                        } else {
+                            log.warn("[AsrSession] emittedLen suffix lost, keep current boundary to avoid replay, emittedLen={}, stableAbs={}, textLen={}, emittedTextLen={}",
+                                    emittedLen, stableAbs, text.length(), emittedTextBuffer.length());
+                        }
                     }
                 }
             }
@@ -681,7 +688,7 @@ public class AzureAsrIntegration {
                     }
                 }
                 // 3) 字/词边界兜底（仅限原始文本，无标点概念）
-                if (end == NO_SEGMENT) {
+                if (end == NO_SEGMENT && !isChineseSegment(working, 0, lang)) {
                     int b = wordOrCharBoundaryAt(working, safe, lang);
                     if (b > 0) {
                         end = b;
@@ -808,31 +815,30 @@ public class AzureAsrIntegration {
         }
 
         /**
-         * 统一的 id final 发送出口：发前对"已发账本"去重（整段重复→丢弃，前缀重叠→裁掉），再发出并更新账本。
-         * 非 id 或 Guard 未启用时原样发出，不做去重。防 emittedLen 回退导致的重发/前缀重叠。
+         * 统一 final 发送出口：发前对"已发账本"去重（整段重复→丢弃，前缀重叠→裁掉），再发出并更新账本。
          */
         private void emitFinalDeduped(String text, String lang, String speakerId) {
             String out = text;
-            if (isIdGuardActiveFor(lang) && text != null && !text.isBlank()) {
+            if (text != null && !text.isBlank()) {
                 long now = System.currentTimeMillis();
-                if (idEmitLedgerAtMs > 0 && now - idEmitLedgerAtMs > ID_EMIT_LEDGER_TTL_MS) {
-                    idEmitLedger.setLength(0);   // 长时间空闲，账本失效，重置
+                if (emitLedgerAtMs > 0 && now - emitLedgerAtMs > EMIT_LEDGER_TTL_MS) {
+                    emitLedger.setLength(0);
                 }
-                out = dedupEmitAgainstLedger(idEmitLedger.toString(), text);
+                out = dedupEmitAgainstLedger(emitLedger.toString(), text);
                 if (out == null || out.isBlank()) {
-                    log.info("[IdLedger] duplicate suppressed, len={} text='{}'",
-                            text.length(), text.length() <= 120 ? text : text.substring(0, 117) + "...");
+                    log.info("[AsrLedger] duplicate suppressed, lang={}, len={} text='{}'",
+                            lang, text.length(), previewText(text));
                     return;
                 }
                 if (out.length() != text.length()) {
-                    log.info("[IdLedger] overlap trimmed, fromLen={} toLen={} text='{}'",
-                            text.length(), out.length(), out.length() <= 120 ? out : out.substring(0, 117) + "...");
+                    log.info("[AsrLedger] overlap trimmed, lang={}, fromLen={}, toLen={} text='{}'",
+                            lang, text.length(), out.length(), previewText(out));
                 }
-                idEmitLedger.append(comparableString(out));
-                if (idEmitLedger.length() > ID_EMIT_LEDGER_MAX) {
-                    idEmitLedger.delete(0, idEmitLedger.length() - ID_EMIT_LEDGER_MAX);
+                emitLedger.append(comparableString(out));
+                if (emitLedger.length() > EMIT_LEDGER_MAX) {
+                    emitLedger.delete(0, emitLedger.length() - EMIT_LEDGER_MAX);
                 }
-                idEmitLedgerAtMs = now;
+                emitLedgerAtMs = now;
             }
             callback.onRecognizing(out, lang, speakerId, true);
         }
@@ -920,12 +926,23 @@ public class AzureAsrIntegration {
         }
 
         private boolean shouldDeferShortSegment(String reason, String segment, String lang) {
-            if (segment == null || minSentenceEmitIdChars <= 0 || !startsWithIgnoreCase(lang, "id")) {
+            if (segment == null || segment.isBlank()) {
                 return false;
             }
-            if (visibleCharCount(segment) >= minSentenceEmitIdChars) {
-                return false;
+            if (isChineseSegment(segment, 0, lang) && minSentenceEmitZhChars > 0
+                    && visibleCharCount(segment) < minSentenceEmitZhChars) {
+                return isForceEmitReason(reason);
             }
+            if (minSentenceEmitIdChars > 0 && startsWithIgnoreCase(lang, "id")) {
+                if (visibleCharCount(segment) >= minSentenceEmitIdChars) {
+                    return false;
+                }
+                return isForceEmitReason(reason);
+            }
+            return false;
+        }
+
+        private boolean isForceEmitReason(String reason) {
             return switch (reason) {
                 case "sentence", "sentence-punct", "sentence-wtpsplit", "numbered-title",
                      "force-boundary", "force-comma", "force-comma-punct", "force-backstop",
@@ -938,6 +955,13 @@ public class AzureAsrIntegration {
             int hardSafe = working.length() - FORCE_TAIL_MARGIN_CHARS;
             if (hardSafe <= 0) {
                 return NO_SEGMENT;
+            }
+            if (isChineseSegment(working, 0, lang)) {
+                int sentenceEnd = findSentenceSegmentEnd(working.substring(0, hardSafe), 0);
+                if (sentenceEnd != NO_SEGMENT) {
+                    return sentenceEnd;
+                }
+                return findCommaSegmentEnd(working, 0, hardSafe);
             }
             int limit = hardSafe;
             int lengthLimit = findLengthLimitSegmentEnd(working, 0, lang);
@@ -1357,9 +1381,7 @@ public class AzureAsrIntegration {
         if (!alignment.aligned()) {
             alignment = alignFinalBoundaryBySuffix(full, fallbackCut, emittedSuffix);
         }
-        int cutIndex = alignment.aligned()
-                ? alignment.cutIndex()
-                : moveCutToNextTokenBoundary(full, alignment.cutIndex());
+        int cutIndex = alignment.aligned() ? alignment.cutIndex() : 0;
         String remaining = full.substring(Math.min(cutIndex, full.length())).trim();
         String overlapReference = emittedText != null && !emittedText.isBlank() ? emittedText : emittedSuffix;
         OverlapTrimResult trimmed = trimRepeatedLeadingOverlap(overlapReference, remaining);
@@ -1523,11 +1545,11 @@ public class AzureAsrIntegration {
         for (int offset = 0; offset < text.length(); ) {
             int codePoint = text.codePointAt(offset);
             int nextOffset = offset + Character.charCount(codePoint);
-            if (Character.isLetterOrDigit(codePoint)) {
+            if (Character.isLetterOrDigit(codePoint) && isLatinOrDigit(codePoint)) {
                 int tokenEnd = nextOffset;
                 while (tokenEnd < text.length()) {
                     int nextCodePoint = text.codePointAt(tokenEnd);
-                    if (!Character.isLetterOrDigit(nextCodePoint)) {
+                    if (!Character.isLetterOrDigit(nextCodePoint) || !isLatinOrDigit(nextCodePoint)) {
                         break;
                     }
                     tokenEnd += Character.charCount(nextCodePoint);
@@ -1542,12 +1564,23 @@ public class AzureAsrIntegration {
                 offset = tokenEnd;
                 continue;
             }
+            if (Character.isLetterOrDigit(codePoint)) {
+                codePoints.add(Character.toLowerCase(codePoint));
+                sourceEndOffsets.add(nextOffset);
+                offset = nextOffset;
+                continue;
+            }
             offset = nextOffset;
         }
         return new ComparisonText(
                 codePoints.stream().mapToInt(Integer::intValue).toArray(),
                 sourceEndOffsets.stream().mapToInt(Integer::intValue).toArray()
         );
+    }
+
+    private static boolean isLatinOrDigit(int codePoint) {
+        return Character.isDigit(codePoint)
+                || Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN;
     }
 
     private static String normalizeComparableToken(String token) {
@@ -1566,34 +1599,6 @@ public class AzureAsrIntegration {
             case "ten", "sepuluh" -> "10";
             default -> normalized;
         };
-    }
-
-    private static int moveCutToNextTokenBoundary(String text, int cutIndex) {
-        int cut = Math.min(Math.max(cutIndex, 0), text.length());
-        if (cut <= 0 || cut >= text.length()) {
-            return cut;
-        }
-        int before = text.codePointBefore(cut);
-        int current = text.codePointAt(cut);
-        if (!Character.isLetterOrDigit(before) || !Character.isLetterOrDigit(current)) {
-            return cut;
-        }
-        int offset = cut;
-        while (offset < text.length()) {
-            int codePoint = text.codePointAt(offset);
-            if (!Character.isLetterOrDigit(codePoint)) {
-                break;
-            }
-            offset += Character.charCount(codePoint);
-        }
-        while (offset < text.length()) {
-            int codePoint = text.codePointAt(offset);
-            if (Character.isLetterOrDigit(codePoint)) {
-                break;
-            }
-            offset += Character.charCount(codePoint);
-        }
-        return offset;
     }
 
     private static int sourceOffsetAfterComparableCodePoints(String text, int count) {

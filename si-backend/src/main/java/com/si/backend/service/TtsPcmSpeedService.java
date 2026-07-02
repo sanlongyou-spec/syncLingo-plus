@@ -4,6 +4,7 @@ import com.si.backend.common.Constants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.Arrays;
 import java.util.Locale;
 
 /**
@@ -40,6 +41,7 @@ public class TtsPcmSpeedService {
     public static final class PcmSpeedProcessor {
         private final double speed;
         private double nextSourceOffset;
+        private int pendingByte = -1;
 
         private PcmSpeedProcessor(double speed) {
             this.speed = speed <= 0 ? Constants.TTS_BACKEND_SPEED_DEFAULT : speed;
@@ -53,13 +55,21 @@ public class TtsPcmSpeedService {
             if (pcm == null || pcm.length == 0 || isNeutralSpeed()) {
                 return pcm;
             }
-            if (pcm.length < PCM_BYTES_PER_SAMPLE || pcm.length % PCM_BYTES_PER_SAMPLE != 0) {
-                log.warn("[TtsPcmSpeedService] skip backend PCM speed-up, reason=invalidPcmBytes, bytes={}, speed={}",
-                        pcm.length, speed);
-                return pcm;
+
+            byte[] input = prependPendingByte(pcm);
+            int safeLength = input.length - (input.length % PCM_BYTES_PER_SAMPLE);
+            if (safeLength <= 0) {
+                pendingByte = input[0] & 0xff;
+                return new byte[0];
+            }
+            if (safeLength < input.length) {
+                pendingByte = input[input.length - 1] & 0xff;
+            } else {
+                pendingByte = -1;
             }
 
-            int inputSamples = pcm.length / PCM_BYTES_PER_SAMPLE;
+            byte[] evenPcm = safeLength == input.length ? input : Arrays.copyOf(input, safeLength);
+            int inputSamples = evenPcm.length / PCM_BYTES_PER_SAMPLE;
             int outputSamples = countOutputSamples(inputSamples);
             if (outputSamples <= 0) {
                 return new byte[0];
@@ -67,12 +77,31 @@ public class TtsPcmSpeedService {
             byte[] output = new byte[outputSamples * PCM_BYTES_PER_SAMPLE];
             double sourcePosition = nextSourceOffset;
             for (int i = 0; i < outputSamples; i++) {
-                int sample = interpolateSample(pcm, inputSamples, sourcePosition);
+                int sample = interpolateSample(evenPcm, inputSamples, sourcePosition);
                 writeSample(output, i, sample);
                 sourcePosition += speed;
             }
             nextSourceOffset = sourcePosition - inputSamples;
             return output;
+        }
+
+        public byte[] finish() {
+            if (pendingByte >= 0) {
+                log.warn("[TtsPcmSpeedService] drop trailing incomplete PCM byte, speed={}", speed);
+                pendingByte = -1;
+            }
+            return new byte[0];
+        }
+
+        private byte[] prependPendingByte(byte[] pcm) {
+            if (pendingByte < 0) {
+                return pcm;
+            }
+            byte[] merged = new byte[pcm.length + 1];
+            merged[0] = (byte) pendingByte;
+            System.arraycopy(pcm, 0, merged, 1, pcm.length);
+            pendingByte = -1;
+            return merged;
         }
 
         private boolean isNeutralSpeed() {

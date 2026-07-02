@@ -1916,3 +1916,42 @@ GET    /api/admin/audit-logs
 
 - This PCM speed-up is deterministic time compression and does not attempt pitch-preserving WSOLA/phase-vocoder processing. If listening quality is not acceptable, evaluate a pitch-preserving audio processor as a follow-up.
 - The zh-CN -> id brevity-budget retry remains a later pre-TTS step; this change only makes the post-TTS speed control real and measurable.
+
+## Weekly Optimization Record: 2026-W27 Chinese Segmentation Replay and Backend TTS Safety
+
+### Goal
+
+- Fix zh-CN ASR replay and seam problems found in live logs, especially repeated prefixes and swallowed words around Azure interim/final rewrites.
+- Keep the server on the pre-OpenAI-Realtime hotfix line while adding the Chinese segmentation fixes.
+- Preserve full TTS audio when the duration estimate is exceeded: warn and keep sending audio instead of cancelling or truncating a sentence halfway.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Generic ASR emit ledger | Done | `AzureAsrIntegration` now applies normalized duplicate/overlap suppression to every source language, not only Indonesian guarded output. |
+| Final remainder safety | Done | Failed final-boundary alignment no longer cuts from a stale offset; it emits from a safe zero boundary and lets overlap trimming plus the ledger remove repeated text. |
+| CJK comparable offsets | Done | CJK source offsets are tracked per code point while Latin/digit tokens still normalize as words, fixing Chinese seam alignment that could swallow `这里面呃`-style text. |
+| Chinese forced segmentation guard | Done | zh-CN forced segmentation no longer falls back to unsafe character cuts without punctuation, and short forced segments under the zh minimum are deferred. |
+| No read-half TTS truncation | Done | `RealtimeInterpretationFacade` logs `TTS audio duration over budget, audio kept` and `truncated=false`; over-budget audio is forwarded completely instead of cancelled. |
+| PCM odd-byte carry | Done | `TtsPcmSpeedService` carries an incomplete PCM byte into the next chunk and drops only a final orphan byte on stream finish. |
+
+### Affected Modules
+
+- Backend ASR integration: `AzureAsrIntegration`.
+- Backend realtime TTS pipeline: `RealtimeInterpretationFacade`.
+- Backend PCM speed service: `TtsPcmSpeedService`.
+- Backend regression tests: `AzureAsrFinalRemainderTest`, `AzureAsrLedgerDedupTest`, `RealtimeInterpretationOrderTest`, `TtsPcmSpeedServiceTest`.
+
+### Acceptance Criteria
+
+- Replayed zh-CN prefixes are logged as `[AsrLedger] duplicate suppressed` or `[AsrLedger] overlap trimmed` before translation/TTS.
+- Chinese final seam tests keep the missing span instead of swallowing words.
+- zh-CN forced segmentation cuts only on safe punctuation/comma boundaries or waits for a better boundary.
+- Over-budget TTS audio logs `overBudget=true` and `truncated=false`, with no duration-guard cancel.
+- Full backend `mvn test` passes on the deployment branch.
+
+### Residual Issues
+
+- If Azure or the punctuation model does not provide a safe Chinese boundary for a long span, the backend now waits instead of character-cutting. This trades some latency for correctness.
+- A later zh-CN -> id brevity-budget retry can reduce long Indonesian output before synthesis, but it must not reintroduce audio truncation.

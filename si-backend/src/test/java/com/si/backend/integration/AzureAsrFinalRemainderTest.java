@@ -64,7 +64,7 @@ class AzureAsrFinalRemainderTest {
     }
 
     @Test
-    void movesFallbackRemainderStartToNextTokenBoundary() {
+    void keepsFullFinalTextWhenAlignmentFailsInsteadOfCuttingFromStaleOffset() {
         String full = "kita sedang membangun platform industri masa depan";
         int driftedOffset = full.indexOf("dustri");
 
@@ -74,7 +74,24 @@ class AzureAsrFinalRemainderTest {
                 "not found",
                 "not found");
 
-        assertEquals("masa depan", result.text());
+        assertEquals(full, result.text());
+    }
+
+    @Test
+    void keepsChineseWordsBetweenForcedSegmentAndFinalRemainder() {
+        String emitted = "五啊，这个下面第一个图呢是呃我们现在SCB工厂的地方也是新新地方，它正在实行。我我拿了它这个图，大家看一下，";
+        String full = "五啊，这个下面第一个图呢是，呃，我们现在SCB工厂的地方也是新新地方，它正在实行。"
+                + "我我拿了它这个图大家看一下这里面呃，会写是从你哪个地方过来的，说呃哪一号车，然后司机是谁？";
+        int staleOffset = full.indexOf("会写");
+
+        AzureAsrIntegration.FinalRemainderResult result = AzureAsrIntegration.finalRemainderAfterForcedSegments(
+                full,
+                staleOffset,
+                "not found",
+                emitted);
+
+        assertEquals("这里面呃，会写是从你哪个地方过来的，说呃哪一号车，然后司机是谁？", result.text());
+        assertTrue(result.aligned() || result.overlapChars() > 0);
     }
 
     @Test

@@ -2105,3 +2105,65 @@ Pass criteria:
 - Local focused test passed: `mvn -q "-Dtest=TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
 - Local full backend verification passed: `mvn -q test`.
 - Server validation pending after deployment and live test logs.
+
+## Weekly Validation Record: 2026-W27 Chinese Segmentation Replay and Backend TTS Safety
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 Chinese Segmentation Replay and Backend TTS Safety`.
+
+### Validation Goals
+
+- Prove zh-CN replay prefixes are suppressed or trimmed before translation/TTS.
+- Prove Chinese final remainder fallback does not swallow words when Azure final text rewrites the interim text.
+- Prove unsafe Chinese forced segmentation no longer cuts at arbitrary character boundaries.
+- Prove over-budget TTS audio is warned and fully forwarded, not cancelled or truncated.
+- Prove odd PCM bytes are carried across chunks instead of being forwarded unprocessed.
+
+### Log / Runtime Validation First
+
+```bash
+cd /opt/syncLingo
+git rev-parse --short HEAD
+docker logs si-backend --since 20m 2>&1 | grep -E \
+  "asr-segment final|final remainder aligned|AsrLedger|force-segment by=|TTS queued|TTS first chunk|tts-audio-duration|TTS audio duration over budget|drop trailing incomplete PCM byte|ERROR|Exception"
+curl -sS http://127.0.0.1:8080/api/health
+```
+
+Pass criteria:
+
+- Deployed `HEAD` matches the new deployment commit based on `6053d1d`, not the later OpenAI Realtime branch.
+- Repeated zh-CN source revisions produce `[AsrLedger] duplicate suppressed` or `[AsrLedger] overlap trimmed`.
+- Chinese forced segmentation logs cut on punctuation/comma-safe boundaries; arbitrary no-punctuation character cuts are absent.
+- `TTS audio duration over budget, audio kept` may appear, followed by `tts-audio-duration ... overBudget=true, truncated=false`.
+- Backend health returns HTTP 200 and logs do not show startup errors or repeated exceptions.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q test
+```
+
+Pass criteria:
+
+- `AzureAsrFinalRemainderTest` covers failed final alignment fallback and the Chinese `这里面呃` seam.
+- `AzureAsrLedgerDedupTest` covers Chinese replay prefix suppression.
+- `RealtimeInterpretationOrderTest` covers over-budget TTS audio forwarding all chunks with no cancel and Cartesia speed staying `1.0`.
+- `TtsPcmSpeedServiceTest` covers zh/id speed-up and odd-byte carry.
+- Full backend regression suite passes.
+
+### Manual Validation
+
+- Run a short Chinese meeting sample with long sentences and repeated Azure revisions.
+- Confirm the Indonesian output does not repeat the same Chinese source span.
+- Confirm no sentence is read halfway because of the duration guard.
+- If latency still accumulates, collect `tts-audio-duration` and `TTS audio duration over budget` rows for a shorter-translation follow-up instead of reintroducing truncation.
+
+### Result Record
+
+- Local focused test passed: `mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
+- Local full backend verification passed: `mvn -q test`.
+- Local Surefire summary after full backend test: 89 report files, 442 tests, 0 failures, 0 errors, 0 skipped.
+- Server validation pending after deployment and live zh-CN -> id sample logs.

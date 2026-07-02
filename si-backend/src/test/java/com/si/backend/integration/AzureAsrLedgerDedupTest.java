@@ -76,4 +76,14 @@ class AzureAsrLedgerDedupTest {
         assertTrue(out.startsWith("dengan demikian"), out);
         assertFalse(out.contains("sedangkan budget"), out);
     }
+
+    @Test
+    void chineseReplayPrefixOverlapFromLogIsTrimmed() {
+        String first = "唉，最后两行是比较重点的，就是这个果串多少，然后国内多少？呃，然后下面那个是smart salary的一个截屏，";
+        String replay = "唉最后两行是比较重点的就是这个果串多少然后国内多少呃然后下面那个是smart";
+
+        String out = dedup(ledgerOf(first), replay);
+
+        assertEquals("", out);
+    }
 }
