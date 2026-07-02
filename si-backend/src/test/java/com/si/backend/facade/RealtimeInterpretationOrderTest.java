@@ -7,7 +7,9 @@ import com.si.backend.service.AsrService;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.SpeechDurationCalibrationService;
 import com.si.backend.service.SpeakerTurnService;
+import com.si.backend.service.TtsPcmSpeedService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TtsTextNormalizer;
 import com.si.backend.service.TranslationService;
@@ -45,11 +47,11 @@ import static org.mockito.Mockito.when;
 class RealtimeInterpretationOrderTest {
 
     @Test
-    void targetLanguageControlsTtsSynthesisSpeed() throws Exception {
-        assertTtsSpeedForTarget("id", 1.3);
-        assertTtsSpeedForTarget("id-ID", 1.3);
-        assertTtsSpeedForTarget("zh-CN", 1.1);
-        assertTtsSpeedForTarget("en-US", 1.0);
+    void targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral() throws Exception {
+        assertTtsSpeedForTarget("id", 1.0, 36_924);
+        assertTtsSpeedForTarget("id-ID", 1.0, 36_924);
+        assertTtsSpeedForTarget("zh-CN", 1.0, 43_638);
+        assertTtsSpeedForTarget("en-US", 1.0, 48_000);
     }
 
     @Test
@@ -76,7 +78,9 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                new SpeechDurationCalibrationService(),
+                new TtsPcmSpeedService()
         );
 
         String sessionId = "order-test-session";
@@ -103,7 +107,7 @@ class RealtimeInterpretationOrderTest {
             @SuppressWarnings("unchecked")
             Consumer<byte[]> onChunk = invocation.getArgument(5);
             Runnable onComplete = invocation.getArgument(6);
-            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2)});
+            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2), 0});
             onComplete.run();
             return TtsStreamHandle.NOOP;
         }).when(ttsService).synthesizeStream(
@@ -166,7 +170,9 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                new SpeechDurationCalibrationService(),
+                new TtsPcmSpeedService()
         );
 
         String sessionId = "skip-wait-session";
@@ -191,13 +197,13 @@ class RealtimeInterpretationOrderTest {
             if ("first-translated".equals(text)) {
                 firstSynthStarted.countDown();
                 assertTrue(releaseFirstSynth.await(5, TimeUnit.SECONDS));
-                onChunk.accept(new byte[]{1});
+                onChunk.accept(new byte[]{1, 0});
                 onComplete.run();
                 return TtsStreamHandle.NOOP;
             }
             if ("second-translated".equals(text)) {
                 secondSynthStarted.countDown();
-                onChunk.accept(new byte[]{2});
+                onChunk.accept(new byte[]{2, 0});
                 onComplete.run();
                 return TtsStreamHandle.NOOP;
             }
@@ -264,7 +270,9 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                new SpeechDurationCalibrationService(),
+                new TtsPcmSpeedService()
         );
 
         String sessionId = "duration-guard-session";
@@ -322,7 +330,85 @@ class RealtimeInterpretationOrderTest {
         assertTrue(cancelReason.get() != null && cancelReason.get().contains("duration guard"));
     }
 
-    private void assertTtsSpeedForTarget(String targetLang, double expectedSpeed) throws Exception {
+    @Test
+    void ttsCompletionUpdatesSpeechDurationCalibration() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        SpeechDurationCalibrationService calibrationService = new SpeechDurationCalibrationService();
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard,
+                calibrationService,
+                new TtsPcmSpeedService()
+        );
+
+        String sessionId = "duration-calibration-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+
+        String translated = "kata satu dua";
+        long beforeEstimateMs = calibrationService.estimate("id", translated).estimateMs();
+        int sampleRate = cartesiaProperties.getTts().getSampleRate();
+        byte[] oneSecondPcm = new byte[sampleRate * 2];
+
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenReturn(translated);
+
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(oneSecondPcm);
+            onComplete.run();
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        facade.translateAndStreamTts(
+                "source text", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis() - 1000
+        );
+        awaitTtsChain(facade, sessionId, "id");
+
+        SpeechDurationCalibrationService.Estimate afterEstimate = calibrationService.estimate("id", translated);
+        assertEquals(1, afterEstimate.wordSamples());
+        assertTrue(afterEstimate.estimateMs() < beforeEstimateMs);
+        assertEquals(769L, afterEstimate.estimateMs());
+    }
+
+    private void assertTtsSpeedForTarget(
+            String targetLang,
+            double expectedCartesiaSpeed,
+            int expectedForwardedBytes
+    ) throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
         TranslationService translationService = mock(TranslationService.class);
@@ -345,7 +431,9 @@ class RealtimeInterpretationOrderTest {
                 audioRecordService,
                 speakerTurnService,
                 userVoiceService,
-                indonesianIncompleteGuard
+                indonesianIncompleteGuard,
+                new SpeechDurationCalibrationService(),
+                new TtsPcmSpeedService()
         );
 
         String sessionId = "speed-test-session-" + targetLang.replace('-', '_');
@@ -357,11 +445,25 @@ class RealtimeInterpretationOrderTest {
         when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
                 .thenReturn("translated text");
 
-        AtomicReference<Double> capturedSpeed = new AtomicReference<>();
+        int sampleRate = cartesiaProperties.getTts().getSampleRate();
+        byte[] oneSecondPcm = new byte[sampleRate * 2];
+        AtomicReference<Double> capturedCartesiaSpeed = new AtomicReference<>();
+        AtomicReference<Integer> capturedForwardedBytes = new AtomicReference<>();
         CountDownLatch ttsCalled = new CountDownLatch(1);
+        CountDownLatch audioForwarded = new CountDownLatch(1);
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (chunkIndex == 0) {
+                capturedForwardedBytes.set(pcm.length);
+                audioForwarded.countDown();
+            }
+        });
+
         doAnswer(invocation -> {
-            capturedSpeed.set(invocation.getArgument(3));
+            capturedCartesiaSpeed.set(invocation.getArgument(3));
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
             Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(oneSecondPcm);
             onComplete.run();
             ttsCalled.countDown();
             return TtsStreamHandle.NOOP;
@@ -389,7 +491,9 @@ class RealtimeInterpretationOrderTest {
         );
 
         assertTrue(ttsCalled.await(5, TimeUnit.SECONDS));
-        assertEquals(expectedSpeed, capturedSpeed.get(), 0.0001);
+        assertTrue(audioForwarded.await(5, TimeUnit.SECONDS));
+        assertEquals(expectedCartesiaSpeed, capturedCartesiaSpeed.get(), 0.0001);
+        assertEquals(expectedForwardedBytes, capturedForwardedBytes.get());
         awaitTtsChain(facade, sessionId, targetLang);
     }
 

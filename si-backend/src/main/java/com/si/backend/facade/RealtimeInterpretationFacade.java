@@ -10,7 +10,9 @@ import com.si.backend.service.IndonesianIncompleteGuard;
 import com.si.backend.service.AudioRecordService;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationSessionService;
+import com.si.backend.service.SpeechDurationCalibrationService;
 import com.si.backend.service.SpeakerTurnService;
+import com.si.backend.service.TtsPcmSpeedService;
 import com.si.backend.service.TtsService;
 import com.si.backend.service.TtsTextNormalizer;
 import com.si.backend.service.TranslationService;
@@ -47,6 +49,8 @@ public class RealtimeInterpretationFacade {
     private final SpeakerTurnService speakerTurnService;
     private final UserVoiceService userVoiceService;
     private final IndonesianIncompleteGuard indonesianIncompleteGuard;
+    private final SpeechDurationCalibrationService speechDurationCalibrationService;
+    private final TtsPcmSpeedService ttsPcmSpeedService;
 
     private static final int TRANSLATION_THREAD_MULTIPLIER = 2;
     private static final int TTS_THREAD_MULTIPLIER = 2;
@@ -259,19 +263,6 @@ public class RealtimeInterpretationFacade {
         log.info("[RealtimeInterpretationFacade] processFinalRecognition done, sessionId={}", sessionId);
     }
 
-    /** TTS synthesis speed by target language. */
-    private double resolveTtsSpeed(String targetLang) {
-        if (targetLang == null) return Constants.TTS_SPEED_DEFAULT;
-        String lower = targetLang.toLowerCase();
-        if (lower.startsWith("id")) {
-            return Constants.TTS_SPEED_ID;
-        }
-        if (lower.startsWith("zh")) {
-            return Constants.TTS_SPEED_ZH;
-        }
-        return Constants.TTS_SPEED_DEFAULT;
-    }
-
     private String normalizeAsrLang(String asrLang) {
         if (asrLang == null) return Constants.LANG_ZH_CN;
         String lower = asrLang.toLowerCase();
@@ -434,9 +425,14 @@ public class RealtimeInterpretationFacade {
         final String ttsTextHash = diagnosticHash(finalTtsText);
         final long ttsSequence = reservation.sequence();
         final String ttsTaskId = reservation.taskId();
-        final double ttsSpeed = resolveTtsSpeed(finalTargetLang);
+        final double cartesiaSynthesisSpeed = Constants.CARTESIA_TTS_SYNTHESIS_SPEED;
+        final TtsPcmSpeedService.PcmSpeedProcessor pcmSpeedProcessor =
+                ttsPcmSpeedService.processor(finalTargetLang);
+        final double backendPcmSpeed = pcmSpeedProcessor.speed();
         final int ttsSampleRate = cartesiaProperties.getTts().getSampleRate();
         final long maxForwardAudioMs = TtsTextNormalizer.maxForwardAudioMs(finalTtsText, finalTargetLang);
+        final SpeechDurationCalibrationService.Estimate durationEstimate =
+                speechDurationCalibrationService.estimate(finalTargetLang, finalTtsText);
 
         if (ttsTextResult.changed()) {
             log.info("[RealtimeInterpretationFacade] TTS text normalized, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, originalLen={}, ttsLen={}, originalPreview='{}', ttsPreview='{}'",
@@ -444,10 +440,12 @@ public class RealtimeInterpretationFacade {
                     finalTranslated.length(), finalTtsText.length(),
                     previewForLog(finalTranslated, 120), previewForLog(finalTtsText, 120));
         }
-        log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, textLen={}, ttsTextLen={}, ttsTextChanged={}, maxForwardAudioMs={}, voiceId={}, speed={}, prevDone={}",
+        log.info("[RealtimeInterpretationFacade] TTS queued, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, textLen={}, ttsTextLen={}, ttsTextChanged={}, maxForwardAudioMs={}, estimatedAudioMs={}, calibrationWordSamples={}, calibrationCharSamples={}, voiceId={}, cartesiaSpeed={}, backendPcmSpeed={}, prevDone={}",
                 sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash,
                 finalTranslated.length(), finalTtsText.length(),
-                ttsTextResult.changed(), maxForwardAudioMs, resolvedVoiceId, ttsSpeed, reservation.previous().isDone());
+                ttsTextResult.changed(), maxForwardAudioMs, durationEstimate.estimateMs(),
+                durationEstimate.wordSamples(), durationEstimate.charSamples(),
+                resolvedVoiceId, cartesiaSynthesisSpeed, backendPcmSpeed, reservation.previous().isDone());
 
         BlockingQueue<TtsBufferedChunk> audioQueue = new LinkedBlockingQueue<>();
         final AtomicLong firstChunkGenMs = new AtomicLong(0);
@@ -470,22 +468,26 @@ public class RealtimeInterpretationFacade {
             AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
             TtsStreamHandle handle = ttsService.synthesizeStream(
                     resolvedVoiceId, finalTtsText, cartesiaProperties.getTts().getSampleRate(),
-                    ttsSpeed, cartesiaLanguage(finalTargetLang),
+                    cartesiaSynthesisSpeed, cartesiaLanguage(finalTargetLang),
                     pcm -> {
                         long receivedChunks = receivedChunkCounter.incrementAndGet();
                         long receivedBytes = receivedPcmBytes.addAndGet(pcm.length);
+                        byte[] acceleratedPcm = pcmSpeedProcessor.process(pcm);
+                        if (acceleratedPcm == null || acceleratedPcm.length == 0) {
+                            return;
+                        }
                         long nextForwardAudioMs = TtsTextNormalizer.pcmDurationMs(
-                                forwardedPcmBytes.get() + pcm.length, ttsSampleRate);
+                                forwardedPcmBytes.get() + acceleratedPcm.length, ttsSampleRate);
                         if (maxForwardAudioMs > 0 && nextForwardAudioMs > maxForwardAudioMs) {
                             if (ttsAudioTruncated.compareAndSet(false, true)) {
                                 String cancelReason = "duration guard: taskId=" + ttsTaskId;
                                 terminalReason.compareAndSet(null, "duration_guard");
                                 pendingCancelReason.compareAndSet(null, cancelReason);
-                                log.warn("[RealtimeInterpretationFacade] TTS audio duration guard triggered, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, receivedChunks={}, receivedAudioMs={}, forwardedAudioMs={}, maxForwardAudioMs={}, textLen={}, ttsTextLen={}, ttsPreview='{}'",
+                                log.warn("[RealtimeInterpretationFacade] TTS audio duration guard triggered, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, receivedChunks={}, receivedAudioMs={}, forwardedAudioMs={}, maxForwardAudioMs={}, backendPcmSpeed={}, textLen={}, ttsTextLen={}, ttsPreview='{}'",
                                         sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash, receivedChunks,
                                         TtsTextNormalizer.pcmDurationMs(receivedBytes, ttsSampleRate),
                                         TtsTextNormalizer.pcmDurationMs(forwardedPcmBytes.get(), ttsSampleRate),
-                                        maxForwardAudioMs, finalTranslated.length(), finalTtsText.length(),
+                                        maxForwardAudioMs, backendPcmSpeed, finalTranslated.length(), finalTtsText.length(),
                                         previewForLog(finalTtsText, 120));
                                 ttsStreamHandle.get().cancel(cancelReason);
                             }
@@ -493,12 +495,13 @@ public class RealtimeInterpretationFacade {
                         }
                         if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)) {
                             int chunkIndex = Math.toIntExact(forwardedChunkCounter.getAndIncrement());
-                            forwardedPcmBytes.addAndGet(pcm.length);
+                            forwardedPcmBytes.addAndGet(acceleratedPcm.length);
                             if (firstChunkLogged.compareAndSet(false, true)) {
                                 long firstChunkMs = System.currentTimeMillis();
                                 firstChunkGenMs.set(firstChunkMs);
-                                log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, prevDoneAtFirstChunk={}, costMs={}, bytes={}",
-                                        sessionId, ttsTaskId, ttsSequence, reservation.previous().isDone(), firstChunkMs - ttsStart, pcm.length);
+                                log.info("[RealtimeInterpretationFacade] TTS first chunk, sessionId={}, taskId={}, sequence={}, prevDoneAtFirstChunk={}, costMs={}, rawBytes={}, forwardedBytes={}, backendPcmSpeed={}",
+                                        sessionId, ttsTaskId, ttsSequence, reservation.previous().isDone(),
+                                        firstChunkMs - ttsStart, pcm.length, acceleratedPcm.length, backendPcmSpeed);
                                 log.info("[RealtimeInterpretationFacade] e2e speech-to-tts(server), sessionId={}, targetLang={}, captureToFirstAudioMs={}, textLen={}",
                                         sessionId, finalTargetLang, firstChunkMs - speechStartAtMs, finalTtsText.length());
                                 log.info("[RealtimeInterpretationFacade] latency-breakdown, sessionId={}, taskId={}, sequence={}, lang={}, asrMs={}, translateMs={}, gapMs={}, ttsMs={}, totalMs={}, textLen={}",
@@ -510,20 +513,27 @@ public class RealtimeInterpretationFacade {
                                         firstChunkMs - speechStartAtMs,
                                         finalTtsText.length());
                             }
-                            audioQueue.offer(new TtsBufferedChunk(pcm, finalTargetLang, ttsTaskId, ttsSequence, chunkIndex, System.nanoTime()));
+                            audioQueue.offer(new TtsBufferedChunk(acceleratedPcm, finalTargetLang, ttsTaskId, ttsSequence, chunkIndex, System.nanoTime()));
                         }
                     },
                     () -> {
                         try {
-                            log.info("[RealtimeInterpretationFacade] TTS synth complete, sessionId={}, taskId={}, sequence={}, chunks={}, forwardedChunks={}, costMs={}",
+                            log.info("[RealtimeInterpretationFacade] TTS synth complete, sessionId={}, taskId={}, sequence={}, chunks={}, forwardedChunks={}, costMs={}, cartesiaSpeed={}, backendPcmSpeed={}",
                                     sessionId, ttsTaskId, ttsSequence, receivedChunkCounter.get(),
-                                    forwardedChunkCounter.get(), System.currentTimeMillis() - ttsStart);
+                                    forwardedChunkCounter.get(), System.currentTimeMillis() - ttsStart,
+                                    cartesiaSynthesisSpeed, backendPcmSpeed);
                             long audioDurationMs = TtsTextNormalizer.pcmDurationMs(receivedPcmBytes.get(), ttsSampleRate);
                             long forwardedAudioDurationMs = TtsTextNormalizer.pcmDurationMs(forwardedPcmBytes.get(), ttsSampleRate);
-                            log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, lang={}, audioDurationMs={}, forwardedAudioDurationMs={}, maxForwardAudioMs={}, truncated={}, sourceSpeechWindowMs={}, textLen={}, ttsTextLen={}",
+                            log.info("[RealtimeInterpretationFacade] tts-audio-duration, sessionId={}, taskId={}, sequence={}, recordId={}, recordSeq={}, textHash={}, lang={}, audioDurationMs={}, forwardedAudioDurationMs={}, maxForwardAudioMs={}, truncated={}, cartesiaSpeed={}, backendPcmSpeed={}, sourceSpeechWindowMs={}, textLen={}, ttsTextLen={}",
                                     sessionId, ttsTaskId, ttsSequence, recordId, recordSeq, ttsTextHash, finalTargetLang, audioDurationMs,
                                     forwardedAudioDurationMs, maxForwardAudioMs, ttsAudioTruncated.get(),
-                                    translateStart - speechStartAtMs, finalTranslated.length(), finalTtsText.length());
+                                    cartesiaSynthesisSpeed, backendPcmSpeed, translateStart - speechStartAtMs,
+                                    finalTranslated.length(), finalTtsText.length());
+                            speechDurationCalibrationService.recordActualDuration(
+                                    finalTargetLang,
+                                    finalTtsText,
+                                    forwardedAudioDurationMs,
+                                    ttsAudioTruncated.get());
                         } finally {
                             terminalReason.compareAndSet(null, "synth_complete");
                             audioQueue.offer(TTS_END);

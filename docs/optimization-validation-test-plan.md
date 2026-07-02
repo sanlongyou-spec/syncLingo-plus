@@ -1935,6 +1935,11 @@ Observed evidence:
 
 ## Weekly Validation Record: 2026-W27 TTS Indonesian Synthesis Speed
 
+### Supersession Note
+
+- Superseded on 2026-07-02 by `Weekly Validation Record: 2026-W27 Backend PCM TTS Speed Control`.
+- Do not use `TTS queued ... speed=1.3` as the current pass criterion. Current validation must prove `cartesiaSpeed=1.0` plus target-language `backendPcmSpeed`.
+
 ### Matching Optimization Scope
 
 - Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 TTS Indonesian Synthesis Speed`.
@@ -1958,7 +1963,7 @@ docker logs si-backend --since 20m 2>&1 | grep -E \
 
 Pass criteria:
 
-- `git rev-parse --short HEAD` returns the hotfix commit based on `65a8e2f`, not the later Realtime line.
+- `git rev-parse --short HEAD` returns the hotfix commit based on `48d8186`, not the later Realtime line.
 - zh-CN -> id/id-ID target logs contain `TTS queued ... speed=1.3`.
 - id -> zh-CN target logs contain `TTS queued ... speed=1.1`.
 - English/default target logs, if exercised, contain `speed=1.0`.
@@ -1985,5 +1990,118 @@ Pass criteria:
 ### Result Record
 
 - Local focused test passed: `mvn -q -Dtest=RealtimeInterpretationOrderTest test`.
+- Local full backend verification passed: `mvn -q test`.
+- Server validation pending after deployment and live test logs.
+
+## Weekly Validation Record: 2026-W27 TTS Duration Rolling Calibration
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration`.
+
+### Validation Goals
+
+- Prove queue-time duration estimation is logged for TTS tasks.
+- Prove actual Cartesia PCM duration is recorded after synthesis completion.
+- Prove truncated or invalid samples do not affect the rolling average.
+- Prove existing TTS ordering and current duration-guard behavior are unchanged.
+
+### Log / Runtime Validation First
+
+```bash
+cd /opt/syncLingo
+git rev-parse --short HEAD
+docker logs si-backend --since 20m 2>&1 | grep -E \
+  "TTS queued|tts-audio-duration|SpeechDurationCalibration|estimatedAudioMs|calibrationWordSamples|calibrationCharSamples|ERROR|Exception"
+```
+
+Pass criteria:
+
+- `TTS queued` lines include `estimatedAudioMs`, `calibrationWordSamples`, and `calibrationCharSamples`.
+- Non-truncated Cartesia completions show `[SpeechDurationCalibration] update ... actualMs=...`.
+- Truncated or invalid completions show skipped calibration updates rather than changing sample counts.
+- Existing `TTS order reserved`, `TTS playback order ready`, and `TTS order released` ordering evidence remains normal.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q test
+```
+
+Pass criteria:
+
+- `SpeechDurationCalibrationServiceTest` passes default-estimate, rolling-window, skipped-sample, and zh character-rate scenarios.
+- `RealtimeInterpretationOrderTest.ttsCompletionUpdatesSpeechDurationCalibration` proves a 1000 ms Cartesia PCM sample updates the next Indonesian estimate from the default 1100 ms to 1000 ms.
+- Existing TTS ordering and duration-guard regression tests still pass.
+- Full backend test suite passes.
+
+### Manual Validation
+
+- Run a short zh-CN -> id live interpretation sample and confirm backend logs show queue estimates before Cartesia and actual duration updates after completion.
+- Confirm no Indonesian audio is cut short by this calibration change. Any later brevity enforcement must happen before Cartesia synthesis.
+
+### Result Record
+
+- Local focused test passed: `mvn -q "-Dtest=SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
+- Local full backend verification passed: `mvn -q test`.
+- Server validation pending after deployment and live test logs.
+
+## Weekly Validation Record: 2026-W27 Backend PCM TTS Speed Control
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 Backend PCM TTS Speed Control`.
+
+### Validation Goals
+
+- Prove Cartesia synthesis speed is neutral `1.0` for all target languages.
+- Prove backend PCM speed-up applies real duration compression before audio is queued or sent.
+- Prove duration guard and duration calibration use the accelerated forwarded PCM duration.
+- Prove existing TTS ordering and current duration-guard behavior are unchanged.
+
+### Log / Runtime Validation First
+
+```bash
+cd /opt/syncLingo
+git rev-parse --short HEAD
+docker logs si-backend --since 20m 2>&1 | grep -E \
+  "TTS queued|TTS first chunk|tts-audio-duration|cartesiaSpeed|backendPcmSpeed|SpeechDurationCalibration|ERROR|Exception"
+```
+
+Pass criteria:
+
+- `TTS queued` lines show `cartesiaSpeed=1.0`.
+- zh-CN -> id/id-ID target output shows `backendPcmSpeed=1.3`.
+- id -> zh-CN target output shows `backendPcmSpeed=1.1`.
+- English/default output, if exercised, shows `backendPcmSpeed=1.0`.
+- `TTS first chunk` logs show `forwardedBytes` lower than `rawBytes` for zh/id targets.
+- `tts-audio-duration` shows raw `audioDurationMs` and shorter `forwardedAudioDurationMs` for zh/id targets.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q test
+```
+
+Pass criteria:
+
+- `TtsPcmSpeedServiceTest` proves one second of 24 kHz PCM becomes 769 ms for Indonesian and 909 ms for Chinese, while English/default remains 1000 ms.
+- `RealtimeInterpretationOrderTest.targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral` proves Cartesia receives `1.0` while forwarded PCM bytes shrink by target language.
+- `RealtimeInterpretationOrderTest.ttsCompletionUpdatesSpeechDurationCalibration` proves Indonesian duration calibration learns the accelerated 769 ms forwarded duration.
+- Existing TTS ordering and duration-guard regression tests still pass.
+- Full backend test suite passes.
+
+### Manual Validation
+
+- Run a short zh-CN -> id live interpretation sample and confirm the audio is shorter without half-sentence playback.
+- Listen specifically for pitch or artifact concerns, because this implementation performs deterministic PCM time compression rather than pitch-preserving time stretching.
+
+### Result Record
+
+- Local focused test passed: `mvn -q "-Dtest=TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
 - Local full backend verification passed: `mvn -q test`.
 - Server validation pending after deployment and live test logs.

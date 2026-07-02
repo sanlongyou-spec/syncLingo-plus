@@ -1807,6 +1807,11 @@ GET    /api/admin/audit-logs
 
 ## Weekly Optimization Record: 2026-W27 TTS Indonesian Synthesis Speed
 
+### Supersession Note
+
+- Superseded on 2026-07-02 by `Weekly Optimization Record: 2026-W27 Backend PCM TTS Speed Control`.
+- Cartesia synthesis speed is no longer used for zh/id acceleration; it now stays `1.0`, and backend PCM speed-up controls the real forwarded audio duration.
+
 ### Goal
 
 - Make zh-CN -> id Indonesian TTS more compact for live interpretation by sending Cartesia `generation_config.speed=1.3` for Indonesian target audio.
@@ -1837,4 +1842,77 @@ GET    /api/admin/audit-logs
 ### Residual Issues
 
 - Cartesia speed is provider guidance, not a mechanical time-stretch guarantee. A live listening test is still needed to confirm 1.3 remains intelligible for fast Indonesian output.
-- This hotfix is based on the server rollback commit `65a8e2f` to avoid reintroducing OpenAI Realtime changes.
+- This hotfix line is based on the user-selected server commit `48d8186` to avoid reintroducing later OpenAI Realtime changes.
+
+## Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration
+
+### Goal
+
+- Add passive rolling calibration for target-language TTS duration by comparing the queued text estimate with the actual Cartesia PCM duration.
+- Keep this slice observational only: no segmentation changes, no pre-TTS rewrite, no playback queue changes, and no additional audio truncation.
+- Prepare the zh-CN -> id path for a later pre-TTS brevity budget that uses measured Indonesian speech duration instead of only static word/character estimates.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Rolling estimator service | Done | Added `SpeechDurationCalibrationService` with per-language rolling windows, default id word-rate estimates, zh character-rate estimates, and sample filters for truncated/out-of-range audio. |
+| Queue-time visibility | Done | `RealtimeInterpretationFacade` now logs `estimatedAudioMs`, `calibrationWordSamples`, and `calibrationCharSamples` in `TTS queued`. |
+| Completion feedback | Done | `tts-audio-duration` completion now records `forwardedAudioDurationMs` into the calibration service when the sample is not truncated and passes duration/rate guards. |
+| Regression coverage | Done | Added service tests for defaults, rolling-window retention, skipped samples, zh character estimates, and a facade integration test that proves actual TTS duration updates the next estimate. |
+
+### Affected Modules
+
+- Backend TTS duration calibration: `SpeechDurationCalibrationService`.
+- Backend realtime orchestration: `RealtimeInterpretationFacade`.
+- Backend regression tests: `SpeechDurationCalibrationServiceTest`, `RealtimeInterpretationOrderTest`.
+
+### Acceptance Criteria
+
+- For normal non-truncated Cartesia output, logs show a queue-time `estimatedAudioMs` followed by a `[SpeechDurationCalibration] update` with actual audio duration.
+- Truncated, blank, zero-length, and out-of-range samples are skipped and do not move the rolling average.
+- Existing TTS ordering and existing duration-guard behavior remain unchanged.
+- Focused `SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest` and full backend `mvn test` pass.
+
+### Residual Issues
+
+- The calibration is currently in-memory and resets on backend restart; that is acceptable for this first passive slice.
+- The calibration is not yet used to enforce zh-CN -> id brevity before Cartesia. The next implementation step should use this estimate to decide whether to request a shorter Indonesian translation before synthesis, without dropping synthesized audio.
+
+## Weekly Optimization Record: 2026-W27 Backend PCM TTS Speed Control
+
+### Goal
+
+- Stop relying on Cartesia `speed` as the real timing control.
+- Send all zh/id/en TTS requests to Cartesia with neutral synthesis speed `1.0`.
+- Apply deterministic backend PCM speed-up before audio enters the existing duration guard, ordering queue, duration calibration, and WebSocket send path: Chinese `1.1`, Indonesian `1.3`, English/default `1.0`.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Neutral Cartesia speed | Done | Replaced target-language Cartesia speed routing with `CARTESIA_TTS_SYNTHESIS_SPEED=1.0`. |
+| Backend PCM speed-up | Done | Added `TtsPcmSpeedService` for mono 16-bit PCM time compression using target-language speed rules. |
+| Forwarded-duration semantics | Done | `RealtimeInterpretationFacade` now applies PCM speed-up before `maxForwardAudioMs`, `forwardedPcmBytes`, `tts-audio-duration`, calibration updates, and `TtsBufferedChunk` enqueueing. |
+| Log visibility | Done | `TTS queued`, `TTS first chunk`, `TTS synth complete`, and `tts-audio-duration` now log `cartesiaSpeed` and/or `backendPcmSpeed`. |
+| Regression coverage | Done | Added `TtsPcmSpeedServiceTest` and updated facade tests to prove Cartesia receives `1.0` while forwarded PCM bytes shrink to real backend speeds. |
+
+### Affected Modules
+
+- Backend constants: `Constants`.
+- Backend PCM speed service: `TtsPcmSpeedService`.
+- Backend realtime orchestration: `RealtimeInterpretationFacade`.
+- Backend regression tests: `TtsPcmSpeedServiceTest`, `RealtimeInterpretationOrderTest`, `SpeechDurationCalibrationServiceTest`.
+
+### Acceptance Criteria
+
+- Cartesia synthesis calls receive `speed=1.0` for Indonesian, Chinese, and English/default targets.
+- Backend logs show `backendPcmSpeed=1.3` for Indonesian target output, `backendPcmSpeed=1.1` for Chinese target output, and `backendPcmSpeed=1.0` for English/default output.
+- A 1000 ms, 24 kHz PCM chunk forwards as about 769 ms for Indonesian and about 909 ms for Chinese.
+- Duration guard, forwarded duration logging, and rolling calibration use the accelerated PCM duration, not the raw Cartesia duration.
+- Focused `TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest` and full backend `mvn test` pass.
+
+### Residual Issues
+
+- This PCM speed-up is deterministic time compression and does not attempt pitch-preserving WSOLA/phase-vocoder processing. If listening quality is not acceptable, evaluate a pitch-preserving audio processor as a follow-up.
+- The zh-CN -> id brevity-budget retry remains a later pre-TTS step; this change only makes the post-TTS speed control real and measurable.
