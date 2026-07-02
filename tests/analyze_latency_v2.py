@@ -263,12 +263,8 @@ def main():
     else:
         dur_vals = [d['audioDurationMs'] for d in audio_durations
                     if isinstance(d.get('audioDurationMs'), int) and d['audioDurationMs'] > 0]
-        win_vals = [d['sourceSpeechWindowMs'] for d in audio_durations
-                    if isinstance(d.get('sourceSpeechWindowMs'), int) and d['sourceSpeechWindowMs'] > 0]
-        ratios = [d['audioDurationMs'] / d['sourceSpeechWindowMs']
-                  for d in audio_durations
-                  if isinstance(d.get('audioDurationMs'), int) and isinstance(d.get('sourceSpeechWindowMs'), int)
-                  and d['audioDurationMs'] > 0 and d['sourceSpeechWindowMs'] > 0]
+        win_vals = []
+        ratios = []
         stats(dur_vals, '译文音频时长')
         stats(win_vals, '原声说话窗口')
         if ratios:
@@ -281,9 +277,7 @@ def main():
         by_lang: dict[str, list] = collections.defaultdict(list)
         for d in audio_durations:
             lang = d.get('lang', 'unknown')
-            if isinstance(d.get('audioDurationMs'), int) and isinstance(d.get('sourceSpeechWindowMs'), int):
-                if d['audioDurationMs'] > 0 and d['sourceSpeechWindowMs'] > 0:
-                    by_lang[str(lang)].append(d['audioDurationMs'] / d['sourceSpeechWindowMs'])
+            _ = lang
         if len(by_lang) > 1:
             print()
             for lang, rs in sorted(by_lang.items()):

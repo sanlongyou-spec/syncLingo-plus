@@ -9,11 +9,6 @@ import java.util.regex.Pattern;
 public final class TtsTextNormalizer {
 
     private static final int PCM_BYTES_PER_SAMPLE = 2;
-    private static final long ZH_MIN_FORWARD_MS = 5_000L;
-    private static final long ZH_MAX_FORWARD_MS = 18_000L;
-    private static final long ZH_BASE_FORWARD_MS = 1_800L;
-    private static final long ZH_MS_PER_CHAR = 150L;
-    private static final long DEFAULT_MAX_FORWARD_MS = 45_000L;
 
     private static final Pattern YEAR_RANGE =
             Pattern.compile("(?<!\\d)(\\d{4})\\s*/\\s*(\\d{4})(年度|财年)?");
@@ -45,18 +40,6 @@ public final class TtsTextNormalizer {
         }
         normalized = HORIZONTAL_SPACE.matcher(normalized).replaceAll(" ").trim();
         return new Result(text, normalized, !normalized.equals(text));
-    }
-
-    public static long maxForwardAudioMs(String ttsText, String targetLang) {
-        if (ttsText == null || ttsText.isBlank()) {
-            return 0L;
-        }
-        if (!isChineseTarget(targetLang)) {
-            return DEFAULT_MAX_FORWARD_MS;
-        }
-        int codePoints = ttsText.codePointCount(0, ttsText.length());
-        long estimated = ZH_BASE_FORWARD_MS + codePoints * ZH_MS_PER_CHAR;
-        return Math.min(ZH_MAX_FORWARD_MS, Math.max(ZH_MIN_FORWARD_MS, estimated));
     }
 
     public static long pcmDurationMs(long pcmBytes, int sampleRate) {

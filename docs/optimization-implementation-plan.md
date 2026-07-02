@@ -1844,40 +1844,38 @@ GET    /api/admin/audit-logs
 - Cartesia speed is provider guidance, not a mechanical time-stretch guarantee. A live listening test is still needed to confirm 1.3 remains intelligible for fast Indonesian output.
 - This hotfix line is based on the user-selected server commit `48d8186` to avoid reintroducing later OpenAI Realtime changes.
 
-## Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration
+## Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration (Rolled Back)
 
 ### Goal
 
-- Add passive rolling calibration for target-language TTS duration by comparing the queued text estimate with the actual Cartesia PCM duration.
-- Keep this slice observational only: no segmentation changes, no pre-TTS rewrite, no playback queue changes, and no additional audio truncation.
-- Prepare the zh-CN -> id path for a later pre-TTS brevity budget that uses measured Indonesian speech duration instead of only static word/character estimates.
+- This passive rolling calibration slice was removed on 2026-07-02 after live-log review showed source speech-window timing was not reliable enough for a hard zh-CN -> id duration budget.
+- Keep the active production path simple: Cartesia synthesis speed stays `1.0`, backend PCM speed-up remains Chinese `1.1` and Indonesian `1.3`, and synthesized audio is not truncated or dropped by duration-budget logic.
 
 ### Optimization Items
 
 | Item | Status | Notes |
 |---|---|---|
-| Rolling estimator service | Done | Added `SpeechDurationCalibrationService` with per-language rolling windows, default id word-rate estimates, zh character-rate estimates, and sample filters for truncated/out-of-range audio. |
-| Queue-time visibility | Done | `RealtimeInterpretationFacade` now logs `estimatedAudioMs`, `calibrationWordSamples`, and `calibrationCharSamples` in `TTS queued`. |
-| Completion feedback | Done | `tts-audio-duration` completion now records `forwardedAudioDurationMs` into the calibration service when the sample is not truncated and passes duration/rate guards. |
-| Regression coverage | Done | Added service tests for defaults, rolling-window retention, skipped samples, zh character estimates, and a facade integration test that proves actual TTS duration updates the next estimate. |
+| Rolling estimator service | Rolled back | `SpeechDurationCalibrationService` and its tests were deleted. |
+| Queue-time visibility | Rolled back | `estimatedAudioMs`, `calibrationWordSamples`, and `calibrationCharSamples` were removed from `TTS queued`. |
+| Completion feedback | Rolled back | `tts-audio-duration` no longer updates a rolling duration estimator. |
+| Regression coverage | Updated | Removed calibration-specific tests and kept coverage for backend PCM speed-up, audio forwarding, TTS ordering, and text normalization. |
 
 ### Affected Modules
 
-- Backend TTS duration calibration: `SpeechDurationCalibrationService`.
 - Backend realtime orchestration: `RealtimeInterpretationFacade`.
-- Backend regression tests: `SpeechDurationCalibrationServiceTest`, `RealtimeInterpretationOrderTest`.
+- Backend text/TTS helpers: `TtsTextNormalizer`, `TtsPcmSpeedService`.
+- Backend regression tests: `RealtimeInterpretationOrderTest`, `TtsTextNormalizerTest`, `TtsPcmSpeedServiceTest`.
 
 ### Acceptance Criteria
 
-- For normal non-truncated Cartesia output, logs show a queue-time `estimatedAudioMs` followed by a `[SpeechDurationCalibration] update` with actual audio duration.
-- Truncated, blank, zero-length, and out-of-range samples are skipped and do not move the rolling average.
-- Existing TTS ordering and existing duration-guard behavior remain unchanged.
-- Focused `SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest` and full backend `mvn test` pass.
+- `rg` over backend source finds no active `SpeechDurationCalibrationService`, `maxForwardAudioMs`, `overBudget`, `estimatedAudioMs`, or calibration sample fields.
+- `TTS queued` keeps speed/order visibility but no queue-time duration estimate.
+- `tts-audio-duration` keeps raw and forwarded PCM duration visibility with `truncated=false`, but no duration-budget decision.
+- Focused `RealtimeInterpretationOrderTest,TtsTextNormalizerTest,TtsPcmSpeedServiceTest` and full backend `mvn test` pass.
 
 ### Residual Issues
 
-- The calibration is currently in-memory and resets on backend restart; that is acceptable for this first passive slice.
-- The calibration is not yet used to enforce zh-CN -> id brevity before Cartesia. The next implementation step should use this estimate to decide whether to request a shorter Indonesian translation before synthesis, without dropping synthesized audio.
+- No active duration-budget enforcement remains. Future latency work should focus on Chinese segmentation quality and concise zh-CN -> id translation before TTS, not post-synthesis truncation.
 
 ## Weekly Optimization Record: 2026-W27 Backend PCM TTS Speed Control
 
@@ -1885,7 +1883,7 @@ GET    /api/admin/audit-logs
 
 - Stop relying on Cartesia `speed` as the real timing control.
 - Send all zh/id/en TTS requests to Cartesia with neutral synthesis speed `1.0`.
-- Apply deterministic backend PCM speed-up before audio enters the existing duration guard, ordering queue, duration calibration, and WebSocket send path: Chinese `1.1`, Indonesian `1.3`, English/default `1.0`.
+- Apply deterministic backend PCM speed-up before audio enters the ordering queue, duration logging, and WebSocket send path: Chinese `1.1`, Indonesian `1.3`, English/default `1.0`.
 
 ### Optimization Items
 
@@ -1893,7 +1891,7 @@ GET    /api/admin/audit-logs
 |---|---|---|
 | Neutral Cartesia speed | Done | Replaced target-language Cartesia speed routing with `CARTESIA_TTS_SYNTHESIS_SPEED=1.0`. |
 | Backend PCM speed-up | Done | Added `TtsPcmSpeedService` for mono 16-bit PCM time compression using target-language speed rules. |
-| Forwarded-duration semantics | Done | `RealtimeInterpretationFacade` now applies PCM speed-up before `maxForwardAudioMs`, `forwardedPcmBytes`, `tts-audio-duration`, calibration updates, and `TtsBufferedChunk` enqueueing. |
+| Forwarded-duration semantics | Updated | `RealtimeInterpretationFacade` applies PCM speed-up before `forwardedPcmBytes`, `tts-audio-duration`, and `TtsBufferedChunk` enqueueing; removed the obsolete duration-budget and calibration hooks. |
 | Log visibility | Done | `TTS queued`, `TTS first chunk`, `TTS synth complete`, and `tts-audio-duration` now log `cartesiaSpeed` and/or `backendPcmSpeed`. |
 | Regression coverage | Done | Added `TtsPcmSpeedServiceTest` and updated facade tests to prove Cartesia receives `1.0` while forwarded PCM bytes shrink to real backend speeds. |
 
@@ -1902,15 +1900,15 @@ GET    /api/admin/audit-logs
 - Backend constants: `Constants`.
 - Backend PCM speed service: `TtsPcmSpeedService`.
 - Backend realtime orchestration: `RealtimeInterpretationFacade`.
-- Backend regression tests: `TtsPcmSpeedServiceTest`, `RealtimeInterpretationOrderTest`, `SpeechDurationCalibrationServiceTest`.
+- Backend regression tests: `TtsPcmSpeedServiceTest`, `RealtimeInterpretationOrderTest`, `TtsTextNormalizerTest`.
 
 ### Acceptance Criteria
 
 - Cartesia synthesis calls receive `speed=1.0` for Indonesian, Chinese, and English/default targets.
 - Backend logs show `backendPcmSpeed=1.3` for Indonesian target output, `backendPcmSpeed=1.1` for Chinese target output, and `backendPcmSpeed=1.0` for English/default output.
 - A 1000 ms, 24 kHz PCM chunk forwards as about 769 ms for Indonesian and about 909 ms for Chinese.
-- Duration guard, forwarded duration logging, and rolling calibration use the accelerated PCM duration, not the raw Cartesia duration.
-- Focused `TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest` and full backend `mvn test` pass.
+- Forwarded duration logging uses the accelerated PCM duration, not the raw Cartesia duration.
+- Focused `TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,TtsTextNormalizerTest` and full backend `mvn test` pass.
 
 ### Residual Issues
 
@@ -1923,7 +1921,7 @@ GET    /api/admin/audit-logs
 
 - Fix zh-CN ASR replay and seam problems found in live logs, especially repeated prefixes and swallowed words around Azure interim/final rewrites.
 - Keep the server on the pre-OpenAI-Realtime hotfix line while adding the Chinese segmentation fixes.
-- Preserve full TTS audio when the duration estimate is exceeded: warn and keep sending audio instead of cancelling or truncating a sentence halfway.
+- Preserve full TTS audio by removing duration-budget cancellation/truncation behavior from the active path.
 
 ### Optimization Items
 
@@ -1933,7 +1931,7 @@ GET    /api/admin/audit-logs
 | Final remainder safety | Done | Failed final-boundary alignment no longer cuts from a stale offset; it emits from a safe zero boundary and lets overlap trimming plus the ledger remove repeated text. |
 | CJK comparable offsets | Done | CJK source offsets are tracked per code point while Latin/digit tokens still normalize as words, fixing Chinese seam alignment that could swallow `这里面呃`-style text. |
 | Chinese forced segmentation guard | Done | zh-CN forced segmentation no longer falls back to unsafe character cuts without punctuation, and short forced segments under the zh minimum are deferred. |
-| No read-half TTS truncation | Done | `RealtimeInterpretationFacade` logs `TTS audio duration over budget, audio kept` and `truncated=false`; over-budget audio is forwarded completely instead of cancelled. |
+| No read-half TTS truncation | Updated | Removed the duration-budget warning path; TTS audio is forwarded completely and `tts-audio-duration` logs `truncated=false`. |
 | PCM odd-byte carry | Done | `TtsPcmSpeedService` carries an incomplete PCM byte into the next chunk and drops only a final orphan byte on stream finish. |
 
 ### Affected Modules
@@ -1948,10 +1946,10 @@ GET    /api/admin/audit-logs
 - Replayed zh-CN prefixes are logged as `[AsrLedger] duplicate suppressed` or `[AsrLedger] overlap trimmed` before translation/TTS.
 - Chinese final seam tests keep the missing span instead of swallowing words.
 - zh-CN forced segmentation cuts only on safe punctuation/comma boundaries or waits for a better boundary.
-- Over-budget TTS audio logs `overBudget=true` and `truncated=false`, with no duration-guard cancel.
+- TTS completion logs `tts-audio-duration ... truncated=false` and no active duration-budget cancel or `overBudget` decision remains.
 - Full backend `mvn test` passes on the deployment branch.
 
 ### Residual Issues
 
 - If Azure or the punctuation model does not provide a safe Chinese boundary for a long span, the backend now waits instead of character-cutting. This trades some latency for correctness.
-- A later zh-CN -> id brevity-budget retry can reduce long Indonesian output before synthesis, but it must not reintroduce audio truncation.
+- A later zh-CN -> id brevity retry can reduce long Indonesian output before synthesis, but it must not reintroduce audio truncation or post-synthesis dropping.

@@ -72,11 +72,8 @@ def main():
         elif "tts-audio-duration" in line:
             kv = parse_kv(line)
             ad = kv.get("audioDurationMs", -1)
-            sw = kv.get("sourceSpeechWindowMs", 0)
             if ad > 0:
                 dur["audioDurationMs"].append(ad)
-            if ad > 0 and sw > 0:
-                dur["ratio"].append(ad / sw)
         elif "e2e client latency" in line:
             kv = parse_kv(line)
             # 过滤明显噪声: 总时长 < 200ms 视为异常样本

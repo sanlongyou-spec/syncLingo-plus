@@ -1993,18 +1993,17 @@ Pass criteria:
 - Local full backend verification passed: `mvn -q test`.
 - Server validation pending after deployment and live test logs.
 
-## Weekly Validation Record: 2026-W27 TTS Duration Rolling Calibration
+## Weekly Validation Record: 2026-W27 TTS Duration Rolling Calibration (Rolled Back)
 
 ### Matching Optimization Scope
 
-- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration`.
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W27 TTS Duration Rolling Calibration (Rolled Back)`.
 
 ### Validation Goals
 
-- Prove queue-time duration estimation is logged for TTS tasks.
-- Prove actual Cartesia PCM duration is recorded after synthesis completion.
-- Prove truncated or invalid samples do not affect the rolling average.
-- Prove existing TTS ordering and current duration-guard behavior are unchanged.
+- Prove the duration rolling-calibration path has been removed from active backend source.
+- Prove TTS queue and completion logs no longer expose `estimatedAudioMs`, calibration samples, `maxForwardAudioMs`, `overBudget`, or `sourceSpeechWindowMs`.
+- Prove existing TTS ordering, backend PCM speed-up, and full-audio forwarding remain intact.
 
 ### Log / Runtime Validation First
 
@@ -2012,41 +2011,42 @@ Pass criteria:
 cd /opt/syncLingo
 git rev-parse --short HEAD
 docker logs si-backend --since 20m 2>&1 | grep -E \
-  "TTS queued|tts-audio-duration|SpeechDurationCalibration|estimatedAudioMs|calibrationWordSamples|calibrationCharSamples|ERROR|Exception"
+  "TTS queued|tts-audio-duration|backendPcmSpeed|cartesiaSpeed|ERROR|Exception"
 ```
 
 Pass criteria:
 
-- `TTS queued` lines include `estimatedAudioMs`, `calibrationWordSamples`, and `calibrationCharSamples`.
-- Non-truncated Cartesia completions show `[SpeechDurationCalibration] update ... actualMs=...`.
-- Truncated or invalid completions show skipped calibration updates rather than changing sample counts.
+- `TTS queued` lines include `cartesiaSpeed=1.0` and `backendPcmSpeed=...`, but do not include `estimatedAudioMs`, `calibrationWordSamples`, or `calibrationCharSamples`.
+- `tts-audio-duration` lines include `audioDurationMs`, `forwardedAudioDurationMs`, and `truncated=false`, but do not include `maxForwardAudioMs`, `overBudget`, or `sourceSpeechWindowMs`.
+- No `[SpeechDurationCalibration]` update or skip logs appear after this rollback.
 - Existing `TTS order reserved`, `TTS playback order ready`, and `TTS order released` ordering evidence remains normal.
 
 ### Automated Tests
 
 ```powershell
 cd si-backend
-mvn -q "-Dtest=SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q "-Dtest=RealtimeInterpretationOrderTest,TtsTextNormalizerTest,TtsPcmSpeedServiceTest" test
 mvn -q test
 ```
 
 Pass criteria:
 
-- `SpeechDurationCalibrationServiceTest` passes default-estimate, rolling-window, skipped-sample, and zh character-rate scenarios.
-- `RealtimeInterpretationOrderTest.ttsCompletionUpdatesSpeechDurationCalibration` proves a 1000 ms Cartesia PCM sample updates the next Indonesian estimate from the default 1100 ms to 1000 ms.
-- Existing TTS ordering and duration-guard regression tests still pass.
+- `rg` over backend source finds no active calibration or duration-budget symbols: `SpeechDurationCalibrationService`, `maxForwardAudioMs`, `overBudget`, `estimatedAudioMs`, `calibrationWordSamples`, `calibrationCharSamples`.
+- `RealtimeInterpretationOrderTest.targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral` proves Cartesia stays at `1.0` while backend PCM output is accelerated by target language.
+- `RealtimeInterpretationOrderTest.chineseTtsUsesNormalizedTextAndKeepsAllAudio` proves long synthesized audio is fully forwarded and not cancelled.
+- `TtsTextNormalizerTest` covers text normalization and PCM duration calculation without any forward-budget API.
 - Full backend test suite passes.
 
 ### Manual Validation
 
-- Run a short zh-CN -> id live interpretation sample and confirm backend logs show queue estimates before Cartesia and actual duration updates after completion.
-- Confirm no Indonesian audio is cut short by this calibration change. Any later brevity enforcement must happen before Cartesia synthesis.
+- Run a short zh-CN -> id live interpretation sample and confirm backend logs show `backendPcmSpeed=1.3`, full `tts-audio-duration`, and no duration-budget/calibration fields.
+- Confirm no Indonesian audio is cut short. Any later brevity enforcement must happen before Cartesia synthesis.
 
 ### Result Record
 
-- Local focused test passed: `mvn -q "-Dtest=SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
-- Local full backend verification passed: `mvn -q test`.
-- Server validation pending after deployment and live test logs.
+- 2026-07-02 rollback focused test passed: `mvn -q "-Dtest=RealtimeInterpretationOrderTest,TtsTextNormalizerTest,TtsPcmSpeedServiceTest" test`.
+- 2026-07-02 rollback full backend verification passed: `mvn -q test`.
+- Server validation pending after rollback deployment and live test logs.
 
 ## Weekly Validation Record: 2026-W27 Backend PCM TTS Speed Control
 
@@ -2083,7 +2083,7 @@ Pass criteria:
 
 ```powershell
 cd si-backend
-mvn -q "-Dtest=TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q "-Dtest=TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,TtsTextNormalizerTest" test
 mvn -q test
 ```
 
@@ -2091,8 +2091,7 @@ Pass criteria:
 
 - `TtsPcmSpeedServiceTest` proves one second of 24 kHz PCM becomes 769 ms for Indonesian and 909 ms for Chinese, while English/default remains 1000 ms.
 - `RealtimeInterpretationOrderTest.targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral` proves Cartesia receives `1.0` while forwarded PCM bytes shrink by target language.
-- `RealtimeInterpretationOrderTest.ttsCompletionUpdatesSpeechDurationCalibration` proves Indonesian duration calibration learns the accelerated 769 ms forwarded duration.
-- Existing TTS ordering and duration-guard regression tests still pass.
+- Existing TTS ordering and full-audio forwarding regression tests still pass.
 - Full backend test suite passes.
 
 ### Manual Validation
@@ -2102,7 +2101,7 @@ Pass criteria:
 
 ### Result Record
 
-- Local focused test passed: `mvn -q "-Dtest=TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
+- Local focused test passed: `mvn -q "-Dtest=TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,TtsTextNormalizerTest" test`.
 - Local full backend verification passed: `mvn -q test`.
 - Server validation pending after deployment and live test logs.
 
@@ -2117,7 +2116,7 @@ Pass criteria:
 - Prove zh-CN replay prefixes are suppressed or trimmed before translation/TTS.
 - Prove Chinese final remainder fallback does not swallow words when Azure final text rewrites the interim text.
 - Prove unsafe Chinese forced segmentation no longer cuts at arbitrary character boundaries.
-- Prove over-budget TTS audio is warned and fully forwarded, not cancelled or truncated.
+- Prove no duration-budget TTS cancellation/truncation path remains active and synthesized audio is fully forwarded.
 - Prove odd PCM bytes are carried across chunks instead of being forwarded unprocessed.
 
 ### Log / Runtime Validation First
@@ -2126,7 +2125,7 @@ Pass criteria:
 cd /opt/syncLingo
 git rev-parse --short HEAD
 docker logs si-backend --since 20m 2>&1 | grep -E \
-  "asr-segment final|final remainder aligned|AsrLedger|force-segment by=|TTS queued|TTS first chunk|tts-audio-duration|TTS audio duration over budget|drop trailing incomplete PCM byte|ERROR|Exception"
+  "asr-segment final|final remainder aligned|AsrLedger|force-segment by=|TTS queued|TTS first chunk|tts-audio-duration|drop trailing incomplete PCM byte|ERROR|Exception"
 curl -sS http://127.0.0.1:8080/api/health
 ```
 
@@ -2135,14 +2134,14 @@ Pass criteria:
 - Deployed `HEAD` matches the new deployment commit based on `6053d1d`, not the later OpenAI Realtime branch.
 - Repeated zh-CN source revisions produce `[AsrLedger] duplicate suppressed` or `[AsrLedger] overlap trimmed`.
 - Chinese forced segmentation logs cut on punctuation/comma-safe boundaries; arbitrary no-punctuation character cuts are absent.
-- `TTS audio duration over budget, audio kept` may appear, followed by `tts-audio-duration ... overBudget=true, truncated=false`.
+- `tts-audio-duration` lines show `truncated=false` and no active `overBudget` or `maxForwardAudioMs` decision fields.
 - Backend health returns HTTP 200 and logs do not show startup errors or repeated exceptions.
 
 ### Automated Tests
 
 ```powershell
 cd si-backend
-mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test
+mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,TtsTextNormalizerTest" test
 mvn -q test
 ```
 
@@ -2150,7 +2149,7 @@ Pass criteria:
 
 - `AzureAsrFinalRemainderTest` covers failed final alignment fallback and the Chinese `这里面呃` seam.
 - `AzureAsrLedgerDedupTest` covers Chinese replay prefix suppression.
-- `RealtimeInterpretationOrderTest` covers over-budget TTS audio forwarding all chunks with no cancel and Cartesia speed staying `1.0`.
+- `RealtimeInterpretationOrderTest` covers full TTS audio forwarding with no cancel and Cartesia speed staying `1.0`.
 - `TtsPcmSpeedServiceTest` covers zh/id speed-up and odd-byte carry.
 - Full backend regression suite passes.
 
@@ -2158,12 +2157,12 @@ Pass criteria:
 
 - Run a short Chinese meeting sample with long sentences and repeated Azure revisions.
 - Confirm the Indonesian output does not repeat the same Chinese source span.
-- Confirm no sentence is read halfway because of the duration guard.
-- If latency still accumulates, collect `tts-audio-duration` and `TTS audio duration over budget` rows for a shorter-translation follow-up instead of reintroducing truncation.
+- Confirm no sentence is read halfway because of any duration-budget logic.
+- If latency still accumulates, collect `tts-audio-duration` rows for a shorter-translation follow-up instead of reintroducing truncation.
 
 ### Result Record
 
-- Local focused test passed: `mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,SpeechDurationCalibrationServiceTest,RealtimeInterpretationOrderTest" test`.
+- Local focused test passed: `mvn -q "-Dtest=AzureAsrFinalRemainderTest,AzureAsrLedgerDedupTest,TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,TtsTextNormalizerTest" test`.
 - Local full backend verification passed: `mvn -q test`.
 - Local Surefire summary after full backend test: 89 report files, 442 tests, 0 failures, 0 errors, 0 skipped.
 - Server validation pending after deployment and live zh-CN -> id sample logs.
