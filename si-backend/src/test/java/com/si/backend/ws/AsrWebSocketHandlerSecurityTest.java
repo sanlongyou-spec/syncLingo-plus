@@ -31,12 +31,14 @@ class AsrWebSocketHandlerSecurityTest {
 
     private final RealtimeInterpretationFacade realtimeFacade = mock(RealtimeInterpretationFacade.class);
     private final ShareWebSocketHandler shareWebSocketHandler = mock(ShareWebSocketHandler.class);
+    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler = mock(ShareAudioWebSocketHandler.class);
     private final ResourceOwnershipPolicy ownershipPolicy = mock(ResourceOwnershipPolicy.class);
     private final UserWebSocketRegistry userWebSocketRegistry = mock(UserWebSocketRegistry.class);
     private final AsrWebSocketHandler handler = new AsrWebSocketHandler(
             new ObjectMapper(),
             realtimeFacade,
             shareWebSocketHandler,
+            shareAudioWebSocketHandler,
             ownershipPolicy,
             userWebSocketRegistry
     );

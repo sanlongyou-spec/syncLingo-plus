@@ -62,6 +62,10 @@ public class ShareWebSocketHandler extends TextWebSocketHandler {
         if (sessionId == null || sessionId.isBlank()) {
             return;
         }
+        if (Constants.WS_MSG_TYPE_TTS_AUDIO.equals(msg.getType())) {
+            log.debug("[ShareWebSocketHandler] skip tts_audio on text share channel, sessionId={}", sessionId);
+            return;
+        }
         Set<WebSocketSession> subscribers = sessionSubscribers.get(sessionId);
         if (subscribers == null || subscribers.isEmpty()) {
             return;

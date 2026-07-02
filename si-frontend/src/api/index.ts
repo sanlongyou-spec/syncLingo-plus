@@ -37,6 +37,7 @@ import type {
   AudioRecord,
   CloneVoiceResponse,
   UserVoice,
+  PublicSessionInfo,
 } from '../types'
 
 const RESULT_OK_CODE = 200
@@ -119,6 +120,24 @@ export const saveInterpretationResult = (params: SaveInterpretationResultParams)
 export const getPublicInterpretationResults = (sessionId: string): Promise<Result<InterpretationResultItem[]>> =>
   client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`).then(r => r.data)
 
+export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSessionInfo>> =>
+  client.get<Result<PublicSessionInfo>>(`/api/interpretation/public/${sessionId}/info`).then(r => r.data)
+
+export interface PublicLatencyReport {
+  sessionId: string
+  lang: string
+  e2eMs: number
+  captureMs: number
+  rttMs: number
+  tailMs: number
+  outputLatencyMs: number
+  backlogMs: number
+  playbackRateMilli: number
+}
+
+export const reportPublicLatency = (report: PublicLatencyReport): Promise<Result<void>> =>
+  client.post<Result<void>>('/api/interpretation/public/latency', report).then(r => r.data)
+
 export interface ShareTokenIssued {
   id: number
   token: string
@@ -137,9 +156,9 @@ export interface ShareWsTicket {
   ticket: string
 }
 
-export const mintShareWsTicket = (token: string): Promise<Result<ShareWsTicket>> =>
+export const mintShareWsTicket = (token: string, lang?: string): Promise<Result<ShareWsTicket>> =>
   client.post<Result<ShareWsTicket>>('/api/interpretation/public/share-ws-tickets', null, {
-    params: { token },
+    params: { token, ...(lang ? { lang } : {}) },
   }).then(r => r.data)
 
 export interface WsTicket {

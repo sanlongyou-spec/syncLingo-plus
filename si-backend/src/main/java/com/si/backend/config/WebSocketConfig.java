@@ -10,6 +10,7 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 import com.si.backend.ws.AsrWebSocketHandler;
 import com.si.backend.ws.JwtHandshakeInterceptor;
+import com.si.backend.ws.ShareAudioWebSocketHandler;
 import com.si.backend.ws.ShareWebSocketHandler;
 import lombok.RequiredArgsConstructor;
 
@@ -20,6 +21,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final AsrWebSocketHandler asrWebSocketHandler;
     private final ShareWebSocketHandler shareWebSocketHandler;
+    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
     private final CorsProperties corsProperties;
 
@@ -43,6 +45,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 .addInterceptors(jwtHandshakeInterceptor)
                 .setAllowedOriginPatterns(corsProperties.getAllowedOrigins().toArray(new String[0]));
         registry.addHandler(shareWebSocketHandler, Constants.WS_PATH_SHARE)
+                .setAllowedOrigins("*");
+        registry.addHandler(shareAudioWebSocketHandler, Constants.WS_PATH_SHARE_AUDIO)
                 .setAllowedOrigins("*");
     }
 }

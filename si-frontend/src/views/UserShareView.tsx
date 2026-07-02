@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { CSSProperties } from 'react'
 import { useParams } from 'react-router-dom'
-import { getPublicInterpretationResults, mintShareWsTicket, resolveShareToken } from '../api'
+import { getPublicInterpretationResults, getPublicSessionInfo, mintShareWsTicket, reportPublicLatency, resolveShareToken } from '../api'
 import { WS_DEFAULTS } from '../api/constants'
 import FontSizeControl from '../components/FontSizeControl'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
@@ -9,6 +9,27 @@ import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import type { InterpretationResultItem, WsMessage } from '../types'
 import './InterpretationView.css'
 
+const LANG_LABELS: Record<string, string> = { zh: '中文', id: 'Bahasa Indonesia', en: 'English' }
+const MUTE_NOTICE: Record<string, { text: string; button: string }> = {
+  zh: { text: '请先静音或降低 Teams 原声，避免同时听到原声和传译声音。谢谢。', button: '我知道了' },
+  en: { text: 'Please mute or lower the original Teams audio to avoid hearing both original and interpretation audio. Thank you.', button: 'Got it' },
+  id: { text: 'Harap matikan atau kecilkan suara asli Teams agar tidak mendengar suara asli dan terjemahan bersamaan. Terima kasih.', button: 'Saya mengerti' },
+}
+const AUDIO_SAMPLE_RATE = 48000
+// 已去除播放加速：播放恒定 1.0x 自然语速(不再用 playbackRate 追赶积压)。
+// 积压硬上限: 积压超过此值时, 丢弃已排队的旧音频并跳回接近实时(只丢音频, 文本完整保留),
+// 避免听众越落越远(实时同传宁可丢一段音频也要保持跟上现场)。
+const DROP_BACKLOG_SEC = 25.0
+// 与后端 Constants.WS_CLOSE_SHARE_FULL 对应：收听人数已满的 WS 关闭码
+const SHARE_FULL_CLOSE_CODE = 4290
+
+const toCanonicalLang = (lang: string): string => {
+  const lower = lang.trim().toLowerCase()
+  if (lower.startsWith('zh')) return 'zh'
+  if (lower.startsWith('id')) return 'id'
+  if (lower.startsWith('en')) return 'en'
+  return lower
+}
 
 interface DisplayShareItem {
   id: number
@@ -70,6 +91,7 @@ export default function UserShareView() {
   const [currentRecognizing, setCurrentRecognizing] = useState('')
   const [currentLanguage, setCurrentLanguage] = useState('')
   const [isWaiting, setIsWaiting] = useState(true)
+  const [roomFull, setRoomFull] = useState(false)
   const [tokenInvalid, setTokenInvalid] = useState(false)
   const {
     scrollRef: bodyRef,
@@ -82,7 +104,278 @@ export default function UserShareView() {
   const activeSessionIdRef = useRef<string | null>(null)
   const wsStoppedRef = useRef(false)
 
+  // ── 音频：选语言 + Opus(WebCodecs) 播放 ──────────────────────
+  const [audioLangs, setAudioLangs] = useState<string[]>([])
+  const [selectedLang, setSelectedLang] = useState<string | null>(null)
+  const [noticeLang, setNoticeLang] = useState<string | null>(null)
+  const audioWsRef = useRef<WebSocket | null>(null)
+  const selectedLangRef = useRef<string | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  const audioGenRef = useRef(0)  // increments on every stopAudio; guards stale decoder callbacks
+  const decoderRef = useRef<{ decode: (chunk: unknown) => void; close: () => void } | null>(null)
+  const scheduleRef = useRef(0)
+  const tsRef = useRef(0)
+  const pendingSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
+  // 端到端延迟测量：句首音标记 + RTT
+  const pendingMarkerRef = useRef<{ captureMs: number; arrivalMs: number } | null>(null)
+  const rttRef = useRef(0)
+  const lastPingSentRef = useRef(0)
+  const pingTimerRef = useRef<number | null>(null)
+  // 记录两次上报之间的"峰值倍速"(加速在句中才涨, 句首采样会漏掉, 故记峰值)
+  const maxRateRef = useRef(1.0)
+  const visListenerRef = useRef<(() => void) | null>(null)
 
+  const reportLatency = (
+    sessionId: string,
+    lang: string,
+    e2eMs: number,
+    captureMs: number,
+    rttMs: number,
+    tailMs: number,
+    outputLatencyMs: number,
+    backlogMs: number,
+    playbackRateMilli: number,
+  ) => {
+    // 防御：缺少有效服务端段(captureMs)的样本不上报，避免污染统计(历史上出现过 e2eMs≈2 的坏样本)
+    if (!(captureMs > 0) || !(e2eMs >= 200)) {
+      return
+    }
+    const report = { sessionId, lang, e2eMs, captureMs, rttMs, tailMs, outputLatencyMs, backlogMs, playbackRateMilli }
+    console.info('[UserShareView] e2e(client)', report)
+    try {
+      void reportPublicLatency(report).catch(() => { /* ignore */ })
+    } catch { /* ignore */ }
+  }
+
+  const addAudioLang = (raw?: string) => {
+    if (!raw) return
+    const c = toCanonicalLang(raw)
+    if (c !== 'zh' && c !== 'id' && c !== 'en') return
+    const order = ['zh', 'id', 'en']
+    setAudioLangs(prev => (prev.includes(c) ? prev : [...prev, c].sort((a, b) => order.indexOf(a) - order.indexOf(b))))
+  }
+
+  const stopAudio = useCallback(() => {
+    audioGenRef.current++  // invalidate all in-flight decoder output callbacks
+    selectedLangRef.current = null
+    audioWsRef.current?.close()
+    audioWsRef.current = null
+    try { decoderRef.current?.close() } catch { /* already closed */ }
+    decoderRef.current = null
+    pendingSourcesRef.current.forEach(source => { try { source.stop() } catch { /* ended */ } })
+    pendingSourcesRef.current.clear()
+    void audioCtxRef.current?.close()
+    audioCtxRef.current = null
+    scheduleRef.current = 0
+    tsRef.current = 0
+    if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
+    pendingMarkerRef.current = null
+    rttRef.current = 0
+    lastPingSentRef.current = 0
+    if (visListenerRef.current) {
+      document.removeEventListener('visibilitychange', visListenerRef.current)
+      visListenerRef.current = null
+    }
+  }, [])
+
+  const startAudio = (lang: string) => {
+    const sessionId = activeSessionIdRef.current
+    if (!sessionId) return
+    stopAudio()
+    setRoomFull(false)
+    const canonical = toCanonicalLang(lang)
+    selectedLangRef.current = canonical
+    setSelectedLang(canonical)
+    setNoticeLang(MUTE_NOTICE[canonical] ? canonical : null)
+
+    const AudioDecoderCtor = (window as unknown as { AudioDecoder?: unknown }).AudioDecoder as
+      | (new (init: { output: (data: unknown) => void; error: (e: unknown) => void }) => {
+          configure: (cfg: unknown) => void
+          decode: (chunk: unknown) => void
+          close: () => void
+        })
+      | undefined
+    const EncodedAudioChunkCtor = (window as unknown as { EncodedAudioChunk?: unknown }).EncodedAudioChunk as
+      | (new (init: { type: string; timestamp: number; data: ArrayBuffer | ArrayBufferView }) => unknown)
+      | undefined
+    if (!AudioDecoderCtor || !EncodedAudioChunkCtor) {
+      alert('当前浏览器不支持音频解码（需要 Chrome/Edge 等支持 WebCodecs 的浏览器）')
+      return
+    }
+
+    const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+    audioCtxRef.current = ctx
+    void ctx.resume()
+
+    // Resume AudioContext immediately when tab becomes visible again
+    const handleVisibilityChange = () => {
+      if (!document.hidden && audioCtxRef.current === ctx && ctx.state === 'suspended') {
+        void ctx.resume()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    visListenerRef.current = handleVisibilityChange
+
+    // startStream: set up WebSocket + decoder only; reuses the AudioContext above.
+    // Called on initial start AND on WebSocket reconnect — AudioContext and scheduleRef
+    // are NEVER reset here, so queued audio is never discarded on reconnect.
+    const startStream = async () => {
+      audioGenRef.current++
+      const myGen = audioGenRef.current  // capture generation for this decoder session
+
+    const handleAudioData = (data: unknown) => {
+      const audioData = data as {
+        sampleRate: number
+        allocationSize: (opt: { planeIndex: number; format: string }) => number
+        copyTo: (dest: Float32Array, opt: { planeIndex: number; format: string }) => void
+        close: () => void
+      }
+      // Guard: 停止/切换语言后丢弃旧解码回调；并确保只播放当前选中语言(同一时刻仅一种语言)
+      if (audioGenRef.current !== myGen || selectedLangRef.current !== canonical) {
+        try { audioData.close() } catch { /* already closed */ }
+        return
+      }
+      try {
+        const size = audioData.allocationSize({ planeIndex: 0, format: 'f32-planar' })
+        const samples = new Float32Array(size / 4)
+        audioData.copyTo(samples, { planeIndex: 0, format: 'f32-planar' })
+        const buffer = ctx.createBuffer(1, samples.length, audioData.sampleRate)
+        buffer.copyToChannel(samples, 0)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(ctx.destination)
+        let backlogSec = Math.max(0, scheduleRef.current - ctx.currentTime)
+        // 积压过高: 丢弃已排队的旧音频, 跳回接近实时(只丢音频, 文本完整保留)
+        if (backlogSec > DROP_BACKLOG_SEC) {
+          pendingSourcesRef.current.forEach(queued => { try { queued.stop() } catch { /* already ended */ } })
+          pendingSourcesRef.current.clear()
+          scheduleRef.current = ctx.currentTime
+          // eslint-disable-next-line no-console
+          console.warn(`[share-audio] backlog ${backlogSec.toFixed(1)}s > ${DROP_BACKLOG_SEC}s, dropped queued audio to resync`)
+          backlogSec = 0
+        }
+        const rate = 1.0   // 已去除追赶加速：播放恒定 1.0x 自然语速
+        source.playbackRate.value = rate
+        maxRateRef.current = Math.max(maxRateRef.current, rate)   // 恒为 1.0x（保留上报字段）
+        const startAt = Math.max(ctx.currentTime + 0.08, scheduleRef.current)
+        pendingSourcesRef.current.add(source)
+        source.onended = () => pendingSourcesRef.current.delete(source)
+        source.start(startAt)
+        scheduleRef.current = startAt + buffer.duration / rate
+        // 该句首音真正开始播放：合成端到端延迟 = 服务端耗时 + RTT/2 + 本地缓冲
+        const marker = pendingMarkerRef.current
+        if (marker) {
+          pendingMarkerRef.current = null
+          const scheduledStartWall = performance.now() + (startAt - ctx.currentTime) * 1000
+          const outputTimestamp = ctx.getOutputTimestamp()
+          const outputPerformanceTime = outputTimestamp.performanceTime ?? 0
+          const outputContextTime = outputTimestamp.contextTime ?? 0
+          const estimatedOutputStartWall = outputPerformanceTime > 0
+            ? outputPerformanceTime + (startAt - outputContextTime) * 1000
+            : scheduledStartWall
+          const playStartWall = Math.max(scheduledStartWall, estimatedOutputStartWall)
+          const outputLatencyMs = Math.max(0, Math.round(playStartWall - scheduledStartWall))
+          const tailMs = Math.max(0, Math.round(playStartWall - marker.arrivalMs))
+          const e2eMs = Math.round(marker.captureMs + rttRef.current / 2 + tailMs)
+          reportLatency(
+            sessionId,
+            selectedLangRef.current || '',
+            e2eMs,
+            marker.captureMs,
+            Math.round(rttRef.current),
+            tailMs,
+            outputLatencyMs,
+            Math.round(backlogSec * 1000),
+            Math.round(maxRateRef.current * 1000),   // 上报"上一段的峰值倍速", 反映真实加速(非句首瞬时)
+          )
+          maxRateRef.current = rate   // 重置, 开始累计下一段的峰值
+        }
+      } catch (err) {
+        console.warn('[UserShareView] audio render failed:', err)
+      } finally {
+        audioData.close()
+      }
+    }
+
+    const decoder = new AudioDecoderCtor({
+      output: handleAudioData,
+      error: (e: unknown) => console.warn('[UserShareView] audio decode error:', e),
+    })
+    decoder.configure({ codec: 'opus', sampleRate: AUDIO_SAMPLE_RATE, numberOfChannels: 1 })
+    decoderRef.current = decoder
+
+    const ticketRes = await mintShareWsTicket(token, canonical)
+    const ticket = ticketRes.data?.ticket
+    if (!ticket) return
+    const wsUrl = `${WS_DEFAULTS.BASE_URL.replace(/^http/, 'ws')}/ws/share-audio?ticket=${encodeURIComponent(ticket)}`
+    const ws = new WebSocket(wsUrl)
+    ws.binaryType = 'arraybuffer'
+    audioWsRef.current = ws
+    ws.onopen = () => {
+      lastPingSentRef.current = 0
+      pingTimerRef.current = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          lastPingSentRef.current = performance.now()
+          ws.send(new Uint8Array([0x03]))
+        }
+      }, 3000)
+    }
+    ws.onmessage = event => {
+      // 同一时刻只接受当前选中语言:非当前语言(或已切换/已停止)的所有包一律丢弃
+      if (!(event.data instanceof ArrayBuffer) || decoderRef.current !== decoder
+        || selectedLangRef.current !== canonical) return
+      const view = new Uint8Array(event.data)
+      if (view.length === 0) return
+      const type = view[0]
+      if (type === 0x03) {           // pong：算 RTT
+        if (lastPingSentRef.current > 0) rttRef.current = performance.now() - lastPingSentRef.current
+        return
+      }
+      if (type === 0x02) {           // 句首音标记：服务端已耗时
+        if (event.data.byteLength >= 5) {
+          const captureMs = new DataView(event.data).getInt32(1)
+          pendingMarkerRef.current = { captureMs, arrivalMs: performance.now() }
+        }
+        return
+      }
+      // type === 0x01 音频：去掉首字节后解码
+      try {
+        decoder.decode(new EncodedAudioChunkCtor({ type: 'key', timestamp: tsRef.current, data: event.data.slice(1) }))
+        tsRef.current += 20000
+      } catch (err) {
+        console.warn('[UserShareView] decode chunk failed:', err)
+      }
+    }
+    ws.onclose = (event: CloseEvent) => {
+      if (audioWsRef.current !== ws
+        || selectedLangRef.current !== canonical
+        || activeSessionIdRef.current !== sessionId
+        || audioCtxRef.current !== ctx) return
+      // 服务端因收听人数已满拒绝(4290)：不重连，提示用户稍后再试
+      if (event.code === SHARE_FULL_CLOSE_CODE) {
+        if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
+        try { decoderRef.current?.close() } catch { /* already closed */ }
+        audioWsRef.current = null
+        setSelectedLang(null)
+        setRoomFull(true)
+        return
+      }
+      // Keep AudioContext and all scheduled audio intact; only reconnect WS + decoder.
+      // This prevents any queued audio from being discarded on a transient network drop.
+      window.setTimeout(() => {
+        if (audioWsRef.current !== ws
+          || selectedLangRef.current !== canonical
+          || activeSessionIdRef.current !== sessionId
+          || audioCtxRef.current !== ctx) return
+        if (pingTimerRef.current) { window.clearInterval(pingTimerRef.current); pingTimerRef.current = null }
+        try { decoderRef.current?.close() } catch { /* already closed */ }
+        void startStream()
+      }, 2000)
+    }
+  } // end startStream
+
+  void startStream()
+}
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
@@ -96,6 +389,8 @@ export default function UserShareView() {
   }, [])
 
   const handleWsMessage = (msg: WsMessage) => {
+    addAudioLang(msg.language)
+    addAudioLang(msg.targetLanguage)
     switch (msg.type) {
       case 'recognizing':
         setCurrentRecognizing(msg.text || '')
@@ -203,6 +498,9 @@ export default function UserShareView() {
         if (newSessionId !== prevSessionId) {
           disconnectWs()
           clearSessionState()
+          stopAudio()
+          setAudioLangs([])
+          setSelectedLang(null)
           if (resultTimer) {
             window.clearInterval(resultTimer)
             resultTimer = null
@@ -213,12 +511,20 @@ export default function UserShareView() {
 
           if (newSessionId) {
             void connectWs(newSessionId)
+            getPublicSessionInfo(newSessionId)
+              .then(infoRes => {
+                if (!pollStopped && activeSessionIdRef.current === newSessionId) {
+                  (infoRes.data?.enabledLanguages ?? []).forEach(addAudioLang)
+                }
+              })
+              .catch(() => { /* 兜底靠文本消息推断语言 */ })
             // Load persisted results for this session
             const load = async () => {
               try {
                 const r = await getPublicInterpretationResults(newSessionId)
                 if (!pollStopped && activeSessionIdRef.current === newSessionId) {
                   const list = r.data || []
+                  list.forEach(item => { addAudioLang(item.sourceLang); addAudioLang(item.targetLang) })
                   setItems(prev => {
                     const next = [...prev]
                     list.forEach(item => {
@@ -255,6 +561,7 @@ export default function UserShareView() {
           if (pollTimer) window.clearInterval(pollTimer)
           if (resultTimer) window.clearInterval(resultTimer)
           disconnectWs()
+          stopAudio()
           setTokenInvalid(true)
         }
         // 其它错误（网络抖动等）忽略，下个周期重试
@@ -269,8 +576,11 @@ export default function UserShareView() {
       if (pollTimer) window.clearInterval(pollTimer)
       if (resultTimer) window.clearInterval(resultTimer)
       disconnectWs()
+      stopAudio()
     }
-  }, [token, connectWs, disconnectWs, clearSessionState])
+  }, [token, connectWs, disconnectWs, clearSessionState, stopAudio])
+
+  const notice = noticeLang ? MUTE_NOTICE[noticeLang] : null
 
   if (tokenInvalid) {
     return (
@@ -294,6 +604,17 @@ export default function UserShareView() {
 
   return (
     <div className="si-root">
+      {notice && (
+        <div className="si-notice-overlay" onClick={() => setNoticeLang(null)}>
+          <div className="si-notice-card" onClick={e => e.stopPropagation()}>
+            <div className="si-notice-icon">🔇</div>
+            <p className="si-notice-text">{notice.text}</p>
+            <button type="button" className="si-notice-btn" onClick={() => setNoticeLang(null)}>
+              {notice.button}
+            </button>
+          </div>
+        </div>
+      )}
       <header className="si-topbar">
         <div className="si-topbar-left">
           <h1 className="si-brand">聚龙同传</h1>
@@ -309,6 +630,33 @@ export default function UserShareView() {
           <div className="si-tri-host-layout">
             <div className="si-tri-toolbar">
               <span className={`si-live-indicator ${isWaiting ? '' : 'is-running'}`} />
+              {audioLangs.length > 0 && (
+                <div className="si-share-audio-langs">
+                  <span className="si-share-audio-label">🔊 收听语言</span>
+                  {audioLangs.map(lang => (
+                    <button
+                      key={lang}
+                      type="button"
+                      className={`si-share-audio-btn ${selectedLang === lang ? 'is-active' : ''}`}
+                      onClick={() => startAudio(lang)}
+                    >
+                      {LANG_LABELS[lang] || lang}
+                    </button>
+                  ))}
+                  {selectedLang && (
+                    <button
+                      type="button"
+                      className="si-share-audio-btn si-share-audio-btn--mute"
+                      onClick={() => { stopAudio(); setSelectedLang(null) }}
+                    >
+                      关闭声音
+                    </button>
+                  )}
+                  {roomFull && (
+                    <span className="si-share-audio-full">收听人数已满，请稍后再试</span>
+                  )}
+                </div>
+              )}
               <div className="si-tri-toolbar-spacer" />
               <FontSizeControl scale={transcriptFontScale} onChange={setTranscriptFontScale} />
             </div>

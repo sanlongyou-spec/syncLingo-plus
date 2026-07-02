@@ -50,6 +50,16 @@
     "source": "com.si.backend.config.WebSocketConfig"
   },
   {
+    "kind": "WEBSOCKET",
+    "method": "WS",
+    "path": "/ws/share-audio",
+    "identity": "ANONYMOUS",
+    "permission": "SHARE_READ",
+    "scope": "PUBLIC",
+    "expectedStatuses": [101, 404],
+    "source": "com.si.backend.config.WebSocketConfig"
+  },
+  {
     "kind": "BOT_PROXY_OPERATION",
     "method": "POST",
     "path": "/bot-api/api/meetings/summary",

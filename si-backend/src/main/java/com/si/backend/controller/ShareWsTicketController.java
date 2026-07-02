@@ -29,10 +29,16 @@ public class ShareWsTicketController {
     @AuthorizationSpec(identity = IdentityType.ANONYMOUS, permission = PermissionCode.SHARE_READ,
             scope = ResourceScope.PUBLIC, expectedStatuses = {200, 400, 401, 404})
     @PostMapping
-    public Result<ShareWsTicketService.Issued> issue(@RequestParam("token") String token) {
+    public Result<ShareWsTicketService.Issued> issue(
+            @RequestParam("token") String token,
+            @RequestParam(required = false) String lang
+    ) {
         String sessionId = shareTokenService.resolveSessionId(token);
-        ShareWsTicketService.Issued issued = shareWsTicketService.issueTextTicket(sessionId);
-        log.info("[ShareWsTicketController] issued share ws ticket, sessionId={}", sessionId);
+        ShareWsTicketService.Issued issued = lang == null || lang.isBlank()
+                ? shareWsTicketService.issueTextTicket(sessionId)
+                : shareWsTicketService.issueAudioTicket(sessionId, lang);
+        log.info("[ShareWsTicketController] issued share ws ticket, sessionId={}, audio={}",
+                sessionId, lang != null && !lang.isBlank());
         return Result.ok(issued);
     }
 }

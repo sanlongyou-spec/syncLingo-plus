@@ -41,11 +41,15 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final RealtimeInterpretationFacade realtimeFacade;
     private final ShareWebSocketHandler shareWebSocketHandler;
+    private final ShareAudioWebSocketHandler shareAudioWebSocketHandler;
     private final ResourceOwnershipPolicy resourceOwnershipPolicy;
     private final UserWebSocketRegistry userWebSocketRegistry;
 
     private final Map<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> sessionLangMap = new ConcurrentHashMap<>();
+    private final Map<String, String> sessionSourceLangMap = new ConcurrentHashMap<>();
+    private final Map<String, String> sessionConfiguredSourceLangMap = new ConcurrentHashMap<>();
+    private final Map<String, String> sessionAudioRouteLangMap = new ConcurrentHashMap<>();
     private final Map<String, String> webSocketSessionBizSessionMap = new ConcurrentHashMap<>();
     private final Map<String, String> bizSessionWebSocketMap = new ConcurrentHashMap<>();
     private final Set<String> stoppedWebSocketSessionIds = ConcurrentHashMap.newKeySet();
@@ -117,6 +121,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 sessionId, sourceLang, targetLang, msg.getVoiceId());
 
         sessionLangMap.put(sessionId, sourceLang + ":" + targetLang);
+        sessionConfiguredSourceLangMap.put(sessionId, sourceLang == null ? "" : sourceLang);
         realtimeFacade.startInterpretation(
                 sessionId,
                 sourceLang,
@@ -124,6 +129,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 msg.getVoiceId(),
                 // onRecognizing
                 (text, language, speakerId) -> {
+                    if (language != null && !language.isBlank()) {
+                        sessionSourceLangMap.put(sessionId, language);
+                    }
                     WsMessage out = new WsMessage();
                     out.setType(Constants.WS_MSG_TYPE_RECOGNIZING);
                     out.setSessionId(sessionId);
@@ -136,6 +144,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 },
                 // onRecognized：仅推送 WebSocket 消息，翻译/TTS 由 facade 内部管道处理
                 (text, language, speakerId) -> {
+                    if (language != null && !language.isBlank()) {
+                        sessionSourceLangMap.put(sessionId, language);
+                    }
                     log.info("[AsrWebSocketHandler] recognized, sessionId={}, speakerId={}, lang={}, textLen={}",
                             sessionId, speakerId, language, text != null ? text.length() : 0);
                     WsMessage out = new WsMessage();
@@ -178,6 +189,11 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setTtsSequence(ttsSequence);
                     out.setChunkIndex(chunkIndex);
                     sendMessage(session, out);
+                    if (chunkIndex == 0) {
+                        int captureMs = (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() - speechStartAtMs);
+                        shareAudioWebSocketHandler.sendMarker(sessionId, tLang, captureMs);
+                    }
+                    shareAudioWebSocketHandler.broadcastPcm(sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS);
                 },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)
@@ -216,8 +232,18 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         byte[] pcm = java.util.Base64.getDecoder().decode(data);
-        // 原始麦克风音频只进 ASR，绝不转发到任何音频出口(不进 VoiceMeeter、不发听众)。
+        // Keep the ASR/control-page audio path first; share-page listeners receive a side copy below.
         realtimeFacade.pushAudio(sessionId, pcm);
+        String configuredSource = sessionConfiguredSourceLangMap.get(sessionId);
+        String routeLang = isConcreteLang(configuredSource) ? configuredSource : sessionSourceLangMap.get(sessionId);
+        if (routeLang != null && !routeLang.isBlank()) {
+            String previous = sessionAudioRouteLangMap.put(sessionId, routeLang);
+            if (!routeLang.equals(previous)) {
+                log.info("[AsrWebSocketHandler] original-audio route lang, sessionId={}, routeLang={}, configured={}, detected={}",
+                        sessionId, routeLang, configuredSource, sessionSourceLangMap.get(sessionId));
+            }
+            shareAudioWebSocketHandler.broadcastPcm(sessionId, routeLang, pcm, Constants.DEFAULT_SAMPLE_RATE_ASR);
+        }
     }
 
     private void handleStop(WebSocketSession session, WsMessage msg) {
@@ -228,7 +254,11 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         stoppedWebSocketSessionIds.add(session.getId());
         cancelTransientCleanup(sessionId);
         sessionLangMap.remove(sessionId);
+        sessionSourceLangMap.remove(sessionId);
+        sessionConfiguredSourceLangMap.remove(sessionId);
+        sessionAudioRouteLangMap.remove(sessionId);
         realtimeFacade.stopInterpretation(sessionId);
+        shareAudioWebSocketHandler.closeSession(sessionId);
 
         WsMessage reply = new WsMessage();
         reply.setType(Constants.WS_MSG_TYPE_STOPPED);
@@ -298,6 +328,9 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
         if (bizSessionId != null) {
             bizSessionWebSocketMap.remove(bizSessionId, session.getId());
             sessionLangMap.remove(bizSessionId);
+            sessionSourceLangMap.remove(bizSessionId);
+            sessionConfiguredSourceLangMap.remove(bizSessionId);
+            sessionAudioRouteLangMap.remove(bizSessionId);
             if (!stoppedWebSocketSessionIds.remove(session.getId())) {
                 scheduleTransientCleanup(bizSessionId);
             }
@@ -420,6 +453,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             log.info("[AsrWebSocketHandler] transient cleanup firing, sessionId={}, graceSeconds={}",
                     businessSessionId, TRANSIENT_DISCONNECT_GRACE_SECONDS);
             realtimeFacade.cleanupSession(businessSessionId);
+            shareAudioWebSocketHandler.closeSession(businessSessionId);
         }, TRANSIENT_DISCONNECT_GRACE_SECONDS, TimeUnit.SECONDS);
         pendingTransientCleanupTasks.put(businessSessionId, task);
         log.info("[AsrWebSocketHandler] transient cleanup scheduled, sessionId={}, graceSeconds={}",
@@ -448,6 +482,14 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
             return false;
         }
         return true;
+    }
+
+    private boolean isConcreteLang(String lang) {
+        if (lang == null) {
+            return false;
+        }
+        String normalized = lang.trim().toLowerCase();
+        return !normalized.isEmpty() && !"auto".equals(normalized);
     }
 
     private AuthenticatedActor resolveActor(WebSocketSession session) {
