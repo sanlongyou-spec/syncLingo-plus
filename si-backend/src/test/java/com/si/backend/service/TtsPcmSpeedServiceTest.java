@@ -15,8 +15,8 @@ class TtsPcmSpeedServiceTest {
     void resolvesBackendSpeedByTargetLanguage() {
         TtsPcmSpeedService service = new TtsPcmSpeedService();
 
-        assertEquals(1.3, service.resolveBackendSpeed("id"), 0.0001);
-        assertEquals(1.3, service.resolveBackendSpeed("id-ID"), 0.0001);
+        assertEquals(1.2, service.resolveBackendSpeed("id"), 0.0001);
+        assertEquals(1.2, service.resolveBackendSpeed("id-ID"), 0.0001);
         assertEquals(1.1, service.resolveBackendSpeed("zh-CN"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
     }
@@ -34,14 +34,14 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void indonesianBackendSpeedShortensOneSecondPcmToRealOnePointThreeSpeed() {
+    void indonesianBackendSpeedShortensOneSecondPcmToRealOnePointTwoSpeed() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("id-ID");
 
         byte[] output = processor.process(oneSecondPcm());
 
-        assertEquals(36_924, output.length);
-        assertEquals(769L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(40_000, output.length);
+        assertEquals(833L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
