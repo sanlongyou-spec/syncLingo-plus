@@ -2166,3 +2166,112 @@ Pass criteria:
 - Local full backend verification passed: `mvn -q test`.
 - Local Surefire summary after full backend test: 89 report files, 442 tests, 0 failures, 0 errors, 0 skipped.
 - Server validation pending after deployment and live zh-CN -> id sample logs.
+
+## Weekly Validation Record: 2026-W28 zh-CN -> id Compression and VoiceMeeter Frontend Routing Deployment
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W28 zh-CN -> id Compression and VoiceMeeter Frontend Routing Deployment`.
+
+### Validation Goals
+
+- Prove zh-CN -> id Indonesian compression now starts at the inclusive 40-character source-text boundary.
+- Prove the new Indonesian compression prompt is active and no longer uses the previous conservative "do not rephrase" instruction.
+- Prove Indonesian target TTS uses backend PCM speed `1.1` after the latest speed adjustment.
+- Prove Indonesian target TTS that has already synthesized can be skipped only after the configured 40-second unread wait, and that non-Indonesian target TTS is not affected.
+- Prove the deployed host frontend uses VoiceMeeter device routing instead of VB-CABLE routing.
+- Prove deployment did not break public frontend loading, nginx, or backend health.
+
+### Log / Runtime Validation First
+
+```bash
+cd /opt/syncLingo
+git rev-parse --short HEAD
+docker exec si-backend sh -c 'env | grep ^OPENAI_COMPRESSION'
+docker logs si-backend --since 30m 2>&1 | grep -E \
+  "compress start|compress end|backendPcmSpeed|TTS queued|TTS first chunk|TTS synthesized skipped|synthesized_wait_timeout|ERROR|Exception"
+curl -fsS http://127.0.0.1:8080/api/health
+curl -fsS https://julongtongchuan.icu/ -o /tmp/synclingo-index-verify.html
+grep assets/index /tmp/synclingo-index-verify.html
+grep -R "VoiceMeeterOutput" /var/www/si/assets
+! grep -R "VbCableOutput\|TTS_OUTPUT_CABLE\|CABLE-A" /var/www/si/assets
+systemctl is-active nginx
+```
+
+Pass criteria:
+
+- Server `HEAD` is `9dae16c` or a later commit that contains the same `2026-W28` routing and compression changes.
+- `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40` is present in the running backend container.
+- `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=40000` is present in the running backend container, or Spring config default remains `40000`.
+- zh-CN -> id live logs with a source text length of 40+ characters show `compress start, direction=zh->id`; shorter source spans do not call compression.
+- Indonesian target TTS logs show `backendPcmSpeed=1.1`.
+- Under backlog, Indonesian target logs may show `TTS synthesized skipped ... reason=synthesized_wait_timeout` only after synthesized audio waited longer than the configured threshold; the skipped item must have no `tts-first-chunk-sent`.
+- Public index references the newly built frontend asset, and the asset contains `VoiceMeeterOutput`.
+- Static assets no longer contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
+- Backend health returns success and nginx is active.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,CartesiaPropertiesTest,LlmRequestOptionsTest,TranslationTerminologyProtectionTest" test -f pom.xml
+mvn -q test -f pom.xml
+
+cd ..\si-frontend
+cmd /c npm run build
+```
+
+Pass criteria:
+
+- `LlmRequestOptionsTest` verifies the Indonesian prompt contains the new real-time Indonesian editor instructions, target ratio text, and no old conservative rephrase prohibition.
+- `TranslationTerminologyProtectionTest.compressionThresholdUsesFortySourceCharactersInclusively` proves 39 Chinese characters skip compression and 40 characters call `compressIndonesian`.
+- `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID` and `zh-CN` forward 1000 ms PCM as about 909 ms, while `en-US` stays 1000 ms.
+- `RealtimeInterpretationOrderTest.synthesizedIndonesianAudioSkipsAfterConfiguredUnreadWait` proves already-synthesized Indonesian audio can be skipped after the configured unread wait; `synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget` proves the threshold does not affect Chinese target audio.
+- `CartesiaPropertiesTest` proves the default synthesized Indonesian unread skip wait is 40000 ms and the Spring property binding works.
+- Full backend test suite passes.
+- Frontend TypeScript and Vite production build pass after renaming `vbCableOutput.ts` to `voiceMeeterOutput.ts`.
+
+### Browser / Static Frontend Validation
+
+```text
+Built frontend smoke test with system Chrome:
+- Open local built `dist` at `http://127.0.0.1:5201/#/`.
+- Assert page title is `聚龙同传系统`.
+- Assert login page renders.
+- Assert no page errors or console errors are emitted during initial load.
+```
+
+Pass criteria:
+
+- Built frontend loads without startup JavaScript errors.
+- The host interpretation page bundle imports `VoiceMeeterOutput` from `../lib/voiceMeeterOutput`.
+- Source grep over `si-frontend/src` finds no `VB-CABLE`, `TTS_OUTPUT_CABLE`, `VbCableOutput`, `CABLE-A`, or `CABLE-B` runtime references.
+
+### Manual Validation Required
+
+- On the production host browser, confirm Chrome/Edge has audio device permission and can enumerate:
+  - `VoiceMeeter Input`
+  - `VoiceMeeter Aux Input`
+  - `VoiceMeeter VAIO3`
+- Start a short interpretation session and confirm:
+  - Chinese target audio routes to VoiceMeeter Input.
+  - Indonesian target audio routes to VoiceMeeter Aux Input.
+  - English target audio, if enabled, routes to VoiceMeeter VAIO3.
+  - The frontend no longer asks for VB-CABLE devices.
+- Run a live zh-CN -> id sample with 40+ source characters and confirm the Indonesian output is shorter but still preserves facts, numbers, terms, and decisions.
+
+### Result Record
+
+- Local focused backend tests passed:
+  `mvn -q "-Dtest=TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,CartesiaPropertiesTest,LlmRequestOptionsTest,TranslationTerminologyProtectionTest" test`.
+- Local synthesized Indonesian skip focused tests passed:
+  `mvn -q "-Dtest=RealtimeInterpretationOrderTest,CartesiaPropertiesTest" test`.
+- Local full backend tests passed:
+  `mvn -q test`; Surefire summary `reports=90 tests=449 failures=0 errors=0 skipped=0`.
+- Local frontend build passed:
+  `cmd /c npm run build`.
+- Local built-frontend Chrome smoke test passed with title `聚龙同传系统`, login page rendered, and no startup console/page errors.
+- Server backend deployment passed at commit `8b381d4`; backend health returned `UP`; running env confirmed `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
+- Server frontend deployment passed at commit `9dae16c`; `npm ci && npm run build` succeeded; assets synced to `/var/www/si`; `nginx -t` succeeded; nginx reloaded and is active.
+- Public frontend verification passed: `/` references `/assets/index-BEAeQIh2.js`; deployed JS contains `VoiceMeeterOutput`; deployed JS does not contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
+- Residual unverified item: physical VoiceMeeter channel routing and audio listening quality still require a live browser/device test on the production host.

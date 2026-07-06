@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -245,6 +246,203 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
+    void synthesizedIndonesianAudioSkipsAfterConfiguredUnreadWait() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        cartesiaProperties.getTts().setSynthesizedIndonesianSkipWaitMs(80L);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard,
+                new TtsPcmSpeedService()
+        );
+
+        String sessionId = "synthesized-id-skip-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0) + "-translated");
+
+        CountDownLatch secondSynthCompleted = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2), 0});
+            onComplete.run();
+            if ("second-translated".equals(text)) {
+                secondSynthCompleted.countDown();
+            }
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
+        AtomicInteger secondPlayed = new AtomicInteger();
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (sequence == 1L && chunkIndex == 0) {
+                firstPlaybackEntered.countDown();
+                try {
+                    releaseFirstPlayback.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (sequence == 2L && chunkIndex == 0) {
+                secondPlayed.incrementAndGet();
+            }
+        });
+
+        try {
+            facade.translateAndStreamTts(
+                    "first", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+            assertTrue(firstPlaybackEntered.await(5, TimeUnit.SECONDS));
+
+            facade.translateAndStreamTts(
+                    "second", "zh-CN", "id", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+
+            assertTrue(secondSynthCompleted.await(5, TimeUnit.SECONDS));
+            awaitTtsChain(facade, sessionId, "id");
+            assertEquals(0, secondPlayed.get());
+        } finally {
+            releaseFirstPlayback.countDown();
+        }
+    }
+
+    @Test
+    void synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        cartesiaProperties.getTts().setSynthesizedIndonesianSkipWaitMs(60L);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard,
+                new TtsPcmSpeedService()
+        );
+
+        String sessionId = "synthesized-zh-no-skip-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0) + "-translated");
+
+        CountDownLatch secondSynthCompleted = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2), 0});
+            onComplete.run();
+            if ("second-translated".equals(text)) {
+                secondSynthCompleted.countDown();
+            }
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
+        List<Long> playedSequences = new CopyOnWriteArrayList<>();
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (chunkIndex == 0) {
+                playedSequences.add(sequence);
+            }
+            if (sequence == 1L && chunkIndex == 0) {
+                firstPlaybackEntered.countDown();
+                try {
+                    releaseFirstPlayback.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+
+        try {
+            facade.translateAndStreamTts(
+                    "first", "id", "zh-CN", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+            assertTrue(firstPlaybackEntered.await(5, TimeUnit.SECONDS));
+
+            facade.translateAndStreamTts(
+                    "second", "id", "zh-CN", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+
+            assertTrue(secondSynthCompleted.await(5, TimeUnit.SECONDS));
+            TimeUnit.MILLISECONDS.sleep(150L);
+            assertFalse(getTtsChainFuture(facade, sessionId, "zh-CN").isDone());
+            assertEquals(List.of(1L), playedSequences);
+
+            releaseFirstPlayback.countDown();
+            awaitTtsChain(facade, sessionId, "zh-CN");
+            assertEquals(List.of(1L, 2L), playedSequences);
+        } finally {
+            releaseFirstPlayback.countDown();
+        }
+    }
+
+    @Test
     void chineseTtsUsesNormalizedTextAndKeepsAllAudio() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
@@ -432,12 +630,21 @@ class RealtimeInterpretationOrderTest {
 
     @SuppressWarnings("unchecked")
     private void awaitTtsChain(RealtimeInterpretationFacade facade, String sessionId, String targetLang) throws Exception {
+        getTtsChainFuture(facade, sessionId, targetLang).get(5, TimeUnit.SECONDS);
+    }
+
+    @SuppressWarnings("unchecked")
+    private CompletableFuture<Void> getTtsChainFuture(
+            RealtimeInterpretationFacade facade,
+            String sessionId,
+            String targetLang
+    ) throws Exception {
         Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsChain");
         field.setAccessible(true);
         Map<String, CompletableFuture<Void>> chain =
                 (ConcurrentHashMap<String, CompletableFuture<Void>>) field.get(facade);
         CompletableFuture<Void> future = chain.get(sessionId + "::" + targetLang);
         assertTrue(future != null, "TTS chain future should be reserved");
-        future.get(5, TimeUnit.SECONDS);
+        return future;
     }
 }

@@ -236,6 +236,7 @@ cartesia:
     # Cartesia max_buffer_delay_ms：合成前最多缓冲多少毫秒文本攒上下文。0=收到即合成(短句易怪音)。
     # 官方建议给小正值减少 choppy/怪音。默认 150;怪音仍多可调大(200~300),要更低延迟可调小(0~80)。
     max-buffer-delay-ms: ${CARTESIA_MAX_BUFFER_DELAY_MS:150}
+    synthesized-indonesian-skip-wait-ms: ${CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS:40000}
   pool:
     max-total-per-voice: 4    # 全局共用池：TTS 并发上限（贴合 Cartesia 账户 5 并发，留 1 余量）
     min-idle-per-voice: 0     # 不常驻空闲连接（连接合成完即关，避免空占并发额度）

@@ -28,6 +28,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -446,6 +447,7 @@ public class RealtimeInterpretationFacade {
         final AtomicLong forwardedPcmBytes = new AtomicLong(0);
         final AtomicLong receivedChunkCounter = new AtomicLong(0);
         final AtomicLong forwardedChunkCounter = new AtomicLong(0);
+        final AtomicLong synthCompleteAtMs = new AtomicLong(0);
         final AtomicReference<String> terminalReason = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
@@ -503,6 +505,7 @@ public class RealtimeInterpretationFacade {
                                     forwardedAudioDurationMs, cartesiaSynthesisSpeed, backendPcmSpeed,
                                     finalTranslated.length(), finalTtsText.length());
                         } finally {
+                            synthCompleteAtMs.set(System.currentTimeMillis());
                             terminalReason.compareAndSet(null, "synth_complete");
                             audioQueue.offer(TTS_END);
                         }
@@ -518,8 +521,23 @@ public class RealtimeInterpretationFacade {
                     });
             try {
                 long orderedWaitStart = System.currentTimeMillis();
-                awaitPreviousTtsReservation(reservation);
+                boolean ordered = awaitPreviousTtsReservation(
+                        reservation,
+                        finalTargetLang,
+                        synthCompleteAtMs,
+                        cartesiaProperties.getTts().getSynthesizedIndonesianSkipWaitMs()
+                );
                 long orderedWaitMs = System.currentTimeMillis() - orderedWaitStart;
+                if (!ordered) {
+                    long synthesizedWaitMs = Math.max(0L, System.currentTimeMillis() - synthCompleteAtMs.get());
+                    log.warn("[RealtimeInterpretationFacade] TTS synthesized skipped, sessionId={}, taskId={}, sequence={}, lang={}, orderedWaitMs={}, synthesizedWaitMs={}, skipWaitMs={}, bufferedChunks={}, bufferedBytes={}",
+                            sessionId, ttsTaskId, ttsSequence, finalTargetLang, orderedWaitMs,
+                            synthesizedWaitMs,
+                            cartesiaProperties.getTts().getSynthesizedIndonesianSkipWaitMs(),
+                            forwardedChunkCounter.get(), forwardedPcmBytes.get());
+                    completeTtsReservation(reservation, "synthesized_wait_timeout");
+                    return;
+                }
                 log.info("[RealtimeInterpretationFacade] TTS playback order ready, sessionId={}, taskId={}, sequence={}, orderedWaitMs={}, synthesizedAhead={}",
                         sessionId, ttsTaskId, ttsSequence, orderedWaitMs, firstChunkGenMs.get() > 0);
             } catch (InterruptedException e) {
@@ -594,16 +612,57 @@ public class RealtimeInterpretationFacade {
         });
     }
 
-    private void awaitPreviousTtsReservation(TtsPlaybackReservation reservation) throws InterruptedException {
+    private boolean awaitPreviousTtsReservation(
+            TtsPlaybackReservation reservation,
+            String targetLang,
+            AtomicLong synthCompleteAtMs,
+            long synthesizedSkipWaitMs
+    ) throws InterruptedException {
         if (reservation.previous().isDone()) {
-            return;
+            return true;
+        }
+        if (isIndonesianTarget(targetLang) && synthesizedSkipWaitMs > 0) {
+            return awaitPreviousTtsReservationWithSynthesizedSkip(
+                    reservation, synthCompleteAtMs, synthesizedSkipWaitMs);
         }
         try {
             reservation.previous().get();
+            return true;
         } catch (ExecutionException e) {
             log.warn("[RealtimeInterpretationFacade] previous TTS reservation completed exceptionally, sessionId={}, taskId={}, reason={}",
                     reservation.sessionId(), reservation.taskId(), e.getMessage());
+            return true;
         }
+    }
+
+    private boolean awaitPreviousTtsReservationWithSynthesizedSkip(
+            TtsPlaybackReservation reservation,
+            AtomicLong synthCompleteAtMs,
+            long synthesizedSkipWaitMs
+    ) throws InterruptedException {
+        while (!reservation.previous().isDone()) {
+            long completedAtMs = synthCompleteAtMs.get();
+            long waitMs = 100L;
+            if (completedAtMs > 0) {
+                long synthesizedWaitMs = System.currentTimeMillis() - completedAtMs;
+                long remainingMs = synthesizedSkipWaitMs - synthesizedWaitMs;
+                if (remainingMs <= 0) {
+                    return false;
+                }
+                waitMs = Math.max(1L, Math.min(waitMs, remainingMs));
+            }
+            try {
+                reservation.previous().get(waitMs, TimeUnit.MILLISECONDS);
+                return true;
+            } catch (TimeoutException ignored) {
+                // Keep waiting until previous audio is read, or this synthesized Indonesian item expires.
+            } catch (ExecutionException e) {
+                log.warn("[RealtimeInterpretationFacade] previous TTS reservation completed exceptionally, sessionId={}, taskId={}, reason={}",
+                        reservation.sessionId(), reservation.taskId(), e.getMessage());
+                return true;
+            }
+        }
+        return true;
     }
 
     private TtsPlaybackReservation reserveTtsPlayback(String sessionId, String targetLang) {
@@ -657,6 +716,14 @@ public class RealtimeInterpretationFacade {
 
     private boolean isCompressionDirection(String sourceLang, String targetLang) {
         return Constants.LANG_ZH_CN.equalsIgnoreCase(sourceLang) && Constants.LANG_ID_SHORT.equalsIgnoreCase(targetLang);
+    }
+
+    private boolean isIndonesianTarget(String targetLang) {
+        if (targetLang == null || targetLang.isBlank()) {
+            return false;
+        }
+        String lower = targetLang.toLowerCase();
+        return lower.startsWith("id") || lower.startsWith("in");
     }
 
     private long estimateTokens(String text) {

@@ -1953,3 +1953,57 @@ GET    /api/admin/audit-logs
 
 - If Azure or the punctuation model does not provide a safe Chinese boundary for a long span, the backend now waits instead of character-cutting. This trades some latency for correctness.
 - A later zh-CN -> id brevity retry can reduce long Indonesian output before synthesis, but it must not reintroduce audio truncation or post-synthesis dropping.
+
+## Weekly Optimization Record: 2026-W28 zh-CN -> id Compression and VoiceMeeter Frontend Routing Deployment
+
+### Goal
+
+- Make zh-CN -> id live output shorter before TTS by lowering the compression trigger threshold and using a less conservative Indonesian compression prompt.
+- Keep TTS timing predictable by using backend PCM acceleration only, with Indonesian target output set to `1.1`.
+- Prevent very stale zh-CN -> id Indonesian audio from blocking the live queue when it has already synthesized but has not started playback after 40 seconds.
+- Restore the host frontend audio output path from the temporary VB-CABLE mapping back to the earlier VoiceMeeter routing scheme.
+- Deploy the current tested version to the Aliyun server for live validation without disturbing unrelated backend translation, ASR, TTS voice, or share-page behavior.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| zh-CN -> id compression threshold | Done and deployed | `OPENAI_COMPRESSION_MIN_TEXT_LENGTH` and backend default changed to `40`, so source text with 40+ Chinese characters can enter Indonesian compression. |
+| Indonesian compression prompt | Done and deployed | Replaced the previous "only delete filler" style prompt with a real-time Indonesian interpretation editor prompt that may safely merge repetition and rewrite awkward literal Indonesian while preserving facts, numbers, entities, decisions, and causal relations. |
+| Indonesian backend PCM speed | Done and deployed | `TTS_BACKEND_SPEED_ID` is now `1.1`, matching Chinese target output; Cartesia synthesis speed remains neutral. |
+| Indonesian synthesized unread skip | Implemented, pending deployment verification | Added `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` / `cartesia.tts.synthesized-indonesian-skip-wait-ms`, default `40000`. Only Indonesian target TTS that has already synthesized and then waits behind earlier audio longer than the threshold is skipped. |
+| Compression safety coverage | Done | Tests cover prompt content, default threshold, the inclusive 40-character boundary, terminology protection around compression, and over-compression fallback. |
+| Frontend audio output routing | Done and deployed | Host TTS playback now uses `VoiceMeeterOutput` and `VOICEMEETER` constants: zh -> `VoiceMeeter Input`, id -> `VoiceMeeter Aux Input`, en -> `VoiceMeeter VAIO3`. Runtime source no longer references `VB-CABLE`, `TTS_OUTPUT_CABLE`, or `CABLE-A`. |
+| Server deployment | Done | Backend deployment commit `8b381d4`; frontend VoiceMeeter deployment commit `9dae16c`; server branch `codex/zh-id-compression-prompt-threshold-40`; frontend assets synced to `/var/www/si`. |
+
+### Implementation Results
+
+- Backend compression and speed changes were committed in `8b381d4` and deployed to `8.215.98.126`.
+- Server environment now has `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
+- Backend synthesized Indonesian unread skip is implemented locally and logs `TTS synthesized skipped` with `reason=synthesized_wait_timeout` when the threshold is reached.
+- Frontend VoiceMeeter routing was committed in `9dae16c`, pushed to GitHub, built on the server, synced into `/var/www/si`, and nginx was reloaded.
+- Public frontend now references `/assets/index-BEAeQIh2.js`, whose bundle contains `VoiceMeeterOutput`.
+- `si-backend` remained healthy after the frontend deployment; no backend container restart was required for the frontend-only change.
+
+### Affected Modules
+
+- Backend integration/config: `LlmIntegration`, `OpenAiProperties`, `application.yml`, env templates.
+- Backend TTS speed and stale Indonesian playback queue control: `Constants`, `CartesiaProperties`, `RealtimeInterpretationFacade`, `TtsPcmSpeedServiceTest`, `RealtimeInterpretationOrderTest`, `CartesiaPropertiesTest`.
+- Backend translation compression coverage: `LlmRequestOptionsTest`, `TranslationTerminologyProtectionTest`.
+- Frontend host playback: `si-frontend/src/api/constants.ts`, `si-frontend/src/lib/voiceMeeterOutput.ts`, `si-frontend/src/views/InterpretationView.tsx`.
+- Deployment: `/opt/syncLingo`, `/var/www/si`, nginx reload.
+
+### Acceptance Criteria
+
+- zh-CN -> id source text below 40 characters does not call Indonesian compression; exactly 40 characters does call compression.
+- Indonesian compression prompt allows safe concise rewrite while preserving factual/business meaning and protected terminology.
+- TTS logs for Indonesian target output show `backendPcmSpeed=1.1`; Chinese target output remains `1.1`; English/default remains `1.0`.
+- If Indonesian target TTS has already synthesized but is still waiting behind earlier audio for more than `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` (default 40000 ms), backend logs `TTS synthesized skipped` and releases that queue slot without sending the stale audio. Non-Indonesian target TTS is not affected by this threshold.
+- Frontend static bundle contains `VoiceMeeterOutput` and VoiceMeeter device labels, and no longer contains VB-CABLE device labels.
+- Public health and frontend asset checks pass after deployment.
+
+### Residual Issues
+
+- Real VoiceMeeter audio routing still requires manual live validation on a host with VoiceMeeter installed, browser audio-device permission granted, and the expected `VoiceMeeter Input` / `VoiceMeeter Aux Input` / `VoiceMeeter VAIO3` devices visible to Chrome or Edge.
+- `npm ci` on the server still reports existing npm audit warnings. They did not block this deployment and were not introduced by the VoiceMeeter routing change.
+- The production Indonesian compression model is currently configured by server env as `google/gemini-2.5-flash-lite`; prompt behavior should be judged in a live zh-CN -> id meeting sample before deciding whether to tighten or loosen the prompt further.

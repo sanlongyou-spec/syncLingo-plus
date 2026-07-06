@@ -18,6 +18,7 @@ class CartesiaPropertiesTest {
 
         assertEquals(Constants.CARTESIA_TTS_MODEL, properties.getTts().getModelId());
         assertEquals("sonic-3.5", properties.getTts().getModelId());
+        assertEquals(40_000L, properties.getTts().getSynthesizedIndonesianSkipWaitMs());
     }
 
     @Test
@@ -35,6 +36,15 @@ class CartesiaPropertiesTest {
         ));
 
         assertEquals("sonic-3.5", properties.getTts().getModelId());
+    }
+
+    @Test
+    void bindsSynthesizedIndonesianSkipWait() {
+        CartesiaProperties properties = bind(Map.of(
+                "cartesia.tts.synthesized-indonesian-skip-wait-ms", "250"
+        ));
+
+        assertEquals(250L, properties.getTts().getSynthesizedIndonesianSkipWaitMs());
     }
 
     private static CartesiaProperties bind(Map<String, String> values) {
