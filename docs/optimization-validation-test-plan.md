@@ -2271,7 +2271,7 @@ Pass criteria:
 - Local frontend build passed:
   `cmd /c npm run build`.
 - Local built-frontend Chrome smoke test passed with title `聚龙同传系统`, login page rendered, and no startup console/page errors.
-- Server backend deployment passed at commit `8b381d4`; backend health returned `UP`; running env confirmed `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
+- Server backend deployment passed at commit `031abdf`; backend health returned `UP`; running env confirmed `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40` and `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=40000`.
 - Server frontend deployment passed at commit `9dae16c`; `npm ci && npm run build` succeeded; assets synced to `/var/www/si`; `nginx -t` succeeded; nginx reloaded and is active.
 - Public frontend verification passed: `/` references `/assets/index-BEAeQIh2.js`; deployed JS contains `VoiceMeeterOutput`; deployed JS does not contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
 - Residual unverified item: physical VoiceMeeter channel routing and audio listening quality still require a live browser/device test on the production host.

@@ -1971,16 +1971,16 @@ GET    /api/admin/audit-logs
 | zh-CN -> id compression threshold | Done and deployed | `OPENAI_COMPRESSION_MIN_TEXT_LENGTH` and backend default changed to `40`, so source text with 40+ Chinese characters can enter Indonesian compression. |
 | Indonesian compression prompt | Done and deployed | Replaced the previous "only delete filler" style prompt with a real-time Indonesian interpretation editor prompt that may safely merge repetition and rewrite awkward literal Indonesian while preserving facts, numbers, entities, decisions, and causal relations. |
 | Indonesian backend PCM speed | Done and deployed | `TTS_BACKEND_SPEED_ID` is now `1.1`, matching Chinese target output; Cartesia synthesis speed remains neutral. |
-| Indonesian synthesized unread skip | Implemented, pending deployment verification | Added `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` / `cartesia.tts.synthesized-indonesian-skip-wait-ms`, default `40000`. Only Indonesian target TTS that has already synthesized and then waits behind earlier audio longer than the threshold is skipped. |
+| Indonesian synthesized unread skip | Done and deployed | Added `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` / `cartesia.tts.synthesized-indonesian-skip-wait-ms`, default `40000`. Only Indonesian target TTS that has already synthesized and then waits behind earlier audio longer than the threshold is skipped. |
 | Compression safety coverage | Done | Tests cover prompt content, default threshold, the inclusive 40-character boundary, terminology protection around compression, and over-compression fallback. |
 | Frontend audio output routing | Done and deployed | Host TTS playback now uses `VoiceMeeterOutput` and `VOICEMEETER` constants: zh -> `VoiceMeeter Input`, id -> `VoiceMeeter Aux Input`, en -> `VoiceMeeter VAIO3`. Runtime source no longer references `VB-CABLE`, `TTS_OUTPUT_CABLE`, or `CABLE-A`. |
-| Server deployment | Done | Backend deployment commit `8b381d4`; frontend VoiceMeeter deployment commit `9dae16c`; server branch `codex/zh-id-compression-prompt-threshold-40`; frontend assets synced to `/var/www/si`. |
+| Server deployment | Done | Backend compression/speed deployment commit `8b381d4`; frontend VoiceMeeter deployment commit `9dae16c`; synthesized Indonesian unread skip deployment commit `031abdf`; server branch `codex/zh-id-compression-prompt-threshold-40`; frontend assets synced to `/var/www/si`. |
 
 ### Implementation Results
 
 - Backend compression and speed changes were committed in `8b381d4` and deployed to `8.215.98.126`.
 - Server environment now has `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
-- Backend synthesized Indonesian unread skip is implemented locally and logs `TTS synthesized skipped` with `reason=synthesized_wait_timeout` when the threshold is reached.
+- Backend synthesized Indonesian unread skip was committed in `031abdf` and deployed to `8.215.98.126`; server environment confirms `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=40000`.
 - Frontend VoiceMeeter routing was committed in `9dae16c`, pushed to GitHub, built on the server, synced into `/var/www/si`, and nginx was reloaded.
 - Public frontend now references `/assets/index-BEAeQIh2.js`, whose bundle contains `VoiceMeeterOutput`.
 - `si-backend` remained healthy after the frontend deployment; no backend container restart was required for the frontend-only change.
