@@ -1,4 +1,4 @@
-import { TTS_OUTPUT_CABLE, TTS_OUTPUT_SAMPLE_RATE } from '../api/constants'
+import { TTS_OUTPUT_SAMPLE_RATE, VOICEMEETER } from '../api/constants'
 import type { TtsPlaybackLog } from '../types'
 
 type OutputLang = 'zh' | 'id' | 'en'
@@ -23,19 +23,19 @@ interface OutputChannel {
 const SCHEDULE_LEAD_SECONDS = 0.08
 
 /**
- * Routes translated TTS PCM to per-language VB-CABLE output devices.
+ * Routes translated TTS PCM to per-language VoiceMeeter output devices.
  *
  * The browser is not used as a user-facing speaker. It is only the Web Audio
- * bridge that feeds CABLE Input / CABLE-A Input / CABLE-B Input.
+ * bridge that feeds VoiceMeeter Input / VoiceMeeter Aux Input / VoiceMeeter VAIO3.
  */
-export class VbCableOutput {
+export class VoiceMeeterOutput {
   constructor(private readonly playbackLogger?: PlaybackLogger) {}
 
   private context: AudioContext | null = null
   private readonly channels: Record<OutputLang, OutputChannel> = {
-    zh: VbCableOutput.emptyChannel(),
-    id: VbCableOutput.emptyChannel(),
-    en: VbCableOutput.emptyChannel(),
+    zh: VoiceMeeterOutput.emptyChannel(),
+    id: VoiceMeeterOutput.emptyChannel(),
+    en: VoiceMeeterOutput.emptyChannel(),
   }
   private monitorDest: MediaStreamAudioDestinationNode | null = null
   private monitorAudioEl: HTMLAudioElement | null = null
@@ -60,7 +60,7 @@ export class VbCableOutput {
     if (!this.context) {
       this.context = new AudioContext({ sampleRate: TTS_OUTPUT_SAMPLE_RATE })
       this.context.onstatechange = () => {
-        console.info('[VbCableOutput] AudioContext state=%s sampleRate=%d',
+        console.info('[VoiceMeeterOutput] AudioContext state=%s sampleRate=%d',
           this.context?.state ?? 'none', this.context?.sampleRate ?? 0)
       }
     }
@@ -70,7 +70,7 @@ export class VbCableOutput {
       if (channel.dest) continue
 
       channel.dest = ctx.createMediaStreamDestination()
-      channel.keepAlive = VbCableOutput.startSilentKeepAlive(ctx, channel.dest)
+      channel.keepAlive = VoiceMeeterOutput.startSilentKeepAlive(ctx, channel.dest)
 
       const el = new Audio()
       el.srcObject = channel.dest.stream
@@ -78,7 +78,7 @@ export class VbCableOutput {
       el.volume = 0
       el.onpause = () => {
         if (channel.sinkReady && channel.pending.size > 0) {
-          console.warn('[VbCableOutput] audio element paused with pending audio, lang=%s pending=%d',
+          console.warn('[VoiceMeeterOutput] audio element paused with pending audio, lang=%s pending=%d',
             lang, channel.pending.size)
           this.emit('audio_element_paused', lang, undefined, {}, {
             pendingCount: channel.pending.size,
@@ -89,7 +89,7 @@ export class VbCableOutput {
       }
       el.onended = () => {
         if (channel.sinkReady && channel.pending.size > 0) {
-          console.warn('[VbCableOutput] audio element ended with pending audio, lang=%s pending=%d',
+          console.warn('[VoiceMeeterOutput] audio element ended with pending audio, lang=%s pending=%d',
             lang, channel.pending.size)
           this.emit('audio_element_ended', lang, undefined, {}, {
             pendingCount: channel.pending.size,
@@ -99,7 +99,7 @@ export class VbCableOutput {
         }
       }
       el.onerror = () => {
-        console.warn('[VbCableOutput] audio element error, lang=%s code=%s message=%s',
+        console.warn('[VoiceMeeterOutput] audio element error, lang=%s code=%s message=%s',
           lang, el.error?.code ?? 'unknown', el.error?.message ?? '')
         this.emit('audio_element_error', lang, undefined, {}, {
           audioPaused: el.paused,
@@ -120,28 +120,34 @@ export class VbCableOutput {
 
     const outputs = (await navigator.mediaDevices.enumerateDevices())
       .filter(device => device.kind === 'audiooutput')
-    const cableOutputs = outputs.filter(device => device.label.toLowerCase().includes('cable'))
+    const voiceMeeterOutputs = outputs.filter(device => {
+      const label = device.label.toLowerCase()
+      return label.includes('voicemeeter') || label.includes('voice meeter')
+    })
 
-    const zhDevice = cableOutputs.find(device =>
-      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.ZH_DEVICE_LABEL.toLowerCase())
-      && !device.label.toLowerCase().includes('cable-a')
-      && !device.label.toLowerCase().includes('cable-b'),
-    )
-    const idDevice = cableOutputs.find(device =>
-      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.ID_DEVICE_LABEL.toLowerCase()),
-    ) || cableOutputs.find(device => device.label.toLowerCase().includes('cable-a'))
-    const enDevice = cableOutputs.find(device =>
-      device.label.toLowerCase().includes(TTS_OUTPUT_CABLE.EN_DEVICE_LABEL.toLowerCase()),
-    ) || cableOutputs.find(device => device.label.toLowerCase().includes('cable-b'))
+    const zhDevice = voiceMeeterOutputs.find(device =>
+      device.label.toLowerCase().includes(VOICEMEETER.ZH_DEVICE_LABEL.toLowerCase())
+      && !device.label.toLowerCase().includes('aux')
+      && !device.label.toLowerCase().includes('vaio3'),
+    ) || voiceMeeterOutputs.find(device => {
+      const label = device.label.toLowerCase()
+      return !label.includes('aux') && !label.includes('vaio3')
+    })
+    const idDevice = voiceMeeterOutputs.find(device =>
+      device.label.toLowerCase().includes(VOICEMEETER.ID_DEVICE_LABEL.toLowerCase()),
+    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('aux'))
+    const enDevice = voiceMeeterOutputs.find(device =>
+      device.label.toLowerCase().includes(VOICEMEETER.EN_DEVICE_LABEL.toLowerCase()),
+    ) || voiceMeeterOutputs.find(device => device.label.toLowerCase().includes('vaio3'))
 
-    console.log('[VbCableOutput] devices found:', cableOutputs.map(d => d.label))
-    console.log('[VbCableOutput] matched: zh="%s" id="%s" en="%s"',
+    console.log('[VoiceMeeterOutput] devices found:', voiceMeeterOutputs.map(d => d.label))
+    console.log('[VoiceMeeterOutput] matched: zh="%s" id="%s" en="%s"',
       zhDevice?.label ?? '(none)', idDevice?.label ?? '(none)', enDevice?.label ?? '(none)')
     this.emit('devices_matched', 'zh', undefined, {}, {
       detail: `zh=${zhDevice?.label ?? '(none)'}; id=${idDevice?.label ?? '(none)'}; en=${enDevice?.label ?? '(none)'}`,
     })
     if (zhDevice && idDevice && zhDevice.deviceId === idDevice.deviceId) {
-      console.error('[VbCableOutput] zh and id resolved to the same VB-CABLE device:', zhDevice.label)
+      console.error('[VoiceMeeterOutput] zh and id resolved to the same VoiceMeeter device:', zhDevice.label)
       this.emit('device_mapping_conflict', 'zh', undefined, {}, {
         detail: `zh and id resolved to ${zhDevice.label}`,
       })
@@ -150,7 +156,7 @@ export class VbCableOutput {
     this.channels.zh.sinkReady = zhDevice ? await this.setSink('zh', this.channels.zh, zhDevice) : false
     this.channels.id.sinkReady = idDevice ? await this.setSink('id', this.channels.id, idDevice) : false
     this.channels.en.sinkReady = enDevice ? await this.setSink('en', this.channels.en, enDevice) : false
-    console.log('[VbCableOutput] sinks applied, zh=%s id=%s en=%s',
+    console.log('[VoiceMeeterOutput] sinks applied, zh=%s id=%s en=%s',
       this.channels.zh.sinkReady, this.channels.id.sinkReady, this.channels.en.sinkReady)
     this.emit('sinks_applied', 'zh', undefined, {}, {
       detail: `zh=${this.channels.zh.sinkReady}; id=${this.channels.id.sinkReady}; en=${this.channels.en.sinkReady}`,
@@ -181,7 +187,7 @@ export class VbCableOutput {
   }
 
   play(pcmData: Int16Array, targetLang: string, meta: PlaybackMeta = {}): void {
-    const lang = VbCableOutput.resolveLang(targetLang)
+    const lang = VoiceMeeterOutput.resolveLang(targetLang)
     const channel = this.channels[lang]
     if (!this.context || !channel.dest || !channel.sinkReady) {
       this.logDroppedChunk('not_ready', lang, targetLang, meta)
@@ -218,7 +224,7 @@ export class VbCableOutput {
 
     source.onended = () => {
       channel.pending.delete(source)
-      console.debug('[VbCableOutput] chunk ended, lang=%s taskId=%s sequence=%s chunk=%s pending=%d',
+      console.debug('[VoiceMeeterOutput] chunk ended, lang=%s taskId=%s sequence=%s chunk=%s pending=%d',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', channel.pending.size)
     }
 
@@ -226,7 +232,7 @@ export class VbCableOutput {
       source.start(startAt)
     } catch (err) {
       channel.pending.delete(source)
-      console.warn('[VbCableOutput] source start failed, lang=%s taskId=%s sequence=%s chunk=%s',
+      console.warn('[VoiceMeeterOutput] source start failed, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
       this.emit('source_start_failed', lang, targetLang, meta, {
         durationMs,
@@ -242,12 +248,12 @@ export class VbCableOutput {
 
     channel.scheduleTime = startAt + buffer.duration
     this.scheduleMonitor(buffer, lang, targetLang, meta)
-    console.debug('[VbCableOutput] chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s',
+    console.debug('[VoiceMeeterOutput] chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s',
       lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '',
       durationMs, scheduledAheadMs, channel.pending.size, ctx.state)
 
-    if (VbCableOutput.shouldCheckpoint(meta)) {
-      console.info('[VbCableOutput] schedule checkpoint, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s audioPaused=%s',
+    if (VoiceMeeterOutput.shouldCheckpoint(meta)) {
+      console.info('[VoiceMeeterOutput] schedule checkpoint, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s durationMs=%d scheduledAheadMs=%d pending=%d contextState=%s audioPaused=%s',
         lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '',
         durationMs, scheduledAheadMs, channel.pending.size, ctx.state, channel.audioEl?.paused ?? true)
       this.emit('schedule_checkpoint', lang, targetLang, meta, {
@@ -269,7 +275,7 @@ export class VbCableOutput {
         ? Math.round(Math.max(0, channel.scheduleTime - this.context.currentTime) * 1000)
         : 0
       if (channel.pending.size > 0 || scheduledAheadMs > 0) {
-        console.warn('[VbCableOutput] stop clears queued audio, lang=%s pending=%d scheduledAheadMs=%d',
+        console.warn('[VoiceMeeterOutput] stop clears queued audio, lang=%s pending=%d scheduledAheadMs=%d',
           lang, channel.pending.size, scheduledAheadMs)
         this.emit('stop_clears_queued_audio', lang, undefined, {}, {
           scheduledAheadMs,
@@ -300,7 +306,7 @@ export class VbCableOutput {
   private async setSink(lang: OutputLang, channel: OutputChannel, device: MediaDeviceInfo): Promise<boolean> {
     const el = channel.audioEl
     if (!el || !('setSinkId' in el)) {
-      console.warn('[VbCableOutput] setSinkId unsupported, lang=%s', lang)
+      console.warn('[VoiceMeeterOutput] setSinkId unsupported, lang=%s', lang)
       this.emit('set_sink_unsupported', lang, undefined, {}, {
         sinkReady: false,
         detail: device.label,
@@ -313,7 +319,7 @@ export class VbCableOutput {
       el.autoplay = true
       await el.play()
       await this.resumeContext(lang)
-      console.log('[VbCableOutput] sink ready, lang=%s contextState=%s audioPaused=%s',
+      console.log('[VoiceMeeterOutput] sink ready, lang=%s contextState=%s audioPaused=%s',
         lang, this.context?.state ?? 'none', el.paused)
       this.emit('sink_ready', lang, undefined, {}, {
         contextState: this.context?.state ?? 'none',
@@ -323,7 +329,7 @@ export class VbCableOutput {
       })
       return true
     } catch (err) {
-      console.warn('[VbCableOutput] setSinkId/play failed, lang=%s:', lang, err)
+      console.warn('[VoiceMeeterOutput] setSinkId/play failed, lang=%s:', lang, err)
       this.emit('set_sink_failed', lang, undefined, {}, {
         contextState: this.context?.state ?? 'none',
         audioPaused: el.paused,
@@ -368,12 +374,12 @@ export class VbCableOutput {
       await el.play()
       await this.resumeContext(language)
       this.monitorSinkReady = true
-      console.log('[VbCableOutput] monitor ready, lang=%s deviceId=%s',
+      console.log('[VoiceMeeterOutput] monitor ready, lang=%s deviceId=%s',
         language, this.monitorDeviceId || 'default')
       return true
     } catch (err) {
       this.monitorSinkReady = false
-      console.warn('[VbCableOutput] monitor output failed, lang=%s deviceId=%s:',
+      console.warn('[VoiceMeeterOutput] monitor output failed, lang=%s deviceId=%s:',
         language, this.monitorDeviceId || 'default', err)
       return false
     }
@@ -399,7 +405,7 @@ export class VbCableOutput {
       if (this.monitorAudioEl.paused || this.monitorAudioEl.ended) {
         void this.monitorAudioEl.play().catch(err => {
           this.monitorSinkReady = false
-          console.warn('[VbCableOutput] monitor audio element resume failed:', err)
+          console.warn('[VoiceMeeterOutput] monitor audio element resume failed:', err)
         })
       }
       void this.resumeContext(lang, meta)
@@ -411,10 +417,10 @@ export class VbCableOutput {
       this.monitorScheduleTime = startAt + buffer.duration
       this.monitorPending.add(source)
       source.onended = () => this.monitorPending.delete(source)
-      console.debug('[VbCableOutput] monitor chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
+      console.debug('[VoiceMeeterOutput] monitor chunk scheduled, lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
         lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
     } catch (err) {
-      console.warn('[VbCableOutput] monitor schedule failed, lang=%s targetLang=%s:', lang, targetLang, err)
+      console.warn('[VoiceMeeterOutput] monitor schedule failed, lang=%s targetLang=%s:', lang, targetLang, err)
     }
   }
 
@@ -450,7 +456,7 @@ export class VbCableOutput {
     el.autoplay = true
     void el.play()
       .then(() => {
-        console.warn('[VbCableOutput] resumed audio element, lang=%s taskId=%s sequence=%s chunk=%s',
+        console.warn('[VoiceMeeterOutput] resumed audio element, lang=%s taskId=%s sequence=%s chunk=%s',
           lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
         this.emit('audio_element_resumed', lang, targetLang, meta, {
           pendingCount: channel.pending.size,
@@ -459,7 +465,7 @@ export class VbCableOutput {
         })
       })
       .catch(err => {
-        console.warn('[VbCableOutput] resume audio element failed, lang=%s taskId=%s sequence=%s chunk=%s',
+        console.warn('[VoiceMeeterOutput] resume audio element failed, lang=%s taskId=%s sequence=%s chunk=%s',
           lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
         this.emit('audio_element_resume_failed', lang, targetLang, meta, {
           pendingCount: channel.pending.size,
@@ -475,14 +481,14 @@ export class VbCableOutput {
     if (!ctx || ctx.state !== 'suspended') return
     try {
       await ctx.resume()
-      console.warn('[VbCableOutput] resumed AudioContext, lang=%s taskId=%s sequence=%s chunk=%s',
+      console.warn('[VoiceMeeterOutput] resumed AudioContext, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
       this.emit('audio_context_resumed', lang, undefined, meta, {
         contextState: ctx.state,
         sampleRate: ctx.sampleRate,
       })
     } catch (err) {
-      console.warn('[VbCableOutput] resume AudioContext failed, lang=%s taskId=%s sequence=%s chunk=%s',
+      console.warn('[VoiceMeeterOutput] resume AudioContext failed, lang=%s taskId=%s sequence=%s chunk=%s',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', err)
       this.emit('audio_context_resume_failed', lang, undefined, meta, {
         contextState: ctx.state,
@@ -525,7 +531,7 @@ export class VbCableOutput {
     targetLang: string,
     meta: PlaybackMeta,
   ): void {
-    console.warn('[VbCableOutput] drop chunk, reason=%s lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
+    console.warn('[VoiceMeeterOutput] drop chunk, reason=%s lang=%s targetLang=%s taskId=%s sequence=%s chunk=%s',
       reason, lang, targetLang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '')
     this.emit('drop_chunk', lang, targetLang, meta, {
       reason,

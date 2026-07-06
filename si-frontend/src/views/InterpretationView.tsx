@@ -17,8 +17,8 @@ import { AUDIO_DEFAULTS } from '../api/constants'
 import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import FontSizeControl from '../components/FontSizeControl'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
-import { VbCableOutput } from '../lib/vbCableOutput'
-import type { TtsMonitorLanguage } from '../lib/vbCableOutput'
+import { VoiceMeeterOutput } from '../lib/voiceMeeterOutput'
+import type { TtsMonitorLanguage } from '../lib/voiceMeeterOutput'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
@@ -110,7 +110,7 @@ export default function InterpretationView() {
 
   const wsRef = useRef<AsrWebSocket | null>(null)
   const audioRef = useRef<AudioCapture | null>(null)
-  const vbCableRef = useRef<VbCableOutput | null>(null)
+  const voiceMeeterRef = useRef<VoiceMeeterOutput | null>(null)
   /** 每个 TTS 任务已播放到的 chunkIndex，用于丢弃重复块并告警疑似缺块。 */
   const ttsChunkIndexByTaskRef = useRef<Map<string, number>>(new Map())
   const sessionIdRef = useRef<string | null>(null)
@@ -179,8 +179,8 @@ export default function InterpretationView() {
       wsRef.current?.close()
       audioRef.current?.stop()
       audioRef.current = null
-      vbCableRef.current?.stop()
-      vbCableRef.current = null
+      voiceMeeterRef.current?.stop()
+      voiceMeeterRef.current = null
     }
   }, [])
 
@@ -258,13 +258,13 @@ export default function InterpretationView() {
   const handleMonitorLanguageChange = (language: TtsMonitorLanguage) => {
     setMonitorLanguage(language)
     monitorLanguageRef.current = language
-    void vbCableRef.current?.setMonitor(language, monitorDeviceIdRef.current)
+    void voiceMeeterRef.current?.setMonitor(language, monitorDeviceIdRef.current)
   }
 
   const handleMonitorDeviceChange = (deviceId: string) => {
     setMonitorDeviceId(deviceId)
     monitorDeviceIdRef.current = deviceId
-    void vbCableRef.current?.setMonitor(monitorLanguageRef.current, deviceId)
+    void voiceMeeterRef.current?.setMonitor(monitorLanguageRef.current, deviceId)
   }
 
   const reportTtsPlaybackLog = useCallback((event: TtsPlaybackLog) => {
@@ -377,7 +377,7 @@ export default function InterpretationView() {
       }
       case 'tts_audio': {
         if (msg.audioBase64 && msg.targetLanguage) {
-          // Track duplicate/missing TTS chunks before routing PCM to VB-CABLE.
+          // Track duplicate/missing TTS chunks before routing PCM to VoiceMeeter.
           if (msg.ttsTaskId && typeof msg.chunkIndex === 'number') {
             const lastIndex = ttsChunkIndexByTaskRef.current.get(msg.ttsTaskId) ?? -1
             if (msg.chunkIndex === 0) {
@@ -411,7 +411,7 @@ export default function InterpretationView() {
           const binary = atob(msg.audioBase64)
           const bytes = new Uint8Array(binary.length)
           for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-          vbCableRef.current?.play(
+          voiceMeeterRef.current?.play(
             new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2)),
             msg.targetLanguage,
             {
@@ -470,21 +470,21 @@ export default function InterpretationView() {
     ws.onMessage(handleWsMessage)
     ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
 
-    // Confirm VB-CABLE outputs before starting capture; never fall back to the default speaker.
-    const vbCable = new VbCableOutput(event => {
+    // Confirm VoiceMeeter outputs before starting capture; never fall back to the default speaker.
+    const voiceMeeter = new VoiceMeeterOutput(event => {
       ws.sendTtsPlaybackLog(sessionIdRef.current || sid, event)
     })
 
-    vbCableRef.current = vbCable
+    voiceMeeterRef.current = voiceMeeter
     ttsChunkIndexByTaskRef.current.clear()
-    await vbCable.init()
-    await vbCable.applySinks()
-    if (!vbCable.isReady()) {
-      vbCable.stop()
-      vbCableRef.current = null
-      throw new Error('未检测到就绪的 VB-CABLE 输出设备（中文需「CABLE Input」、印尼语需「CABLE-A Input」）。请先安装 VB-CABLE 并授予浏览器音频设备权限后再开始。')
+    await voiceMeeter.init()
+    await voiceMeeter.applySinks()
+    if (!voiceMeeter.isReady()) {
+      voiceMeeter.stop()
+      voiceMeeterRef.current = null
+      throw new Error('未检测到就绪的 VoiceMeeter 输出设备（中文需 VoiceMeeter Input，印尼语需 VoiceMeeter Aux Input）。请先启动并配置 VoiceMeeter，并授予浏览器音频设备权限后再开始。')
     }
-    await vbCable.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
+    await voiceMeeter.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
     void refreshAudioOutputs()
 
     const audio = new AudioCapture({
@@ -548,8 +548,8 @@ export default function InterpretationView() {
     wsRef.current?.stop(sid)
     audioRef.current?.stop()
     audioRef.current = null
-    vbCableRef.current?.stop()
-    vbCableRef.current = null
+    voiceMeeterRef.current?.stop()
+    voiceMeeterRef.current = null
     ttsChunkIndexByTaskRef.current.clear()
     await stopInterpretation(sid).then(res => {
       const warning = res?.data?.budgetWarning as string | undefined
