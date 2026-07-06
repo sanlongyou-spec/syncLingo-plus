@@ -41,4 +41,25 @@ class LlmRequestOptionsTest {
 
         assertEquals("test/non-reasoning", properties.effectiveExtractionModel());
     }
+
+    @Test
+    void indonesianCompressionPromptAllowsSafeRewriteAndUsesConfiguredRatio() {
+        OpenAiProperties properties = new OpenAiProperties();
+        properties.setCompressionZhToIdTargetRatio(0.6);
+        LlmIntegration llmIntegration = new LlmIntegration(properties);
+
+        String prompt = llmIntegration.buildIndonesianCompressionPrompt();
+
+        assertTrue(prompt.contains("real-time Indonesian interpretation editor"));
+        assertTrue(prompt.contains("Rewrite the already-translated Indonesian text"));
+        assertTrue(prompt.contains("Merge duplicated ideas into one concise clause"));
+        assertTrue(prompt.contains("Preserve all names, organizations, systems, places, numbers"));
+        assertTrue(prompt.contains("60%"));
+        assertFalse(prompt.contains("Do NOT rephrase or rewrite the original meaning"));
+    }
+
+    @Test
+    void compressionMinTextLengthDefaultsToFortyCharacters() {
+        assertEquals(40, new OpenAiProperties().getCompressionMinTextLength());
+    }
 }

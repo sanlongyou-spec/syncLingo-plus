@@ -39,24 +39,34 @@ public class LlmIntegration {
     private static final ChatRequestOptions NO_REASONING_CHAT_OPTIONS = new ChatRequestOptions(true);
 
     private static final String INDONESIAN_COMPRESSION_PROMPT_TEMPLATE =
-            "You are a simultaneous interpretation compression model.\n\n"
-            + "Task: Compress the already-translated Indonesian text into a concise real-time interpretation version.\n\n"
+            "You are a real-time Indonesian interpretation editor.\n\n"
+            + "Task:\n"
+            + "Rewrite the already-translated Indonesian text into a shorter, natural spoken version "
+            + "for live simultaneous interpretation.\n\n"
             + "[Input Rules]\n"
-            + "- The input text is already in Indonesian. Do NOT translate again.\n"
-            + "- Preserve all proper nouns unchanged.\n\n"
-            + "[Strict Constraints]\n"
-            + "1. Do NOT rephrase or rewrite the original meaning.\n"
-            + "2. Do NOT add any information not present in the input.\n"
-            + "3. Do NOT add explanations, summaries, or conclusions.\n"
-            + "4. Do NOT add emotional or dramatic expressions.\n"
-            + "5. Delete podcast promotion, sponsorship, subscription, rating, and call-to-action text.\n"
-            + "6. Do not change tone or expression style.\n\n"
+            + "- The input is already Indonesian. Do NOT translate to another language.\n"
+            + "- The input may come from Chinese ASR + machine translation, so it may contain repetition, "
+            + "false starts, awkward wording, or literal translated filler.\n\n"
+            + "[Must Preserve]\n"
+            + "- Preserve all names, organizations, systems, places, numbers, dates, percentages, money, KPIs, "
+            + "actions, decisions, requirements, and causal relationships.\n"
+            + "- Preserve the speaker's main intent and business meaning.\n"
+            + "- Do not invent information.\n\n"
             + "[Compression Rules]\n"
-            + "- Only delete fillers, repetition, weak modifiers, and non-essential promotional wording.\n"
-            + "- Preserve all facts, actions, entities, numbers, and results.\n"
-            + "- Keep the original order.\n"
-            + "- Target length: keep about %s of the original length when possible.\n\n"
-            + "Output only the compressed text, no explanation.";
+            + "- Compress aggressively but safely.\n"
+            + "- Remove filler words, hesitation, repeated words, repeated clauses, self-corrections, "
+            + "and weak discourse markers.\n"
+            + "- Merge duplicated ideas into one concise clause.\n"
+            + "- Rewrite awkward literal translation into natural Indonesian if it makes the sentence shorter and clearer.\n"
+            + "- Prefer direct spoken Indonesian over formal written style.\n"
+            + "- If two clauses say the same thing, keep only the clearer one.\n"
+            + "- If a detail is vague filler and not needed for business meaning, remove it.\n"
+            + "- Target length: keep about %s of the original length when possible.\n"
+            + "- If the input is already very short or every detail is essential, return a minimally shortened version.\n\n"
+            + "[Output]\n"
+            + "Output only the compressed Indonesian text.\n"
+            + "No explanation.\n"
+            + "No bullet points unless the input itself is a list.";
 
     private static final String ENGLISH_COMPRESSION_PROMPT_TEMPLATE =
             "You are a simultaneous interpretation compression model.\n\n"
@@ -289,10 +299,7 @@ public class LlmIntegration {
      * @throws IOException when OpenAI does not return usable text
      */
     public String compressIndonesian(String text) throws IOException {
-        return compress(text, "zh->id", buildPrompt(
-                INDONESIAN_COMPRESSION_PROMPT_TEMPLATE,
-                openAiProperties.getCompressionZhToIdTargetRatio()
-        ));
+        return compress(text, "zh->id", buildIndonesianCompressionPrompt());
     }
 
     public String compressEnglish(String text) throws IOException {
@@ -300,6 +307,13 @@ public class LlmIntegration {
                 ENGLISH_COMPRESSION_PROMPT_TEMPLATE,
                 openAiProperties.getCompressionZhToEnTargetRatio()
         ));
+    }
+
+    String buildIndonesianCompressionPrompt() {
+        return buildPrompt(
+                INDONESIAN_COMPRESSION_PROMPT_TEMPLATE,
+                openAiProperties.getCompressionZhToIdTargetRatio()
+        );
     }
 
     private String compress(String text, String direction, String prompt) throws IOException {

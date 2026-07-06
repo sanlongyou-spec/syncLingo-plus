@@ -141,7 +141,7 @@ openai:
   referer: ${OPENAI_REFERER:}
   title: ${OPENAI_TITLE:syncLingo-plus}
   compression-enabled: ${OPENAI_COMPRESSION_ENABLED:true}
-  compression-min-text-length: ${OPENAI_COMPRESSION_MIN_TEXT_LENGTH:20}
+  compression-min-text-length: ${OPENAI_COMPRESSION_MIN_TEXT_LENGTH:40}
   compression-model: ${OPENAI_COMPRESSION_MODEL:anthropic/claude-haiku-4.5}
   compression-zh-to-id-target-ratio: ${OPENAI_COMPRESSION_ZH_TO_ID_TARGET_RATIO:0.60}
   compression-zh-to-en-enabled: ${OPENAI_COMPRESSION_ZH_TO_EN_ENABLED:true}
