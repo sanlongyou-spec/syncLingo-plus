@@ -2178,7 +2178,7 @@ Pass criteria:
 - Prove zh-CN -> id Indonesian compression now starts at the inclusive 40-character source-text boundary.
 - Prove the new Indonesian compression prompt is active and no longer uses the previous conservative "do not rephrase" instruction.
 - Prove Indonesian target TTS uses backend PCM speed `1.1` after the latest speed adjustment.
-- Prove Indonesian target TTS that has already synthesized can be skipped only after the configured 40-second unread wait, and that non-Indonesian target TTS is not affected.
+- Prove Indonesian target TTS that has already synthesized can be skipped only after the configured 80-second unread wait, and that non-Indonesian target TTS is not affected.
 - Prove the deployed host frontend uses VoiceMeeter device routing instead of VB-CABLE routing.
 - Prove deployment did not break public frontend loading, nginx, or backend health.
 
@@ -2202,7 +2202,7 @@ Pass criteria:
 
 - Server `HEAD` is `9dae16c` or a later commit that contains the same `2026-W28` routing and compression changes.
 - `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40` is present in the running backend container.
-- `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=40000` is present in the running backend container, or Spring config default remains `40000`.
+- `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000` is present in the running backend container, or Spring config default remains `80000`.
 - zh-CN -> id live logs with a source text length of 40+ characters show `compress start, direction=zh->id`; shorter source spans do not call compression.
 - Indonesian target TTS logs show `backendPcmSpeed=1.1`.
 - Under backlog, Indonesian target logs may show `TTS synthesized skipped ... reason=synthesized_wait_timeout` only after synthesized audio waited longer than the configured threshold; the skipped item must have no `tts-first-chunk-sent`.
@@ -2227,7 +2227,7 @@ Pass criteria:
 - `TranslationTerminologyProtectionTest.compressionThresholdUsesFortySourceCharactersInclusively` proves 39 Chinese characters skip compression and 40 characters call `compressIndonesian`.
 - `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID` and `zh-CN` forward 1000 ms PCM as about 909 ms, while `en-US` stays 1000 ms.
 - `RealtimeInterpretationOrderTest.synthesizedIndonesianAudioSkipsAfterConfiguredUnreadWait` proves already-synthesized Indonesian audio can be skipped after the configured unread wait; `synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget` proves the threshold does not affect Chinese target audio.
-- `CartesiaPropertiesTest` proves the default synthesized Indonesian unread skip wait is 40000 ms and the Spring property binding works.
+- `CartesiaPropertiesTest` proves the default synthesized Indonesian unread skip wait is 80000 ms and the Spring property binding works.
 - Full backend test suite passes.
 - Frontend TypeScript and Vite production build pass after renaming `vbCableOutput.ts` to `voiceMeeterOutput.ts`.
 
@@ -2271,7 +2271,7 @@ Pass criteria:
 - Local frontend build passed:
   `cmd /c npm run build`.
 - Local built-frontend Chrome smoke test passed with title `聚龙同传系统`, login page rendered, and no startup console/page errors.
-- Server backend deployment passed at commit `031abdf`; backend health returned `UP`; running env confirmed `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40` and `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=40000`.
+- Server backend deployment passed at commit `031abdf`; backend health returned `UP`; running env confirmed `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`; synthesized Indonesian unread wait was later raised to `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000`.
 - Server frontend deployment passed at commit `9dae16c`; `npm ci && npm run build` succeeded; assets synced to `/var/www/si`; `nginx -t` succeeded; nginx reloaded and is active.
 - Public frontend verification passed: `/` references `/assets/index-BEAeQIh2.js`; deployed JS contains `VoiceMeeterOutput`; deployed JS does not contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
 - Residual unverified item: physical VoiceMeeter channel routing and audio listening quality still require a live browser/device test on the production host.

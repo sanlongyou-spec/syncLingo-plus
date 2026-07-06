@@ -37,7 +37,7 @@ public class CartesiaProperties {
          * 折中默认 150ms：明显降低短句怪音,首音延迟仅略增。
          */
         private int maxBufferDelayMs = 150;
-        private long synthesizedIndonesianSkipWaitMs = 40_000L;
+        private long synthesizedIndonesianSkipWaitMs = 80_000L;
 
         public String getModelId() {
             return firstNonBlank(modelId, model, Constants.CARTESIA_TTS_MODEL);

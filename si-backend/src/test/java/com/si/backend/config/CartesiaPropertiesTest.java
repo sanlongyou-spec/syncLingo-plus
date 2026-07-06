@@ -18,7 +18,7 @@ class CartesiaPropertiesTest {
 
         assertEquals(Constants.CARTESIA_TTS_MODEL, properties.getTts().getModelId());
         assertEquals("sonic-3.5", properties.getTts().getModelId());
-        assertEquals(40_000L, properties.getTts().getSynthesizedIndonesianSkipWaitMs());
+        assertEquals(80_000L, properties.getTts().getSynthesizedIndonesianSkipWaitMs());
     }
 
     @Test
