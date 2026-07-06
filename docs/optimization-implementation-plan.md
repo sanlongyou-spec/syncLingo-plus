@@ -1974,13 +1974,13 @@ GET    /api/admin/audit-logs
 | Indonesian synthesized unread skip | Done and deployed | Added `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` / `cartesia.tts.synthesized-indonesian-skip-wait-ms`, default `80000`. Only Indonesian target TTS that has already synthesized and then waits behind earlier audio longer than the threshold is skipped. |
 | Compression safety coverage | Done | Tests cover prompt content, default threshold, the inclusive 40-character boundary, terminology protection around compression, and over-compression fallback. |
 | Frontend audio output routing | Done and deployed | Host TTS playback now uses `VoiceMeeterOutput` and `VOICEMEETER` constants: zh -> `VoiceMeeter Input`, id -> `VoiceMeeter Aux Input`, en -> `VoiceMeeter VAIO3`. Runtime source no longer references `VB-CABLE`, `TTS_OUTPUT_CABLE`, or `CABLE-A`. |
-| Server deployment | Done | Backend compression/speed deployment commit `8b381d4`; frontend VoiceMeeter deployment commit `9dae16c`; synthesized Indonesian unread skip deployment commit `031abdf`; server branch `codex/zh-id-compression-prompt-threshold-40`; frontend assets synced to `/var/www/si`. |
+| Server deployment | Done | Backend compression/speed deployment commit `8b381d4`; frontend VoiceMeeter deployment commit `9dae16c`; synthesized Indonesian unread skip deployment commit `031abdf`; synthesized skip wait raised to 80000 ms in backend deployment commit `a4abfa3`; server branch `codex/zh-id-compression-prompt-threshold-40`; frontend assets synced to `/var/www/si`. |
 
 ### Implementation Results
 
 - Backend compression and speed changes were committed in `8b381d4` and deployed to `8.215.98.126`.
 - Server environment now has `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
-- Backend synthesized Indonesian unread skip was committed in `031abdf` and deployed to `8.215.98.126`; the unread wait was later raised from 40000 ms to 80000 ms for live testing.
+- Backend synthesized Indonesian unread skip was committed in `031abdf` and deployed to `8.215.98.126`; the unread wait was later raised from 40000 ms to 80000 ms in commit `a4abfa3`, rebuilt as `si-backend:a4abfa3`, and the running container confirms `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000`.
 - Frontend VoiceMeeter routing was committed in `9dae16c`, pushed to GitHub, built on the server, synced into `/var/www/si`, and nginx was reloaded.
 - Public frontend now references `/assets/index-BEAeQIh2.js`, whose bundle contains `VoiceMeeterOutput`.
 - `si-backend` remained healthy after the frontend deployment; no backend container restart was required for the frontend-only change.
