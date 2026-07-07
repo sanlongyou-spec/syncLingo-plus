@@ -49,9 +49,9 @@ class RealtimeInterpretationOrderTest {
 
     @Test
     void targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral() throws Exception {
-        assertTtsSpeedForTarget("id", 1.0, 48_000);
-        assertTtsSpeedForTarget("id-ID", 1.0, 48_000);
-        assertTtsSpeedForTarget("zh-CN", 1.0, 43_638);
+        assertTtsSpeedForTarget("id", 1.0, 43_638);
+        assertTtsSpeedForTarget("id-ID", 1.0, 43_638);
+        assertTtsSpeedForTarget("zh-CN", 1.0, 45_716);
         assertTtsSpeedForTarget("en-US", 1.0, 48_000);
     }
 

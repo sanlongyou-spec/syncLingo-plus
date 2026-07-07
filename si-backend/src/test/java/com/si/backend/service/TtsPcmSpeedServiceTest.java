@@ -15,9 +15,9 @@ class TtsPcmSpeedServiceTest {
     void resolvesBackendSpeedByTargetLanguage() {
         TtsPcmSpeedService service = new TtsPcmSpeedService();
 
-        assertEquals(1.0, service.resolveBackendSpeed("id"), 0.0001);
-        assertEquals(1.0, service.resolveBackendSpeed("id-ID"), 0.0001);
-        assertEquals(1.1, service.resolveBackendSpeed("zh-CN"), 0.0001);
+        assertEquals(1.1, service.resolveBackendSpeed("id"), 0.0001);
+        assertEquals(1.1, service.resolveBackendSpeed("id-ID"), 0.0001);
+        assertEquals(1.05, service.resolveBackendSpeed("zh-CN"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
     }
 
@@ -34,28 +34,27 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void indonesianBackendSpeedKeepsOneSecondPcmAtNaturalSpeed() {
+    void indonesianBackendSpeedUsesPreviousOnePointOneOutputRate() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("id-ID");
 
         byte[] pcm = oneSecondPcm();
         byte[] output = processor.process(pcm);
 
-        assertSame(pcm, output);
-        assertEquals(48_000, output.length);
-        assertEquals(1_000L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
+        assertEquals(43_638, output.length);
+        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
-    void chineseBackendSpeedUsesPreviousOnePointOneOutputRate() {
+    void chineseBackendSpeedUsesOnePointZeroFiveOutputRate() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("zh-CN");
 
         byte[] pcm = oneSecondPcm();
         byte[] output = processor.process(pcm);
 
-        assertEquals(43_638, output.length);
-        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
+        assertEquals(45_716, output.length);
+        assertEquals(952L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
