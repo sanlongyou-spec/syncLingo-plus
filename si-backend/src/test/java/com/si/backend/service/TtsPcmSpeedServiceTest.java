@@ -2,7 +2,6 @@ package com.si.backend.service;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -17,7 +16,7 @@ class TtsPcmSpeedServiceTest {
 
         assertEquals(1.1, service.resolveBackendSpeed("id"), 0.0001);
         assertEquals(1.1, service.resolveBackendSpeed("id-ID"), 0.0001);
-        assertEquals(1.05, service.resolveBackendSpeed("zh-CN"), 0.0001);
+        assertEquals(1.1, service.resolveBackendSpeed("zh-CN"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
     }
 
@@ -46,37 +45,28 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void chineseBackendSpeedUsesOnePointZeroFiveOutputRate() {
+    void chineseBackendSpeedUsesPreviousOnePointOneOutputRate() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("zh-CN");
 
         byte[] pcm = oneSecondPcm();
         byte[] output = processor.process(pcm);
 
-        assertEquals(45_716, output.length);
-        assertEquals(952L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
+        assertEquals(43_638, output.length);
+        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
-    void neutralSpeedCarriesOddPcmByteIntoNextChunk() {
+    void neutralSpeedReturnsOddPcmChunkUnchanged() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("en-US");
 
         byte[] first = new byte[]{1};
         byte[] second = new byte[]{2, 3, 4};
 
-        assertEquals(0, processor.process(first).length);
-        assertArrayEquals(new byte[]{1, 2, 3, 4}, processor.process(second));
+        assertSame(first, processor.process(first));
+        assertSame(second, processor.process(second));
         assertEquals(0, processor.finish().length);
-    }
-
-    @Test
-    void neutralSpeedReturnsAlignedPrefixAndCachesTrailingByte() {
-        TtsPcmSpeedService.PcmSpeedProcessor processor =
-                new TtsPcmSpeedService().processor("en-US");
-
-        assertArrayEquals(new byte[]{1, 2}, processor.process(new byte[]{1, 2, 3}));
-        assertArrayEquals(new byte[]{3, 4}, processor.process(new byte[]{4}));
     }
 
     private static byte[] oneSecondPcm() {
