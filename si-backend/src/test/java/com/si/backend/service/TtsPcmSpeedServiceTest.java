@@ -2,6 +2,7 @@ package com.si.backend.service;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -59,16 +60,25 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void neutralIndonesianSpeedReturnsOddPcmChunkUnchanged() {
+    void neutralSpeedCarriesOddPcmByteIntoNextChunk() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
-                new TtsPcmSpeedService().processor("id-ID");
+                new TtsPcmSpeedService().processor("zh-CN");
 
         byte[] first = new byte[]{1};
         byte[] second = new byte[]{2, 3, 4};
 
-        assertSame(first, processor.process(first));
-        assertSame(second, processor.process(second));
+        assertEquals(0, processor.process(first).length);
+        assertArrayEquals(new byte[]{1, 2, 3, 4}, processor.process(second));
         assertEquals(0, processor.finish().length);
+    }
+
+    @Test
+    void neutralSpeedReturnsAlignedPrefixAndCachesTrailingByte() {
+        TtsPcmSpeedService.PcmSpeedProcessor processor =
+                new TtsPcmSpeedService().processor("zh-CN");
+
+        assertArrayEquals(new byte[]{1, 2}, processor.process(new byte[]{1, 2, 3}));
+        assertArrayEquals(new byte[]{3, 4}, processor.process(new byte[]{4}));
     }
 
     private static byte[] oneSecondPcm() {
