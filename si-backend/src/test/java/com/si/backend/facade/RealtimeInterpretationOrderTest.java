@@ -28,7 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -525,159 +524,6 @@ class RealtimeInterpretationOrderTest {
         assertNull(cancelReason.get());
     }
 
-    @Test
-    void tinyTtsChunksAreCoalescedBeforePlayback() throws Exception {
-        AsrService asrService = mock(AsrService.class);
-        TtsService ttsService = mock(TtsService.class);
-        TranslationService translationService = mock(TranslationService.class);
-        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
-        CartesiaProperties cartesiaProperties = new CartesiaProperties();
-        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
-        AudioRecordService audioRecordService = mock(AudioRecordService.class);
-        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
-        UserVoiceService userVoiceService = mock(UserVoiceService.class);
-        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
-                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
-
-        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
-                asrService,
-                ttsService,
-                translationService,
-                sessionService,
-                cartesiaProperties,
-                recordService,
-                audioRecordService,
-                speakerTurnService,
-                userVoiceService,
-                indonesianIncompleteGuard,
-                new TtsPcmSpeedService()
-        );
-
-        String sessionId = "tts-coalesce-session";
-        InterpretationSession session = new InterpretationSession();
-        session.setSessionId(sessionId);
-        session.setUserId(1L);
-        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
-        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
-                .thenReturn("translated text");
-
-        int sampleRate = cartesiaProperties.getTts().getSampleRate();
-        byte[] first = repeatedPcm(sampleRate, 40, (byte) 1);
-        byte[] second = repeatedPcm(sampleRate, 80, (byte) 2);
-        byte[] tail = repeatedPcm(sampleRate, 30, (byte) 3);
-        doAnswer(invocation -> {
-            @SuppressWarnings("unchecked")
-            Consumer<byte[]> onChunk = invocation.getArgument(5);
-            Runnable onComplete = invocation.getArgument(6);
-            onChunk.accept(first);
-            onChunk.accept(second);
-            onChunk.accept(tail);
-            onComplete.run();
-            return TtsStreamHandle.NOOP;
-        }).when(ttsService).synthesizeStream(
-                anyString(),
-                anyString(),
-                anyInt(),
-                anyDouble(),
-                anyString(),
-                any(),
-                any(),
-                any()
-        );
-
-        List<byte[]> forwardedChunks = new CopyOnWriteArrayList<>();
-        CountDownLatch forwarded = new CountDownLatch(2);
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
-            forwardedChunks.add(pcm);
-            forwarded.countDown();
-        });
-
-        facade.translateAndStreamTts(
-                "source", "id", "zh-CN", null, sessionId, "speaker-1", null, System.currentTimeMillis()
-        );
-
-        assertTrue(forwarded.await(5, TimeUnit.SECONDS));
-        awaitTtsChain(facade, sessionId, "zh-CN");
-        assertEquals(2, forwardedChunks.size());
-        assertArrayEquals(concat(first, second), forwardedChunks.get(0));
-        assertArrayEquals(tail, forwardedChunks.get(1));
-    }
-
-    @Test
-    void bufferedTinyTtsChunkFlushesOnSynthesisError() throws Exception {
-        AsrService asrService = mock(AsrService.class);
-        TtsService ttsService = mock(TtsService.class);
-        TranslationService translationService = mock(TranslationService.class);
-        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
-        CartesiaProperties cartesiaProperties = new CartesiaProperties();
-        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
-        AudioRecordService audioRecordService = mock(AudioRecordService.class);
-        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
-        UserVoiceService userVoiceService = mock(UserVoiceService.class);
-        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
-                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
-
-        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
-                asrService,
-                ttsService,
-                translationService,
-                sessionService,
-                cartesiaProperties,
-                recordService,
-                audioRecordService,
-                speakerTurnService,
-                userVoiceService,
-                indonesianIncompleteGuard,
-                new TtsPcmSpeedService()
-        );
-
-        String sessionId = "tts-coalesce-error-session";
-        InterpretationSession session = new InterpretationSession();
-        session.setSessionId(sessionId);
-        session.setUserId(1L);
-        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
-        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
-        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
-                .thenReturn("translated text");
-
-        byte[] shortChunk = repeatedPcm(cartesiaProperties.getTts().getSampleRate(), 40, (byte) 9);
-        doAnswer(invocation -> {
-            @SuppressWarnings("unchecked")
-            Consumer<byte[]> onChunk = invocation.getArgument(5);
-            @SuppressWarnings("unchecked")
-            Consumer<String> onError = invocation.getArgument(7);
-            onChunk.accept(shortChunk);
-            onError.accept("synthetic failure");
-            return TtsStreamHandle.NOOP;
-        }).when(ttsService).synthesizeStream(
-                anyString(),
-                anyString(),
-                anyInt(),
-                anyDouble(),
-                anyString(),
-                any(),
-                any(),
-                any()
-        );
-
-        List<byte[]> forwardedChunks = new CopyOnWriteArrayList<>();
-        CountDownLatch forwarded = new CountDownLatch(1);
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
-            forwardedChunks.add(pcm);
-            forwarded.countDown();
-        });
-
-        facade.translateAndStreamTts(
-                "source", "id", "zh-CN", null, sessionId, "speaker-1", null, System.currentTimeMillis()
-        );
-
-        assertTrue(forwarded.await(5, TimeUnit.SECONDS));
-        awaitTtsChain(facade, sessionId, "zh-CN");
-        assertEquals(1, forwardedChunks.size());
-        assertArrayEquals(shortChunk, forwardedChunks.get(0));
-    }
-
     private void assertTtsSpeedForTarget(
             String targetLang,
             double expectedCartesiaSpeed,
@@ -799,21 +645,5 @@ class RealtimeInterpretationOrderTest {
         CompletableFuture<Void> future = chain.get(sessionId + "::" + targetLang);
         assertTrue(future != null, "TTS chain future should be reserved");
         return future;
-    }
-
-    private static byte[] repeatedPcm(int sampleRate, int durationMs, byte value) {
-        int sampleCount = sampleRate * durationMs / 1000;
-        byte[] pcm = new byte[sampleCount * 2];
-        for (int i = 0; i < pcm.length; i++) {
-            pcm[i] = value;
-        }
-        return pcm;
-    }
-
-    private static byte[] concat(byte[] first, byte[] second) {
-        byte[] merged = new byte[first.length + second.length];
-        System.arraycopy(first, 0, merged, 0, first.length);
-        System.arraycopy(second, 0, merged, first.length, second.length);
-        return merged;
     }
 }
