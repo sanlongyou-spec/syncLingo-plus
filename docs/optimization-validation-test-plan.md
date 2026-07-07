@@ -2177,7 +2177,7 @@ Pass criteria:
 
 - Prove zh-CN -> id Indonesian compression now starts at the inclusive 40-character source-text boundary.
 - Prove the new Indonesian compression prompt is active and no longer uses the previous conservative "do not rephrase" instruction.
-- Prove Indonesian target TTS uses backend PCM speed `1.1` after the latest speed adjustment.
+- Prove Indonesian target TTS uses backend PCM speed `1.0` after disabling the artifact-prone PCM speed-up path.
 - Prove Chinese target TTS always uses backend PCM speed `1.0`.
 - Prove TTS synthesizes the same translated text shown on the shared page and no longer uses a separate normalized TTS-text variant.
 - Prove Indonesian target TTS that has already synthesized can be skipped only after the configured 80-second unread wait, and that non-Indonesian target TTS is not affected.
@@ -2206,7 +2206,7 @@ Pass criteria:
 - `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40` is present in the running backend container.
 - `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000` is present in the running backend container, or Spring config default remains `80000`.
 - zh-CN -> id live logs with a source text length of 40+ characters show `compress start, direction=zh->id`; shorter source spans do not call compression.
-- Indonesian target TTS logs show `backendPcmSpeed=1.1`.
+- Indonesian target TTS logs show `backendPcmSpeed=1.0`.
 - Chinese target TTS logs show `backendPcmSpeed=1.0`.
 - `TTS queued` and `tts-audio-duration` logs contain `textLen` for the persisted/shared translated text and do not contain `ttsTextLen`, `ttsTextChanged`, or `TTS text normalized`.
 - Under backlog, Indonesian target logs may show `TTS synthesized skipped ... reason=synthesized_wait_timeout` only after synthesized audio waited longer than the configured threshold; the skipped item must have no `tts-first-chunk-sent`.
@@ -2229,7 +2229,7 @@ Pass criteria:
 
 - `LlmRequestOptionsTest` verifies the Indonesian prompt contains the new real-time Indonesian editor instructions, target ratio text, and no old conservative rephrase prohibition.
 - `TranslationTerminologyProtectionTest.compressionThresholdUsesFortySourceCharactersInclusively` proves 39 Chinese characters skip compression and 40 characters call `compressIndonesian`.
-- `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID` forward 1000 ms PCM as about 909 ms, while `zh-CN` and `en-US` stay 1000 ms.
+- `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID`, `zh-CN`, and `en-US` all forward 1000 ms PCM as 1000 ms.
 - `RealtimeInterpretationOrderTest.chineseTtsUsesSharedPageTextAndKeepsAllAudio` proves Chinese TTS receives the exact translated/shared-page text and forwards full audio without a normalized text variant.
 - `PcmAudioMetricsTest` proves PCM duration logging uses the standalone PCM metrics helper after removing `TtsTextNormalizer`.
 - `RealtimeInterpretationOrderTest.synthesizedIndonesianAudioSkipsAfterConfiguredUnreadWait` proves already-synthesized Indonesian audio can be skipped after the configured unread wait; `synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget` proves the threshold does not affect Chinese target audio.

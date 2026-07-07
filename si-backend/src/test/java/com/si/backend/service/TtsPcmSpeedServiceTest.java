@@ -4,7 +4,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TtsPcmSpeedServiceTest {
 
@@ -15,8 +14,8 @@ class TtsPcmSpeedServiceTest {
     void resolvesBackendSpeedByTargetLanguage() {
         TtsPcmSpeedService service = new TtsPcmSpeedService();
 
-        assertEquals(1.1, service.resolveBackendSpeed("id"), 0.0001);
-        assertEquals(1.1, service.resolveBackendSpeed("id-ID"), 0.0001);
+        assertEquals(1.0, service.resolveBackendSpeed("id"), 0.0001);
+        assertEquals(1.0, service.resolveBackendSpeed("id-ID"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("zh-CN"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
     }
@@ -34,14 +33,16 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void indonesianBackendSpeedShortensOneSecondPcmToRealOnePointOneSpeed() {
+    void indonesianBackendSpeedKeepsOneSecondPcmAtNaturalSpeed() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("id-ID");
 
-        byte[] output = processor.process(oneSecondPcm());
+        byte[] pcm = oneSecondPcm();
+        byte[] output = processor.process(pcm);
 
-        assertEquals(43_638, output.length);
-        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
+        assertSame(pcm, output);
+        assertEquals(48_000, output.length);
+        assertEquals(1_000L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
@@ -58,16 +59,15 @@ class TtsPcmSpeedServiceTest {
     }
 
     @Test
-    void oddPcmByteIsCarriedIntoNextChunkInsteadOfSkippingWholeChunk() {
+    void neutralIndonesianSpeedReturnsOddPcmChunkUnchanged() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("id-ID");
 
-        byte[] first = processor.process(new byte[]{1});
-        byte[] second = processor.process(new byte[]{2, 3, 4});
+        byte[] first = new byte[]{1};
+        byte[] second = new byte[]{2, 3, 4};
 
-        assertEquals(0, first.length);
-        assertTrue(second.length > 0);
-        assertEquals(0, second.length % BYTES_PER_SAMPLE);
+        assertSame(first, processor.process(first));
+        assertSame(second, processor.process(second));
         assertEquals(0, processor.finish().length);
     }
 
