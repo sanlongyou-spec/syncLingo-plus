@@ -17,7 +17,7 @@ class TtsPcmSpeedServiceTest {
 
         assertEquals(1.1, service.resolveBackendSpeed("id"), 0.0001);
         assertEquals(1.1, service.resolveBackendSpeed("id-ID"), 0.0001);
-        assertEquals(1.1, service.resolveBackendSpeed("zh-CN"), 0.0001);
+        assertEquals(1.0, service.resolveBackendSpeed("zh-CN"), 0.0001);
         assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
     }
 
@@ -30,7 +30,7 @@ class TtsPcmSpeedServiceTest {
         byte[] output = processor.process(pcm);
 
         assertSame(pcm, output);
-        assertEquals(1_000L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(1_000L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
@@ -41,24 +41,26 @@ class TtsPcmSpeedServiceTest {
         byte[] output = processor.process(oneSecondPcm());
 
         assertEquals(43_638, output.length);
-        assertEquals(909L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
-    void chineseBackendSpeedShortensOneSecondPcmToRealOnePointOneSpeed() {
+    void chineseBackendSpeedKeepsOneSecondPcmAtNaturalSpeed() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
                 new TtsPcmSpeedService().processor("zh-CN");
 
-        byte[] output = processor.process(oneSecondPcm());
+        byte[] pcm = oneSecondPcm();
+        byte[] output = processor.process(pcm);
 
-        assertEquals(43_638, output.length);
-        assertEquals(909L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertSame(pcm, output);
+        assertEquals(48_000, output.length);
+        assertEquals(1_000L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
     void oddPcmByteIsCarriedIntoNextChunkInsteadOfSkippingWholeChunk() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
-                new TtsPcmSpeedService().processor("zh-CN");
+                new TtsPcmSpeedService().processor("id-ID");
 
         byte[] first = processor.process(new byte[]{1});
         byte[] second = processor.process(new byte[]{2, 3, 4});

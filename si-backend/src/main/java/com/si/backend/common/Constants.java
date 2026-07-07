@@ -161,8 +161,8 @@ public final class Constants {
     public static final double CARTESIA_TTS_SYNTHESIS_SPEED = 1.0;
     /** Default backend PCM output speed. */
     public static final double TTS_BACKEND_SPEED_DEFAULT = 1.0;
-    /** Chinese backend PCM output speed. */
-    public static final double TTS_BACKEND_SPEED_ZH = 1.1;
+    /** Chinese backend PCM output must stay natural speed. */
+    public static final double TTS_BACKEND_SPEED_ZH = 1.0;
     /** Indonesian backend PCM output speed for zh->id output. */
     public static final double TTS_BACKEND_SPEED_ID = 1.1;
     /** Cartesia TTS WebSocket JSON 字段：data（base64 音频，实际字段名为 data 而非 audio） */

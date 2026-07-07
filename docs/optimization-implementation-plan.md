@@ -1959,7 +1959,7 @@ GET    /api/admin/audit-logs
 ### Goal
 
 - Make zh-CN -> id live output shorter before TTS by lowering the compression trigger threshold and using a less conservative Indonesian compression prompt.
-- Keep TTS timing predictable by using backend PCM acceleration only, with Indonesian target output set to `1.1`.
+- Keep TTS timing predictable by using backend PCM acceleration only, with Indonesian target output set to `1.1` and Chinese target output locked at natural `1.0`.
 - Prevent very stale zh-CN -> id Indonesian audio from blocking the live queue when it has already synthesized but has not started playback after 40 seconds.
 - Restore the host frontend audio output path from the temporary VB-CABLE mapping back to the earlier VoiceMeeter routing scheme.
 - Deploy the current tested version to the Aliyun server for live validation without disturbing unrelated backend translation, ASR, TTS voice, or share-page behavior.
@@ -1970,7 +1970,8 @@ GET    /api/admin/audit-logs
 |---|---|---|
 | zh-CN -> id compression threshold | Done and deployed | `OPENAI_COMPRESSION_MIN_TEXT_LENGTH` and backend default changed to `40`, so source text with 40+ Chinese characters can enter Indonesian compression. |
 | Indonesian compression prompt | Done and deployed | Replaced the previous "only delete filler" style prompt with a real-time Indonesian interpretation editor prompt that may safely merge repetition and rewrite awkward literal Indonesian while preserving facts, numbers, entities, decisions, and causal relations. |
-| Indonesian backend PCM speed | Done and deployed | `TTS_BACKEND_SPEED_ID` is now `1.1`, matching Chinese target output; Cartesia synthesis speed remains neutral. |
+| Indonesian backend PCM speed | Done and deployed | `TTS_BACKEND_SPEED_ID` is now `1.1`; Cartesia synthesis speed remains neutral. |
+| Chinese TTS natural speed and literal text | Done | `TTS_BACKEND_SPEED_ZH` is locked at `1.0`, and the TTS path now synthesizes the same translated text persisted for records and shown on the shared page instead of a separate normalized text variant. |
 | Indonesian synthesized unread skip | Done and deployed | Added `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` / `cartesia.tts.synthesized-indonesian-skip-wait-ms`, default `80000`. Only Indonesian target TTS that has already synthesized and then waits behind earlier audio longer than the threshold is skipped. |
 | Compression safety coverage | Done | Tests cover prompt content, default threshold, the inclusive 40-character boundary, terminology protection around compression, and over-compression fallback. |
 | Frontend audio output routing | Done and deployed | Host TTS playback now uses `VoiceMeeterOutput` and `VOICEMEETER` constants: zh -> `VoiceMeeter Input`, id -> `VoiceMeeter Aux Input`, en -> `VoiceMeeter VAIO3`. Runtime source no longer references `VB-CABLE`, `TTS_OUTPUT_CABLE`, or `CABLE-A`. |
@@ -1981,6 +1982,7 @@ GET    /api/admin/audit-logs
 - Backend compression and speed changes were committed in `8b381d4` and deployed to `8.215.98.126`.
 - Server environment now has `OPENAI_COMPRESSION_MIN_TEXT_LENGTH=40`.
 - Backend synthesized Indonesian unread skip was committed in `031abdf` and deployed to `8.215.98.126`; the unread wait was later raised from 40000 ms to 80000 ms in commit `a4abfa3`, rebuilt as `si-backend:a4abfa3`, and the running container confirms `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000`.
+- Backend Chinese TTS follow-up removes the separate `TtsTextNormalizer` path, keeps `tts-audio-duration` on PCM metrics only, and requires Chinese target output to stay at `backendPcmSpeed=1.0`.
 - Frontend VoiceMeeter routing was committed in `9dae16c`, pushed to GitHub, built on the server, synced into `/var/www/si`, and nginx was reloaded.
 - Public frontend now references `/assets/index-BEAeQIh2.js`, whose bundle contains `VoiceMeeterOutput`.
 - `si-backend` remained healthy after the frontend deployment; no backend container restart was required for the frontend-only change.
@@ -1988,7 +1990,7 @@ GET    /api/admin/audit-logs
 ### Affected Modules
 
 - Backend integration/config: `LlmIntegration`, `OpenAiProperties`, `application.yml`, env templates.
-- Backend TTS speed and stale Indonesian playback queue control: `Constants`, `CartesiaProperties`, `RealtimeInterpretationFacade`, `TtsPcmSpeedServiceTest`, `RealtimeInterpretationOrderTest`, `CartesiaPropertiesTest`.
+- Backend TTS speed, literal shared-page TTS text, and stale Indonesian playback queue control: `Constants`, `CartesiaProperties`, `RealtimeInterpretationFacade`, `TtsPcmSpeedService`, `PcmAudioMetrics`, `TtsPcmSpeedServiceTest`, `PcmAudioMetricsTest`, `RealtimeInterpretationOrderTest`, `CartesiaPropertiesTest`.
 - Backend translation compression coverage: `LlmRequestOptionsTest`, `TranslationTerminologyProtectionTest`.
 - Frontend host playback: `si-frontend/src/api/constants.ts`, `si-frontend/src/lib/voiceMeeterOutput.ts`, `si-frontend/src/views/InterpretationView.tsx`.
 - Deployment: `/opt/syncLingo`, `/var/www/si`, nginx reload.
@@ -1997,7 +1999,8 @@ GET    /api/admin/audit-logs
 
 - zh-CN -> id source text below 40 characters does not call Indonesian compression; exactly 40 characters does call compression.
 - Indonesian compression prompt allows safe concise rewrite while preserving factual/business meaning and protected terminology.
-- TTS logs for Indonesian target output show `backendPcmSpeed=1.1`; Chinese target output remains `1.1`; English/default remains `1.0`.
+- TTS logs for Indonesian target output show `backendPcmSpeed=1.1`; Chinese target output is always `1.0`; English/default remains `1.0`.
+- Chinese target TTS synthesizes the exact persisted/shared translated text and the runtime has no separate `ttsTextLen`, `ttsTextChanged`, or `TTS text normalized` path.
 - If Indonesian target TTS has already synthesized but is still waiting behind earlier audio for more than `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS` (default 80000 ms), backend logs `TTS synthesized skipped` and releases that queue slot without sending the stale audio. Non-Indonesian target TTS is not affected by this threshold.
 - Frontend static bundle contains `VoiceMeeterOutput` and VoiceMeeter device labels, and no longer contains VB-CABLE device labels.
 - Public health and frontend asset checks pass after deployment.

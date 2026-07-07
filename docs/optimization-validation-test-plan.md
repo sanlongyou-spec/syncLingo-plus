@@ -2178,6 +2178,8 @@ Pass criteria:
 - Prove zh-CN -> id Indonesian compression now starts at the inclusive 40-character source-text boundary.
 - Prove the new Indonesian compression prompt is active and no longer uses the previous conservative "do not rephrase" instruction.
 - Prove Indonesian target TTS uses backend PCM speed `1.1` after the latest speed adjustment.
+- Prove Chinese target TTS always uses backend PCM speed `1.0`.
+- Prove TTS synthesizes the same translated text shown on the shared page and no longer uses a separate normalized TTS-text variant.
 - Prove Indonesian target TTS that has already synthesized can be skipped only after the configured 80-second unread wait, and that non-Indonesian target TTS is not affected.
 - Prove the deployed host frontend uses VoiceMeeter device routing instead of VB-CABLE routing.
 - Prove deployment did not break public frontend loading, nginx, or backend health.
@@ -2189,7 +2191,7 @@ cd /opt/syncLingo
 git rev-parse --short HEAD
 docker exec si-backend sh -c 'env | grep ^OPENAI_COMPRESSION'
 docker logs si-backend --since 30m 2>&1 | grep -E \
-  "compress start|compress end|backendPcmSpeed|TTS queued|TTS first chunk|TTS synthesized skipped|synthesized_wait_timeout|ERROR|Exception"
+  "compress start|compress end|backendPcmSpeed|TTS queued|TTS first chunk|tts-audio-duration|TTS synthesized skipped|synthesized_wait_timeout|TTS text normalized|ttsTextChanged|ttsTextLen|ERROR|Exception"
 curl -fsS http://127.0.0.1:8080/api/health
 curl -fsS https://julongtongchuan.icu/ -o /tmp/synclingo-index-verify.html
 grep assets/index /tmp/synclingo-index-verify.html
@@ -2205,6 +2207,8 @@ Pass criteria:
 - `CARTESIA_TTS_SYNTHESIZED_ID_SKIP_WAIT_MS=80000` is present in the running backend container, or Spring config default remains `80000`.
 - zh-CN -> id live logs with a source text length of 40+ characters show `compress start, direction=zh->id`; shorter source spans do not call compression.
 - Indonesian target TTS logs show `backendPcmSpeed=1.1`.
+- Chinese target TTS logs show `backendPcmSpeed=1.0`.
+- `TTS queued` and `tts-audio-duration` logs contain `textLen` for the persisted/shared translated text and do not contain `ttsTextLen`, `ttsTextChanged`, or `TTS text normalized`.
 - Under backlog, Indonesian target logs may show `TTS synthesized skipped ... reason=synthesized_wait_timeout` only after synthesized audio waited longer than the configured threshold; the skipped item must have no `tts-first-chunk-sent`.
 - Public index references the newly built frontend asset, and the asset contains `VoiceMeeterOutput`.
 - Static assets no longer contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
@@ -2214,7 +2218,7 @@ Pass criteria:
 
 ```powershell
 cd si-backend
-mvn -q "-Dtest=TtsPcmSpeedServiceTest,RealtimeInterpretationOrderTest,CartesiaPropertiesTest,LlmRequestOptionsTest,TranslationTerminologyProtectionTest" test -f pom.xml
+mvn -q "-Dtest=TtsPcmSpeedServiceTest,PcmAudioMetricsTest,RealtimeInterpretationOrderTest,CartesiaPropertiesTest,LlmRequestOptionsTest,TranslationTerminologyProtectionTest" test -f pom.xml
 mvn -q test -f pom.xml
 
 cd ..\si-frontend
@@ -2225,7 +2229,9 @@ Pass criteria:
 
 - `LlmRequestOptionsTest` verifies the Indonesian prompt contains the new real-time Indonesian editor instructions, target ratio text, and no old conservative rephrase prohibition.
 - `TranslationTerminologyProtectionTest.compressionThresholdUsesFortySourceCharactersInclusively` proves 39 Chinese characters skip compression and 40 characters call `compressIndonesian`.
-- `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID` and `zh-CN` forward 1000 ms PCM as about 909 ms, while `en-US` stays 1000 ms.
+- `TtsPcmSpeedServiceTest` and `RealtimeInterpretationOrderTest` prove `id` / `id-ID` forward 1000 ms PCM as about 909 ms, while `zh-CN` and `en-US` stay 1000 ms.
+- `RealtimeInterpretationOrderTest.chineseTtsUsesSharedPageTextAndKeepsAllAudio` proves Chinese TTS receives the exact translated/shared-page text and forwards full audio without a normalized text variant.
+- `PcmAudioMetricsTest` proves PCM duration logging uses the standalone PCM metrics helper after removing `TtsTextNormalizer`.
 - `RealtimeInterpretationOrderTest.synthesizedIndonesianAudioSkipsAfterConfiguredUnreadWait` proves already-synthesized Indonesian audio can be skipped after the configured unread wait; `synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget` proves the threshold does not affect Chinese target audio.
 - `CartesiaPropertiesTest` proves the default synthesized Indonesian unread skip wait is 80000 ms and the Spring property binding works.
 - Full backend test suite passes.
