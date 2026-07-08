@@ -10,7 +10,6 @@ import com.si.backend.service.InterpretationSessionService;
 import com.si.backend.service.SpeakerTurnService;
 import com.si.backend.service.TtsPcmSpeedService;
 import com.si.backend.service.TtsService;
-import com.si.backend.service.TtsTextNormalizer;
 import com.si.backend.service.TranslationService;
 import com.si.backend.service.UserVoiceService;
 import org.junit.jupiter.api.Test;
@@ -443,7 +442,7 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
-    void chineseTtsUsesNormalizedTextAndKeepsAllAudio() throws Exception {
+    void chineseTtsUsesSharedPageTextAndKeepsAllAudio() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
         TranslationService translationService = mock(TranslationService.class);
@@ -478,7 +477,6 @@ class RealtimeInterpretationOrderTest {
         when(sessionService.isSessionActive(sessionId)).thenReturn(true);
 
         String translated = "弄给分区的最高施肥剂量为12.36公斤/株。";
-        TtsTextNormalizer.Result normalized = TtsTextNormalizer.normalizeForTts(translated, "zh-CN");
         int sampleRate = cartesiaProperties.getTts().getSampleRate();
         byte[] oneSecondPcm = new byte[sampleRate * 2];
 
@@ -519,7 +517,7 @@ class RealtimeInterpretationOrderTest {
         );
         awaitTtsChain(facade, sessionId, "zh-CN");
 
-        assertEquals(normalized.text(), synthesizedText.get());
+        assertEquals(translated, synthesizedText.get());
         assertEquals(1.0, synthesisSpeed.get(), 0.0001);
         assertEquals(40, forwardedChunks.get());
         assertNull(cancelReason.get());

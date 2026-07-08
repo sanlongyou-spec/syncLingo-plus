@@ -30,7 +30,7 @@ class TtsPcmSpeedServiceTest {
         byte[] output = processor.process(pcm);
 
         assertSame(pcm, output);
-        assertEquals(1_000L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(1_000L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
@@ -41,7 +41,7 @@ class TtsPcmSpeedServiceTest {
         byte[] output = processor.process(oneSecondPcm());
 
         assertEquals(43_638, output.length);
-        assertEquals(909L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
@@ -52,7 +52,7 @@ class TtsPcmSpeedServiceTest {
         byte[] output = processor.process(oneSecondPcm());
 
         assertEquals(43_638, output.length);
-        assertEquals(909L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+        assertEquals(909L, PcmAudioMetrics.durationMs(output.length, SAMPLE_RATE));
     }
 
     @Test
