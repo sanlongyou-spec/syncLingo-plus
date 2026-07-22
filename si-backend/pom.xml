@@ -29,7 +29,7 @@
         <openai-java.version>4.35.0</openai-java.version>
         <okhttp.version>4.12.0</okhttp.version>
         <commons-pool2.version>2.12.0</commons-pool2.version>
-        <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
+        <mybatis-spring-boot.version>4.0.1</mybatis-spring-boot.version>
         <lombok.version>1.18.32</lombok.version>
     </properties>
 
