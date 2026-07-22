@@ -24,7 +24,7 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <azure.ai.version>1.48.2</azure.ai.version>
-        <azure.translation.text.version>1.1.8</azure.translation.text.version>
+        <azure.translation.text.version>2.0.0</azure.translation.text.version>
         <google.cloud.translate.version>2.91.0</google.cloud.translate.version>
         <openai-java.version>4.35.0</openai-java.version>
         <okhttp.version>4.12.0</okhttp.version>
