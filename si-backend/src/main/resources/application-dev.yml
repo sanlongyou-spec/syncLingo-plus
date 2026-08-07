@@ -22,6 +22,11 @@ azure:
       max-segment-zh-chars: ${AZURE_ASR_MAX_SEGMENT_ZH_CHARS:50}
       max-segment-words: ${AZURE_ASR_MAX_SEGMENT_WORDS:50}
       max-segment-chars: ${AZURE_ASR_MAX_SEGMENT_CHARS:80}
+      en-segment-guard-enabled: ${AZURE_ASR_EN_SEGMENT_GUARD_ENABLED:true}
+      en-seg-min-input-words: ${AZURE_ASR_EN_SEG_MIN_INPUT_WORDS:18}
+      en-min-emit-words: ${AZURE_ASR_EN_MIN_EMIT_WORDS:18}
+      en-soft-max-words: ${AZURE_ASR_EN_SOFT_MAX_WORDS:50}
+      en-overlong-escalation-words: ${AZURE_ASR_EN_OVERLONG_ESCALATION_WORDS:80}
     tts:
       sample-rate: 24000
 

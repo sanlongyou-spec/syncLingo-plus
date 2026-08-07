@@ -27,6 +27,9 @@ public class TtsPcmSpeedService {
         if (normalized.startsWith("zh")) {
             return Constants.TTS_BACKEND_SPEED_ZH;
         }
+        if (normalized.startsWith("en")) {
+            return Constants.TTS_BACKEND_SPEED_EN;
+        }
         return Constants.TTS_BACKEND_SPEED_DEFAULT;
     }
 

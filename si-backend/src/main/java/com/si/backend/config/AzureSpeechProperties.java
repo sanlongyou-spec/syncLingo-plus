@@ -58,6 +58,16 @@ public class AzureSpeechProperties {
          * 0 = 不限制（回退到仅受 PUNCT_MIN_CHARS=10 约束的旧行为）。
          */
         private int idSegMinInputChars = 40;
+        /** English guard switch. It keeps forced interim segments from cutting incomplete English clauses. */
+        private boolean enSegmentGuardEnabled = true;
+        /** Minimum words before querying the semantic boundary service for English interim text. */
+        private int enSegMinInputWords = 18;
+        /** Minimum words for an English forced final emitted from interim text. Final Azure results are not floored. */
+        private int enMinEmitWords = 18;
+        /** Soft word count where English starts searching more aggressively for reliable semantic boundaries. */
+        private int enSoftMaxWords = 50;
+        /** Overlong marker for logging and stronger heuristic search. This is not a hard cutoff. */
+        private int enOverlongEscalationWords = 80;
         /**
          * 印尼语完整性 Guard 开关（id-ID 专用）：
          * 半词尾/连接词尾/可疑词头拦截、固定短语保护、编号/金额消歧，

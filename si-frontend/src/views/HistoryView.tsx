@@ -26,7 +26,7 @@ import {
   getSummaryRecipients,
   saveSummaryRecipients,
 } from '../api'
-import { ROUTES, STORAGE_KEYS } from '../constants'
+import { LANGUAGE_LABELS, ROUTES, STORAGE_KEYS } from '../constants'
 import type {
   AudioRecord,
   InterpretationResultItem,
@@ -38,6 +38,7 @@ import type {
   SystemUserInfo,
   TeamsSummarySendResponse,
 } from '../types'
+import { buildTranscriptGroups, type TranscriptGroup } from '../utils/transcriptGrouping'
 import './InterpretationView.css'
 import './HistoryView.css'
 
@@ -46,13 +47,6 @@ const SUMMARY_REQ_KEY = 'si_summary_requirements'
 const SUMMARY_RECIPIENTS_KEY = 'si_summary_default_recipients'
 
 type SpeakerActionStatus = 'idle' | 'loading' | 'done' | 'error'
-type TranscriptGroup = {
-  id: number
-  sourceText: string
-  speakerId?: string
-  speakerName?: string
-  translations: string[]
-}
 type SearchMatchKind = 'exact' | 'fuzzy'
 type TextSearchMatch = { kind: SearchMatchKind; start: number; end: number }
 type TranscriptSearchMatch = { groupIndex: number; kind: SearchMatchKind }
@@ -153,7 +147,7 @@ const groupHasKeyword = (group: TranscriptGroup, normalizedKeyword: string) => {
     findTextSearchMatch(group.sourceText, normalizedKeyword),
     findTextSearchMatch(group.speakerName, normalizedKeyword),
     findTextSearchMatch(group.speakerId, normalizedKeyword),
-    ...group.translations.map(text => findTextSearchMatch(text, normalizedKeyword)),
+    ...group.translations.map(translation => findTextSearchMatch(translation.text, normalizedKeyword)),
   ].filter((match): match is TextSearchMatch => match !== null)
 
   if (matches.some(match => match.kind === 'exact')) return 'exact'
@@ -203,17 +197,39 @@ const renderHighlightedText = (text: string, keyword: string): ReactNode => {
   return nodes.length > 0 ? nodes : text
 }
 
-const downloadWord = (title: string, rows: InterpretationResultItem[]) => {
-  const body = rows.map(item => {
-    const speaker = item.speakerName || item.speakerId || ''
+const targetLanguageLabel = (lang?: string) => {
+  if (!lang) return ''
+  const lower = lang.toLowerCase()
+  if (lower.startsWith('zh')) return LANGUAGE_LABELS['zh-CN'] || lang
+  if (lower.startsWith('id')) return LANGUAGE_LABELS['id-ID'] || lang
+  if (lower.startsWith('en')) return LANGUAGE_LABELS['en-US'] || lang
+  return LANGUAGE_LABELS[lang] || lang
+}
+
+const languageBadgeClass = (lang?: string) => {
+  const lower = (lang || '').toLowerCase()
+  if (lower.startsWith('zh')) return 'si-tri-line-lang-badge si-tri-line-lang-badge--zh'
+  if (lower.startsWith('id')) return 'si-tri-line-lang-badge si-tri-line-lang-badge--id'
+  if (lower.startsWith('en')) return 'si-tri-line-lang-badge si-tri-line-lang-badge--en'
+  return 'si-tri-line-lang-badge'
+}
+
+const downloadWord = (title: string, groups: TranscriptGroup[]) => {
+  const body = groups.map(group => {
+    const speaker = group.speakerName || group.speakerId || ''
     const speakerHtml = speaker
       ? `<p style="font-weight:bold;color:#555;margin-bottom:2px;">${escapeHtml(speaker)}</p>`
       : ''
+    const translationsHtml = group.translations.map(translation => {
+      const lang = targetLanguageLabel(translation.targetLang)
+      const langHtml = lang ? `<strong>[${escapeHtml(lang)}]</strong> ` : ''
+      return `<p style="margin:0;color:#333;">${langHtml}${escapeHtml(translation.text || '')}</p>`
+    }).join('')
     return `
     <div style="margin-bottom:12px;">
       ${speakerHtml}
-      <p style="margin:0 0 2px 0;">${escapeHtml(item.sourceText)}</p>
-      <p style="margin:0;color:#333;">${escapeHtml(item.translatedText || '')}</p>
+      <p style="margin:0 0 2px 0;">${escapeHtml(group.sourceText)}</p>
+      ${translationsHtml}
     </div>`
   }).join('')
   const html = `<html><head><meta charset="utf-8"/></head>
@@ -318,24 +334,7 @@ export default function HistoryView() {
   const [speakerRenameSaving, setSpeakerRenameSaving] = useState<Record<string, boolean>>({})
 
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
-  const transcriptGroups = useMemo(() => {
-    const groups: TranscriptGroup[] = []
-    for (const item of results) {
-      const last = groups[groups.length - 1]
-      if (last && last.sourceText === item.sourceText && (last.speakerId === item.speakerId || !item.speakerId)) {
-        if (item.translatedText) last.translations.push(item.translatedText)
-      } else {
-        groups.push({
-          id: item.id,
-          sourceText: item.sourceText || '',
-          speakerId: item.speakerId,
-          speakerName: item.speakerName,
-          translations: item.translatedText ? [item.translatedText] : [],
-        })
-      }
-    }
-    return groups
-  }, [results])
+  const transcriptGroups = useMemo(() => buildTranscriptGroups(results), [results])
 
   const transcriptSearchTerm = useMemo(() => normalizeSearchKeyword(transcriptKeyword), [transcriptKeyword])
   const transcriptMatches = useMemo<TranscriptSearchMatch[]>(
@@ -1160,7 +1159,7 @@ export default function HistoryView() {
                         </div>
                         <button
                           className="history-summary-export-btn"
-                          onClick={() => downloadWord(selectedMeeting.title || '同传记录', results)}
+                          onClick={() => downloadWord(selectedMeeting.title || '同传记录', transcriptGroups)}
                           disabled={results.length === 0}
                         >导出 Word</button>
                       </div>
@@ -1215,8 +1214,15 @@ export default function HistoryView() {
                                       : <span className="si-tri-line-lang-badge si-tri-line-lang-badge--unknown">?</span>}
                                     {renderHighlightedText(g.sourceText, transcriptKeyword)}
                                   </div>
-                                  {g.translations.map((t, ti) => (
-                                    <div key={ti} className="si-tri-share-line si-tri-share-line--translated">{renderHighlightedText(t, transcriptKeyword)}</div>
+                                  {g.translations.map((translation, ti) => (
+                                    <div key={`${translation.targetLang || 'unknown'}-${ti}`} className="si-tri-share-line si-tri-share-line--translated">
+                                      {translation.targetLang && (
+                                        <span className={languageBadgeClass(translation.targetLang)}>
+                                          {targetLanguageLabel(translation.targetLang)}
+                                        </span>
+                                      )}
+                                      {renderHighlightedText(translation.text, transcriptKeyword)}
+                                    </div>
                                   ))}
                                 </div>
                               )

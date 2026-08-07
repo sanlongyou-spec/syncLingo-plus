@@ -621,7 +621,7 @@ public class RealtimeInterpretationFacade {
         if (reservation.previous().isDone()) {
             return true;
         }
-        if (isIndonesianTarget(targetLang) && synthesizedSkipWaitMs > 0) {
+        if (isSynthesizedSkipTarget(targetLang) && synthesizedSkipWaitMs > 0) {
             return awaitPreviousTtsReservationWithSynthesizedSkip(
                     reservation, synthCompleteAtMs, synthesizedSkipWaitMs);
         }
@@ -655,7 +655,7 @@ public class RealtimeInterpretationFacade {
                 reservation.previous().get(waitMs, TimeUnit.MILLISECONDS);
                 return true;
             } catch (TimeoutException ignored) {
-                // Keep waiting until previous audio is read, or this synthesized Indonesian item expires.
+                // Keep waiting until previous audio is read, or this synthesized item expires.
             } catch (ExecutionException e) {
                 log.warn("[RealtimeInterpretationFacade] previous TTS reservation completed exceptionally, sessionId={}, taskId={}, reason={}",
                         reservation.sessionId(), reservation.taskId(), e.getMessage());
@@ -724,6 +724,17 @@ public class RealtimeInterpretationFacade {
         }
         String lower = targetLang.toLowerCase();
         return lower.startsWith("id") || lower.startsWith("in");
+    }
+
+    private boolean isEnglishTarget(String targetLang) {
+        if (targetLang == null || targetLang.isBlank()) {
+            return false;
+        }
+        return targetLang.toLowerCase().startsWith("en");
+    }
+
+    private boolean isSynthesizedSkipTarget(String targetLang) {
+        return isIndonesianTarget(targetLang) || isEnglishTarget(targetLang);
     }
 
     private long estimateTokens(String text) {

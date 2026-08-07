@@ -18,19 +18,32 @@ class TtsPcmSpeedServiceTest {
         assertEquals(1.1, service.resolveBackendSpeed("id"), 0.0001);
         assertEquals(1.1, service.resolveBackendSpeed("id-ID"), 0.0001);
         assertEquals(1.1, service.resolveBackendSpeed("zh-CN"), 0.0001);
-        assertEquals(1.0, service.resolveBackendSpeed("en-US"), 0.0001);
+        assertEquals(1.1, service.resolveBackendSpeed("en"), 0.0001);
+        assertEquals(1.1, service.resolveBackendSpeed("en-US"), 0.0001);
+        assertEquals(1.0, service.resolveBackendSpeed("fr-FR"), 0.0001);
     }
 
     @Test
     void neutralSpeedReturnsOriginalPcm() {
         TtsPcmSpeedService.PcmSpeedProcessor processor =
-                new TtsPcmSpeedService().processor("en-US");
+                new TtsPcmSpeedService().processor("fr-FR");
         byte[] pcm = oneSecondPcm();
 
         byte[] output = processor.process(pcm);
 
         assertSame(pcm, output);
         assertEquals(1_000L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
+    }
+
+    @Test
+    void englishBackendSpeedShortensOneSecondPcmToRealOnePointOneSpeed() {
+        TtsPcmSpeedService.PcmSpeedProcessor processor =
+                new TtsPcmSpeedService().processor("en-US");
+
+        byte[] output = processor.process(oneSecondPcm());
+
+        assertEquals(43_638, output.length);
+        assertEquals(909L, TtsTextNormalizer.pcmDurationMs(output.length, SAMPLE_RATE));
     }
 
     @Test

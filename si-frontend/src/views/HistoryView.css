@@ -281,6 +281,12 @@
   min-height: 0;
 }
 
+.history-transcripts .si-tri-share-line--translated .si-tri-line-lang-badge {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
 .history-transcript-toolbar {
   display: flex;
   align-items: center;

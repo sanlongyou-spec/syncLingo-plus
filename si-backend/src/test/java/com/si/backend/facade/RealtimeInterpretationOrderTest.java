@@ -52,7 +52,7 @@ class RealtimeInterpretationOrderTest {
         assertTtsSpeedForTarget("id", 1.0, 43_638);
         assertTtsSpeedForTarget("id-ID", 1.0, 43_638);
         assertTtsSpeedForTarget("zh-CN", 1.0, 43_638);
-        assertTtsSpeedForTarget("en-US", 1.0, 48_000);
+        assertTtsSpeedForTarget("en-US", 1.0, 43_638);
     }
 
     @Test
@@ -342,7 +342,103 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
-    void synthesizedSkipLimitDoesNotApplyToNonIndonesianTarget() throws Exception {
+    void synthesizedEnglishAudioSkipsAfterConfiguredUnreadWait() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        CartesiaProperties cartesiaProperties = new CartesiaProperties();
+        cartesiaProperties.getTts().setSynthesizedIndonesianSkipWaitMs(80L);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                cartesiaProperties,
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard,
+                new TtsPcmSpeedService()
+        );
+
+        String sessionId = "synthesized-en-skip-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0) + "-translated");
+
+        CountDownLatch secondSynthCompleted = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(1);
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(new byte[]{(byte) ("first-translated".equals(text) ? 1 : 2), 0});
+            onComplete.run();
+            if ("second-translated".equals(text)) {
+                secondSynthCompleted.countDown();
+            }
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
+        AtomicInteger secondPlayed = new AtomicInteger();
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+            if (sequence == 1L && chunkIndex == 0) {
+                firstPlaybackEntered.countDown();
+                try {
+                    releaseFirstPlayback.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (sequence == 2L && chunkIndex == 0) {
+                secondPlayed.incrementAndGet();
+            }
+        });
+
+        try {
+            facade.translateAndStreamTts(
+                    "first", "zh-CN", "en-US", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+            assertTrue(firstPlaybackEntered.await(5, TimeUnit.SECONDS));
+
+            facade.translateAndStreamTts(
+                    "second", "zh-CN", "en-US", null, sessionId, "speaker-1", null, System.currentTimeMillis()
+            );
+
+            assertTrue(secondSynthCompleted.await(5, TimeUnit.SECONDS));
+            awaitTtsChain(facade, sessionId, "en-US");
+            assertEquals(0, secondPlayed.get());
+        } finally {
+            releaseFirstPlayback.countDown();
+        }
+    }
+
+    @Test
+    void synthesizedSkipLimitDoesNotApplyToChineseTarget() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
         TranslationService translationService = mock(TranslationService.class);

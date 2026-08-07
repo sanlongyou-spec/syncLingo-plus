@@ -10,6 +10,7 @@ import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.config.AzureSpeechProperties;
+import com.si.backend.service.EnglishIncompleteGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -40,18 +41,21 @@ public class AzureAsrIntegration {
     private final SegmentationServiceIntegration segmentationService;
     private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
     private final com.si.backend.service.IndonesianIncompleteGuard idGuard;
+    private final EnglishIncompleteGuard enGuard;
     private final Map<String, AsrSession> sessions = new ConcurrentHashMap<>();
 
     public AzureAsrIntegration(AzureSpeechProperties asrProperties,
-                                PunctuationServiceIntegration punctuationService,
-                                SegmentationServiceIntegration segmentationService,
-                                com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
-                                com.si.backend.service.IndonesianIncompleteGuard idGuard) {
+                                 PunctuationServiceIntegration punctuationService,
+                                 SegmentationServiceIntegration segmentationService,
+                                 com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
+                                 com.si.backend.service.IndonesianIncompleteGuard idGuard,
+                                 EnglishIncompleteGuard enGuard) {
         this.asrProperties = asrProperties;
         this.punctuationService = punctuationService;
         this.segmentationService = segmentationService;
         this.idSegmenter = idSegmenter;
         this.idGuard = idGuard;
+        this.enGuard = enGuard;
     }
 
     /**
@@ -90,7 +94,7 @@ public class AzureAsrIntegration {
         if (asrProperties.getAsr().isDiarizeIntermediateResults()) {
             config.setProperty(PropertyId.SpeechServiceResponse_DiarizeIntermediateResults, "true");
         }
-        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, forceSegmentMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}, minSentenceEmitIdChars={}, idSegMinInputChars={}",
+        log.info("[AzureAsrIntegration] ASR silence config, endSilenceMs={}, segmentationSilenceMs={}, segmentationStrategy={}, segmentationMaxTimeMs={}, forceSegmentMs={}, sentenceSegmentation={}, maxSegmentZhChars={}, maxSegmentWords={}, maxSegmentChars={}, minSentenceEmitIdChars={}, idSegMinInputChars={}, enGuard={}, enSoftMaxWords={}, enOverlongWords={}",
                 asrProperties.getAsr().getEndSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationSilenceTimeoutMs(),
                 asrProperties.getAsr().getSegmentationStrategy(),
@@ -101,7 +105,10 @@ public class AzureAsrIntegration {
                 asrProperties.getAsr().getMaxSegmentWords(),
                 asrProperties.getAsr().getMaxSegmentChars(),
                 asrProperties.getAsr().getMinSentenceEmitIdChars(),
-                asrProperties.getAsr().getIdSegMinInputChars());
+                asrProperties.getAsr().getIdSegMinInputChars(),
+                asrProperties.getAsr().isEnSegmentGuardEnabled(),
+                asrProperties.getAsr().getEnSoftMaxWords(),
+                asrProperties.getAsr().getEnOverlongEscalationWords());
 
         AudioStreamFormat audioFormat = AudioStreamFormat.getWaveFormatPCM(
                 (short) asrProperties.getAsr().getSampleRate(),
@@ -122,12 +129,12 @@ public class AzureAsrIntegration {
             );
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
-            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard);
+            session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard, enGuard);
         } else {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber, specified lang={}, sessionId={}", sourceLang, sessionId);
             config.setSpeechRecognitionLanguage(sourceLang);
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
-            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard);
+            session = new AsrSession(config, audioConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard, enGuard);
         }
 
         sessions.put(sessionId, session);
@@ -225,6 +232,7 @@ public class AzureAsrIntegration {
         private final com.si.backend.service.IndonesianBoundarySegmenter idSegmenter;
         /** 印尼语完整性 Guard(null 或 disabled = 不启用):发段前一票否决 + 弱边界降级 partial。 */
         private final com.si.backend.service.IndonesianIncompleteGuard idGuard;
+        private final EnglishIncompleteGuard enGuard;
         /** 方案2:是否有一次分句 LLM 调用在途(同一会话同一时刻最多一次,省成本/防乱序);仅在 segLock 内读写 */
         private boolean idSegInFlight = false;
         /** 方案2:上次触发分句调用时的 working 长度,用于节流(只在 segLock 内读写) */
@@ -243,6 +251,9 @@ public class AzureAsrIntegration {
         private String pendingIdFloorText = "";
         private String pendingIdFloorLang = "";
         private String pendingIdFloorSpeakerId = "";
+        private String pendingEnText = "";
+        private String pendingEnLang = "";
+        private String pendingEnSpeakerId = "";
         /** 已发 final 文本的归一化滚动账本：跨段/跨终稿去重，防 emittedLen 回退导致的重发/前缀重叠。 */
         private final StringBuilder emitLedger = new StringBuilder();
         private long emitLedgerAtMs = 0;
@@ -272,7 +283,8 @@ public class AzureAsrIntegration {
                           PunctuationServiceIntegration punctuationService,
                           SegmentationServiceIntegration segmentationService,
                           com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
-                          com.si.backend.service.IndonesianIncompleteGuard idGuard) {
+                          com.si.backend.service.IndonesianIncompleteGuard idGuard,
+                          EnglishIncompleteGuard enGuard) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = false;
@@ -291,6 +303,7 @@ public class AzureAsrIntegration {
             this.segmentationSvc = segmentationService;
             this.idSegmenter = idSegmenter;
             this.idGuard = idGuard;
+            this.enGuard = enGuard;
             this.conversationTranscriber = new ConversationTranscriber(config, audioConfig);
         }
 
@@ -299,7 +312,8 @@ public class AzureAsrIntegration {
                           PunctuationServiceIntegration punctuationService,
                           SegmentationServiceIntegration segmentationService,
                           com.si.backend.service.IndonesianBoundarySegmenter idSegmenter,
-                          com.si.backend.service.IndonesianIncompleteGuard idGuard) {
+                          com.si.backend.service.IndonesianIncompleteGuard idGuard,
+                          EnglishIncompleteGuard enGuard) {
             this.config = config;
             this.pushStream = pushStream;
             this.autoDetectEnabled = true;
@@ -317,6 +331,7 @@ public class AzureAsrIntegration {
             this.segmentationSvc = segmentationService;
             this.idSegmenter = idSegmenter;
             this.idGuard = idGuard;
+            this.enGuard = enGuard;
             AudioConfig audioConfig = AudioConfig.fromStreamInput(pushStream);
             this.recognizer = null;
             this.conversationTranscriber = new ConversationTranscriber(config, autoConfig, audioConfig);
@@ -464,6 +479,23 @@ public class AzureAsrIntegration {
                                 return;
                             }
                         }
+                    } else if (isEnglishGuardActiveFor(lang)) {
+                        synchronized (segLock) {
+                            remainder = mergePendingEnglishText(remainder, lang, speakerId, finalReason);
+                        }
+                        if (enGuard.shouldDropFinalRemainder(remainder, hotwords)) {
+                            log.info("[EnglishGuard] final remainder dropped, reason=filler-or-empty, len={} text='{}'",
+                                    remainder.length(), previewText(remainder));
+                            return;
+                        }
+                        if (enGuard.shouldHoldFinalRemainder(remainder, hotwords)) {
+                            synchronized (segLock) {
+                                storePendingEnglishText(remainder, lang, speakerId, finalReason + "-incomplete");
+                            }
+                            log.info("[EnglishGuard] final remainder held, words={}, len={} text='{}'",
+                                    enGuard.wordCount(remainder), remainder.length(), previewText(remainder));
+                            return;
+                        }
                     }
                     emitFinalDeduped(remainder, lang, speakerId);
                     log.info("[AsrSession] asr-segment final={} costMs={} len={} speakerId={} text='{}'",
@@ -529,6 +561,7 @@ public class AzureAsrIntegration {
                 return;
             }
             String working = text.substring(start);
+            boolean englishGuardActive = isEnglishGuardActiveFor(lang);
 
             // 为本段计时(供超时兜底 forceSegmentMs 使用):首段也要有起算点,
             // 否则 startedAt=0 时 shouldForce 的超时路径永不触发。每次 emit 后会重置为 emit 时刻。
@@ -611,8 +644,7 @@ public class AzureAsrIntegration {
             // ── 句边界检测（印尼语：wtpsplit SaT，服务可用时）──────────────────────
             int wtpBoundary = NO_SEGMENT;
             if (segmentationSvc != null && segmentationSvc.isEnabled()
-                    && working.length() >= Math.max(PUNCT_MIN_CHARS, idSegMinInputChars)
-                    && startsWithIgnoreCase(lang, "id")) {
+                    && shouldQuerySemanticBoundary(working, lang, englishGuardActive)) {
                 int b = segmentationSvc.findBoundary(working, lang, safe);
                 if (b > 0) wtpBoundary = b;
                 // DEBUG: 每次 wtpsplit 查询的输入与返回的句边界,用于分析"该不该切/切在哪"
@@ -651,7 +683,7 @@ public class AzureAsrIntegration {
                 // 加最小句长闸门：太短的边界(如 "satu"/"nine")不切，等累积更长或走逗号/字数兜底，避免碎片。
                 boolean idGuardActive = idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id");
                 if (end == NO_SEGMENT && wtpBoundary != NO_SEGMENT
-                        && (idGuardActive || minSentenceEmitIdChars <= 0 || wtpBoundary >= minSentenceEmitIdChars)) {
+                        && (idGuardActive || englishGuardActive || minSentenceEmitIdChars <= 0 || wtpBoundary >= minSentenceEmitIdChars)) {
                     // Guard 开启时不再用 minId 死卡 wtpsplit 强边界：短边界交给 decideEmit(强边界+完整性检查)放行/扣回。
                     end = wtpBoundary;
                     reason = "sentence-wtpsplit";
@@ -667,9 +699,24 @@ public class AzureAsrIntegration {
                         reason = "numbered-title";
                     }
                 }
+                if (end == NO_SEGMENT && englishGuardActive && enGuard.shouldEscalateBoundarySearch(working)) {
+                    EnglishIncompleteGuard.BoundaryCandidate candidate =
+                            enGuard.findHeuristicBoundary(working, safe, hotwords);
+                    if (candidate.found()) {
+                        end = candidate.index();
+                        reason = candidate.reason();
+                        if (enGuard.isOverlong(working)) {
+                            log.info("[EnglishGuard] overlong boundary candidate, words={}, safe={}, boundary={}, reason={}, text='{}'",
+                                    enGuard.wordCount(working), safe, end, reason, previewText(working));
+                        }
+                    } else if (enGuard.isOverlong(working)) {
+                        log.info("[EnglishGuard] overlong hold, words={}, safe={}, text='{}'",
+                                enGuard.wordCount(working), safe, previewText(working));
+                    }
+                }
             }
             // 2) 逗号/子句标点：同样优先用标点版本
-            if (end == NO_SEGMENT && shouldForce(working, lang)) {
+            if (end == NO_SEGMENT && !englishGuardActive && shouldForce(working, lang)) {
                 // 当使用标点版本时，额外限制搜索上界为 safe（原始坐标）。
                 // CT-Transformer 只插入字符，故 punct_pos >= orig_pos；
                 // 任何 punct_pos <= safe 的逗号必然映射到 orig_pos <= safe，
@@ -712,6 +759,13 @@ public class AzureAsrIntegration {
                             segment.length() <= 120 ? segment : segment.substring(0, 117) + "...");
                     return;
                 }
+            } else if (englishGuardActive) {
+                EnglishIncompleteGuard.EmitAction action = enGuard.decideEmit(working, end, reason, hotwords);
+                if (action != EnglishIncompleteGuard.EmitAction.EMIT_FINAL) {
+                    log.info("[EnglishGuard] {} boundary reason={} words={} len={} text='{}'",
+                            action, reason, enGuard.wordCount(segment), segment.length(), previewText(segment));
+                    return;
+                }
             } else if (shouldDeferShortSegment(reason, segment, lang)) {
                 log.debug("[AsrSession] force-segment deferred by min length, reason={}, len={}, minId={}, lang={}, text='{}'",
                         reason, segment.length(), minSentenceEmitIdChars, lang,
@@ -725,6 +779,7 @@ public class AzureAsrIntegration {
             if (!segment.isBlank()) {
                 String resolvedSpeakerId = resolveSegmentSpeakerId(speakerId);
                 String outputSegment = mergePendingIdFloorText(segment, lang, resolvedSpeakerId, reason);
+                outputSegment = mergePendingEnglishText(outputSegment, lang, resolvedSpeakerId, reason);
                 log.info("[AsrSession] force-segment by={} len={} lang={} speakerId={} punct={} text='{}'",
                         reason, outputSegment.length(), lang, resolvedSpeakerId, punctuated != null,
                         previewText(outputSegment));
@@ -814,6 +869,17 @@ public class AzureAsrIntegration {
             return idGuard != null && idGuard.isEnabled() && startsWithIgnoreCase(lang, "id");
         }
 
+        private boolean isEnglishGuardActiveFor(String lang) {
+            return enGuard != null && enGuard.isEnabled() && startsWithIgnoreCase(lang, "en");
+        }
+
+        private boolean shouldQuerySemanticBoundary(String working, String lang, boolean englishGuardActive) {
+            if (startsWithIgnoreCase(lang, "id")) {
+                return working.length() >= Math.max(PUNCT_MIN_CHARS, idSegMinInputChars);
+            }
+            return englishGuardActive && enGuard.shouldQuerySentenceBoundary(working);
+        }
+
         /**
          * 统一 final 发送出口：发前对"已发账本"去重（整段重复→丢弃，前缀重叠→裁掉），再发出并更新账本。
          */
@@ -891,6 +957,40 @@ public class AzureAsrIntegration {
             log.info("[IdGuard] HOLD output-floor reason={} len={} minId={} lang={} speakerId={} text='{}'",
                     reason, visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars, lang, speakerId,
                     previewText(pendingIdFloorText));
+        }
+
+        private String mergePendingEnglishText(String segment, String lang, String speakerId, String reason) {
+            String cleanSegment = segment == null ? "" : segment.trim();
+            if (!isEnglishGuardActiveFor(lang) || pendingEnText.isBlank()) {
+                return cleanSegment;
+            }
+            String pending = pendingEnText.trim();
+            String merged = cleanSegment.isBlank() ? pending : pending + " " + cleanSegment;
+            log.info("[EnglishGuard] pending merged, reason={}, pendingWords={}, segmentWords={}, mergedWords={}, pendingLang={}, lang={}, pendingSpeakerId={}, speakerId={}, text='{}'",
+                    reason, enGuard.wordCount(pending), enGuard.wordCount(cleanSegment), enGuard.wordCount(merged),
+                    pendingEnLang, lang, pendingEnSpeakerId, speakerId, previewText(merged));
+            pendingEnText = "";
+            pendingEnLang = "";
+            pendingEnSpeakerId = "";
+            return merged.trim();
+        }
+
+        private void storePendingEnglishText(String segment, String lang, String speakerId, String reason) {
+            if (!isEnglishGuardActiveFor(lang)) {
+                return;
+            }
+            String cleanSegment = segment == null ? "" : segment.trim();
+            if (cleanSegment.isBlank()) {
+                return;
+            }
+            if (!pendingEnText.isBlank()) {
+                cleanSegment = pendingEnText.trim() + " " + cleanSegment;
+            }
+            pendingEnText = cleanSegment.trim();
+            pendingEnLang = lang == null ? "" : lang;
+            pendingEnSpeakerId = speakerId == null ? "" : speakerId;
+            log.info("[EnglishGuard] HOLD final remainder reason={} words={} lang={} speakerId={} text='{}'",
+                    reason, enGuard.wordCount(pendingEnText), lang, speakerId, previewText(pendingEnText));
         }
 
         /**
@@ -977,6 +1077,9 @@ public class AzureAsrIntegration {
 
         /** 是否触发长句强切: 中文超字数 / 拉丁超词数 / 任意超总字符, 或 超时。 */
         private boolean shouldForce(String w, String lang) {
+            if (isEnglishGuardActiveFor(lang)) {
+                return false;
+            }
             boolean over = false;
             if (maxSegmentZhChars > 0 && isChineseSegment(w, 0, lang)) {
                 over = visibleCharCount(w) >= maxSegmentZhChars;
@@ -1343,6 +1446,11 @@ public class AzureAsrIntegration {
                 log.warn("[IdGuard] pending output-floor not emitted on close, len={} minId={} lang={} speakerId={} text='{}'",
                         visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars,
                         pendingIdFloorLang, pendingIdFloorSpeakerId, previewText(pendingIdFloorText));
+            }
+            if (!pendingEnText.isBlank()) {
+                log.warn("[EnglishGuard] pending text not emitted on close, words={} lang={} speakerId={} text='{}'",
+                        enGuard != null ? enGuard.wordCount(pendingEnText) : wordCount(pendingEnText),
+                        pendingEnLang, pendingEnSpeakerId, previewText(pendingEnText));
             }
             try {
                 if (conversationTranscriber != null) {

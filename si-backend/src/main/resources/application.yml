@@ -91,6 +91,13 @@ azure:
       # 印尼语送 SaT 分句的最小累积字符数：短于此不调 SaT，先累积再切(SaT 上下文不足会切出
       # starship/ke depan/8 tahun 这类碎片)。嫌碎调大(48)，嫌慢调小(32)，0=回退旧行为。
       id-seg-min-input-chars: ${AZURE_ASR_ID_SEG_MIN_INPUT_CHARS:40}
+      # English interim segmentation guard. It mirrors the Indonesian flow but uses English completeness rules:
+      # stable prefix -> semantic boundary -> guard -> final. 50 words is a soft search trigger, not a hard cut.
+      en-segment-guard-enabled: ${AZURE_ASR_EN_SEGMENT_GUARD_ENABLED:true}
+      en-seg-min-input-words: ${AZURE_ASR_EN_SEG_MIN_INPUT_WORDS:18}
+      en-min-emit-words: ${AZURE_ASR_EN_MIN_EMIT_WORDS:18}
+      en-soft-max-words: ${AZURE_ASR_EN_SOFT_MAX_WORDS:50}
+      en-overlong-escalation-words: ${AZURE_ASR_EN_OVERLONG_ESCALATION_WORDS:80}
       # 印尼语完整性 Guard(id-ID)：半词尾/连接词尾/可疑词头拦截 + 固定短语保护 + 编号/金额消歧 +
       # 弱边界强切降级为 partial(去掉盲切)。准确率优先，默认开；置 false 回退旧强切行为。
       id-segment-guard-enabled: ${AZURE_ASR_ID_SEGMENT_GUARD_ENABLED:true}
