@@ -673,8 +673,23 @@ public class AzureAsrIntegration {
                         searchFrom = ep;
                         continue;
                     }
+                    String candidateReason = punctuated != null ? "sentence-punct" : "sentence";
+                    if (englishGuardActive) {
+                        String candidateText = punctuated != null
+                                ? punctuated.substring(0, ep).trim()
+                                : working.substring(0, eo).trim();
+                        EnglishIncompleteGuard.EmitAction action =
+                                enGuard.decideEmit(working, eo, candidateReason, hotwords);
+                        if (action != EnglishIncompleteGuard.EmitAction.EMIT_FINAL) {
+                            log.info("[EnglishGuard] {} boundary skipped reason={} words={} len={} text='{}'",
+                                    action, candidateReason, enGuard.wordCount(candidateText),
+                                    candidateText.length(), previewText(candidateText));
+                            searchFrom = ep;
+                            continue;
+                        }
+                    }
                     end = eo;
-                    reason = punctuated != null ? "sentence-punct" : "sentence";
+                    reason = candidateReason;
                     if (punctuated != null) {
                         emitText = punctuated.substring(0, ep).trim();
                     }
@@ -998,6 +1013,42 @@ public class AzureAsrIntegration {
          * CT-Transformer 只在字符间插入标点，原始字符按原顺序保留。
          * 双指针扫描：两者相同的字符同步推进；punctuated 中多出的字符视为插入标点，只推进 punctuated 指针。
          */
+        private void flushPendingEnglishTextOnClose() {
+            String pending;
+            String lang;
+            String speakerId;
+            synchronized (segLock) {
+                pending = pendingEnText.trim();
+                lang = pendingEnLang == null || pendingEnLang.isBlank()
+                        ? Constants.LANG_EN_US
+                        : pendingEnLang;
+                speakerId = pendingEnSpeakerId == null || pendingEnSpeakerId.isBlank()
+                        ? Constants.SPEAKER_ID_UNKNOWN
+                        : pendingEnSpeakerId;
+                pendingEnText = "";
+                pendingEnLang = "";
+                pendingEnSpeakerId = "";
+            }
+            if (pending.isBlank()) {
+                return;
+            }
+            if (callback == null) {
+                log.warn("[EnglishGuard] pending text cannot flush on close because callback is null, words={} lang={} speakerId={} text='{}'",
+                        enGuard != null ? enGuard.wordCount(pending) : wordCount(pending),
+                        lang, speakerId, previewText(pending));
+                return;
+            }
+            if (enGuard != null && enGuard.shouldDropFinalRemainder(pending, hotwords)) {
+                log.info("[EnglishGuard] pending text dropped on close, reason=filler-or-empty, words={} lang={} speakerId={} text='{}'",
+                        enGuard.wordCount(pending), lang, speakerId, previewText(pending));
+                return;
+            }
+            log.warn("[EnglishGuard] pending text flushed on close, words={} lang={} speakerId={} text='{}'",
+                    enGuard != null ? enGuard.wordCount(pending) : wordCount(pending),
+                    lang, speakerId, previewText(pending));
+            emitFinalDeduped(pending, lang, speakerId);
+        }
+
         private int mapPunctuatedToOriginal(String original, String punctuated, int punctuatedEnd) {
             int origIdx = 0;
             int pIdx = 0;
@@ -1442,16 +1493,6 @@ public class AzureAsrIntegration {
 
         @Override
         public void close() {
-            if (!pendingIdFloorText.isBlank()) {
-                log.warn("[IdGuard] pending output-floor not emitted on close, len={} minId={} lang={} speakerId={} text='{}'",
-                        visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars,
-                        pendingIdFloorLang, pendingIdFloorSpeakerId, previewText(pendingIdFloorText));
-            }
-            if (!pendingEnText.isBlank()) {
-                log.warn("[EnglishGuard] pending text not emitted on close, words={} lang={} speakerId={} text='{}'",
-                        enGuard != null ? enGuard.wordCount(pendingEnText) : wordCount(pendingEnText),
-                        pendingEnLang, pendingEnSpeakerId, previewText(pendingEnText));
-            }
             try {
                 if (conversationTranscriber != null) {
                     conversationTranscriber.stopTranscribingAsync().get(5, TimeUnit.SECONDS);
@@ -1461,6 +1502,12 @@ public class AzureAsrIntegration {
             } catch (Exception e) {
                 log.warn("[AsrSession] stop recognizer error", e);
             }
+            if (!pendingIdFloorText.isBlank()) {
+                log.warn("[IdGuard] pending output-floor not emitted on close, len={} minId={} lang={} speakerId={} text='{}'",
+                        visibleCharCount(pendingIdFloorText), minSentenceEmitIdChars,
+                        pendingIdFloorLang, pendingIdFloorSpeakerId, previewText(pendingIdFloorText));
+            }
+            flushPendingEnglishTextOnClose();
             if (conversationTranscriber != null) {
                 conversationTranscriber.close();
             }

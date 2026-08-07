@@ -88,6 +88,15 @@ class EnglishIncompleteGuardTest {
     }
 
     @Test
+    void shortCompleteEnglishSentenceCanEmitOnStrongBoundary() {
+        EnglishIncompleteGuard guard = guard();
+        String shortSentence = "what is up in bulk as well";
+
+        assertEquals(EmitAction.EMIT_FINAL,
+                guard.decideEmit(shortSentence, shortSentence.length(), "sentence-punct", List.of()));
+    }
+
+    @Test
     void softMaxTriggersSearchButDoesNotForceUnsafeBoundary() {
         EnglishIncompleteGuard guard = guard(12, 20, 8, 8);
         String belowSoft = "we will review revenue cost and cash flow";
@@ -116,10 +125,10 @@ class EnglishIncompleteGuardTest {
     }
 
     @Test
-    void finalRemainderWithIncompleteTailIsHeldForNextSegment() {
+    void finalRemainderWithIncompleteTailIsNotHeldAfterAzureFinal() {
         EnglishIncompleteGuard guard = guard();
 
-        assertTrue(guard.shouldHoldFinalRemainder("we are looking forward to", List.of()));
+        assertFalse(guard.shouldHoldFinalRemainder("we are looking forward to", List.of()));
         assertFalse(guard.shouldHoldFinalRemainder("we are looking forward to continuing with it", List.of()));
     }
 }

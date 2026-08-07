@@ -60,6 +60,7 @@ public class EnglishIncompleteGuard {
             Pattern.compile("[\\p{L}\\p{Nd}]+(?:'[\\p{L}\\p{Nd}]+)?");
     private static final Pattern INCOMPLETE_NUMBER_TAIL =
             Pattern.compile("(?i)([$]|\\b\\d+[.,:/-])\\s*$");
+    private static final int STRONG_BOUNDARY_MIN_EMIT_WORDS = 6;
 
     private static final Set<String> CONNECTOR_TAILS = Set.of(
             "and", "or", "but", "because", "although", "though", "while", "when", "if", "unless",
@@ -188,7 +189,7 @@ public class EnglishIncompleteGuard {
         if (result.decision() == Decision.HOLD) {
             return EmitAction.HOLD;
         }
-        if (shouldHoldForOutputFloor(segment)) {
+        if (shouldHoldForOutputFloor(segment, reason)) {
             return EmitAction.HOLD;
         }
         if (!isStrongBoundary(reason)) {
@@ -198,8 +199,7 @@ public class EnglishIncompleteGuard {
     }
 
     public boolean shouldHoldFinalRemainder(String text, List<String> dynamicTerms) {
-        GuardResult result = check(text, dynamicTerms);
-        return result.decision() != Decision.PASS;
+        return false;
     }
 
     public boolean shouldDropFinalRemainder(String text, List<String> dynamicTerms) {
@@ -208,6 +208,14 @@ public class EnglishIncompleteGuard {
 
     public boolean shouldHoldForOutputFloor(String segment) {
         return wordCount(segment) < minEmitWords();
+    }
+
+    private boolean shouldHoldForOutputFloor(String segment, String reason) {
+        int requiredWords = minEmitWords();
+        if (isStrongBoundary(reason)) {
+            requiredWords = Math.min(requiredWords, STRONG_BOUNDARY_MIN_EMIT_WORDS);
+        }
+        return wordCount(segment) < requiredWords;
     }
 
     public boolean boundaryVeto(String working, int cutIndex, List<String> dynamicTerms) {
