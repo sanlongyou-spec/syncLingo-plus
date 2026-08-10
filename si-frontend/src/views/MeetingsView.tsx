@@ -73,7 +73,11 @@ export default function MeetingsView() {
   const [notificationContent, setNotificationContent] = useState('')
   const [selectedNotificationRecipients, setSelectedNotificationRecipients] = useState<Set<string>>(new Set())
   const [notificationSendResult, setNotificationSendResult] = useState<MeetingNotificationSendResult | null>(null)
+  const [newMeetingTitle, setNewMeetingTitle] = useState('')
+  const [newMeetingScheduledTime, setNewMeetingScheduledTime] = useState('')
+  const [newMeetingNote, setNewMeetingNote] = useState('')
   const [loading, setLoading] = useState(true)
+  const [creatingMeeting, setCreatingMeeting] = useState(false)
   const [noticeUploading, setNoticeUploading] = useState(false)
   const [noticePreviewing, setNoticePreviewing] = useState(false)
   const [notificationSending, setNotificationSending] = useState(false)
@@ -142,6 +146,35 @@ export default function MeetingsView() {
     applyMeetingSelection(value ? Number(value) : null)
   }
 
+  const handleCreateMeeting = async () => {
+    const title = newMeetingTitle.trim()
+    if (!title) {
+      setError('请填写会议名称')
+      return
+    }
+    setCreatingMeeting(true)
+    setError('')
+    try {
+      const result = await createMeeting({
+        title,
+        scheduledTime: newMeetingScheduledTime ? newMeetingScheduledTime.replace('T', ' ') : undefined,
+        note: newMeetingNote.trim() || undefined,
+      })
+      const created = result.data
+      const nextMeetings = [created, ...meetings.filter(item => item.id !== created.id)]
+      setMeetings(nextMeetings)
+      applyMeetingSelection(created.id, nextMeetings)
+      setNewMeetingTitle('')
+      setNewMeetingScheduledTime('')
+      setNewMeetingNote('')
+      flash('会议已创建')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建会议失败')
+    } finally {
+      setCreatingMeeting(false)
+    }
+  }
+
   const resolveMeetingForNotice = async (file: File, parsedFile: PreMeetingFile) => {
     const parsedTitle = parsedFile.meetingTitle?.trim()
     if (!parsedTitle && selectedMeeting) {
@@ -169,12 +202,12 @@ export default function MeetingsView() {
     const showError = options.showError ?? true
     const showSuccess = options.showSuccess ?? true
     if (!targetMeetingId) {
-      if (showError) setError('请先选择会议，或上传会议通知自动生成会议')
+      if (showError) setError('请先选择或创建会议')
       return null
     }
     const normalizedMeetingUrl = meetingUrl.trim()
     if (!normalizedMeetingUrl) {
-      if (showError) setError('请先填写会议链接')
+      if (showError) setError('生成通知前请先填写会议链接')
       return null
     }
     setNoticePreviewing(true)
@@ -223,14 +256,11 @@ export default function MeetingsView() {
   }, [selectedMeetingId, meetingUrl, meetingFiles.length])
 
   const handleNoticeUpload = async (file: File) => {
-    if (!meetingUrl.trim()) {
-      setError('请先填写会议链接')
-      return
-    }
     if (!isAcceptedReportFile(file)) {
       setError('会议通知仅支持 PDF 或 Word（.doc/.docx）')
       return
     }
+    const normalizedMeetingUrl = meetingUrl.trim()
     setNoticeUploading(true)
     setError('')
     setNotificationSendResult(null)
@@ -267,8 +297,14 @@ export default function MeetingsView() {
             }
           : item,
       ))
-      flash('会议通知已上传')
-      await runNotificationPreview(targetMeetingId, parsedFile)
+      if (normalizedMeetingUrl) {
+        flash('会议通知已上传')
+        await runNotificationPreview(targetMeetingId, parsedFile)
+      } else {
+        setNotificationPreview(null)
+        setNotificationContent('')
+        flash('会议通知已上传')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '上传会议通知失败')
     } finally {
@@ -278,7 +314,7 @@ export default function MeetingsView() {
 
   const handleUploadFile = async (file: File) => {
     if (!selectedMeetingId) {
-      setError('请先选择会议，或上传会议通知自动生成会议')
+      setError('请先选择或创建会议')
       return
     }
     if (!isAcceptedReportFile(file)) {
@@ -346,7 +382,7 @@ export default function MeetingsView() {
 
   const handleSendNotification = async () => {
     if (!selectedMeetingId) {
-      setError('请先选择会议，或上传会议通知自动生成会议')
+      setError('请先选择或创建会议')
       return
     }
     const content = notificationContent.trim()
@@ -396,32 +432,105 @@ export default function MeetingsView() {
         <ErrorBanner message={error} onDismiss={() => setError('')} />
         <SuccessBanner message={success} />
 
-        <section className="meetings-section">
+        <section className="meetings-section meetings-workspace-section">
           <div className="meetings-section-header">
-            <h2>会议信息</h2>
+            <h2>会议工作台</h2>
             {loading && <span className="meetings-muted">加载中...</span>}
           </div>
-          <div className="meetings-form-row">
-            <label className="meetings-field">
-              <span>所属会议</span>
-              <select
-                value={selectedMeetingId ?? ''}
-                onChange={event => handleMeetingSelect(event.target.value)}
-                disabled={loading}
+
+          <div className="meetings-workspace-grid">
+            <form
+              className="meetings-create-panel"
+              onSubmit={event => {
+                event.preventDefault()
+                void handleCreateMeeting()
+              }}
+            >
+              <div className="meetings-panel-title">
+                <strong>新建会议</strong>
+                <span>名称必填，其余选填</span>
+              </div>
+              <label className="meetings-input-field">
+                <span>会议名称</span>
+                <input
+                  value={newMeetingTitle}
+                  onChange={event => setNewMeetingTitle(event.target.value)}
+                  maxLength={120}
+                  placeholder="例如：金融专项会议"
+                />
+              </label>
+              <div className="meetings-form-split">
+                <label className="meetings-input-field">
+                  <span>会议时间（选填）</span>
+                  <input
+                    type="datetime-local"
+                    value={newMeetingScheduledTime}
+                    onChange={event => setNewMeetingScheduledTime(event.target.value)}
+                  />
+                </label>
+                <label className="meetings-input-field">
+                  <span>备注（选填）</span>
+                  <input
+                    value={newMeetingNote}
+                    onChange={event => setNewMeetingNote(event.target.value)}
+                    maxLength={240}
+                    placeholder="议题、场次或负责人"
+                  />
+                </label>
+              </div>
+              <button
+                className="meetings-primary-btn meetings-create-btn"
+                type="submit"
+                disabled={creatingMeeting || !newMeetingTitle.trim()}
               >
-                <option value="">请选择会议</option>
-                {meetings.map(meeting => (
-                  <option key={meeting.id} value={meeting.id}>
-                    {meeting.title}
-                  </option>
-                ))}
-              </select>
-            </label>
+                {creatingMeeting ? '创建中...' : '创建会议'}
+              </button>
+            </form>
+
+            <div className="meetings-select-panel">
+              <div className="meetings-panel-title">
+                <strong>选择会议</strong>
+                <span>{meetings.length} 个会议</span>
+              </div>
+              <label className="meetings-input-field">
+                <span>当前会议</span>
+                <select
+                  value={selectedMeetingId ?? ''}
+                  onChange={event => handleMeetingSelect(event.target.value)}
+                  disabled={loading}
+                >
+                  <option value="">请选择会议</option>
+                  {meetings.map(meeting => (
+                    <option key={meeting.id} value={meeting.id}>
+                      {meeting.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {selectedMeeting ? (
+                <div className="meetings-selected-card">
+                  <div>
+                    <strong>{selectedMeeting.title}</strong>
+                    <span>{selectedMeeting.scheduledTime || '未设置会议时间'}</span>
+                  </div>
+                  <div className="meetings-status-row">
+                    <span>{meetingFiles.length} 个文件</span>
+                    <span>{meetingHasExpected ? '已有应到名单' : '未导入名单'}</span>
+                    <span>{meetingUrl.trim() ? '已填链接' : '链接选填'}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="meetings-selection-placeholder">
+                  请选择已有会议，或在左侧创建一个新会议。
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="meetings-notice-grid">
+          <div className="meetings-notice-grid meetings-optional-grid">
             <label className="meetings-link-field">
-              <span>会议链接</span>
+              <span>会议链接（选填）</span>
               <input
                 value={meetingUrl}
                 onChange={event => {
@@ -435,7 +544,7 @@ export default function MeetingsView() {
             </label>
 
             <div className="meetings-notice-field">
-              <span>会议通知</span>
+              <span>会议通知（选填）</span>
               <div
                 className={`meetings-upload meetings-notice-upload${noticeUploading ? ' is-uploading' : ''}`}
                 onClick={() => !noticeUploading && noticeInputRef.current?.click()}
@@ -485,7 +594,7 @@ export default function MeetingsView() {
 
           {!notificationPreview && (
             <div className="meetings-empty">
-              填写会议链接并上传会议通知后，将自动生成通知名单与内容
+              需要发送通知时，上传会议通知并填写会议链接即可生成通知名单与内容
             </div>
           )}
 
@@ -591,7 +700,7 @@ export default function MeetingsView() {
           </div>
 
           {!selectedMeetingId ? (
-            <div className="meetings-empty">请先选择会议，或上传会议通知自动生成会议</div>
+            <div className="meetings-empty">请先选择或创建会议</div>
           ) : (
             <>
               <div
