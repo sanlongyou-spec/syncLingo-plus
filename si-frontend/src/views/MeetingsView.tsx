@@ -74,8 +74,6 @@ export default function MeetingsView() {
   const [selectedNotificationRecipients, setSelectedNotificationRecipients] = useState<Set<string>>(new Set())
   const [notificationSendResult, setNotificationSendResult] = useState<MeetingNotificationSendResult | null>(null)
   const [newMeetingTitle, setNewMeetingTitle] = useState('')
-  const [newMeetingScheduledTime, setNewMeetingScheduledTime] = useState('')
-  const [newMeetingNote, setNewMeetingNote] = useState('')
   const [loading, setLoading] = useState(true)
   const [creatingMeeting, setCreatingMeeting] = useState(false)
   const [noticeUploading, setNoticeUploading] = useState(false)
@@ -157,16 +155,12 @@ export default function MeetingsView() {
     try {
       const result = await createMeeting({
         title,
-        scheduledTime: newMeetingScheduledTime ? newMeetingScheduledTime.replace('T', ' ') : undefined,
-        note: newMeetingNote.trim() || undefined,
       })
       const created = result.data
       const nextMeetings = [created, ...meetings.filter(item => item.id !== created.id)]
       setMeetings(nextMeetings)
       applyMeetingSelection(created.id, nextMeetings)
       setNewMeetingTitle('')
-      setNewMeetingScheduledTime('')
-      setNewMeetingNote('')
       flash('会议已创建')
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建会议失败')
@@ -448,7 +442,6 @@ export default function MeetingsView() {
             >
               <div className="meetings-panel-title">
                 <strong>新建会议</strong>
-                <span>名称必填，其余选填</span>
               </div>
               <label className="meetings-input-field">
                 <span>会议名称</span>
@@ -459,25 +452,6 @@ export default function MeetingsView() {
                   placeholder="例如：金融专项会议"
                 />
               </label>
-              <div className="meetings-form-split">
-                <label className="meetings-input-field">
-                  <span>会议时间（选填）</span>
-                  <input
-                    type="datetime-local"
-                    value={newMeetingScheduledTime}
-                    onChange={event => setNewMeetingScheduledTime(event.target.value)}
-                  />
-                </label>
-                <label className="meetings-input-field">
-                  <span>备注（选填）</span>
-                  <input
-                    value={newMeetingNote}
-                    onChange={event => setNewMeetingNote(event.target.value)}
-                    maxLength={240}
-                    placeholder="议题、场次或负责人"
-                  />
-                </label>
-              </div>
               <button
                 className="meetings-primary-btn meetings-create-btn"
                 type="submit"

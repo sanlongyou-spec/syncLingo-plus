@@ -152,12 +152,6 @@
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
-.meetings-form-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-}
-
 .meetings-create-btn {
   align-self: flex-start;
   min-width: 132px;
@@ -724,8 +718,7 @@
     grid-template-columns: 1fr;
   }
 
-  .meetings-workspace-grid,
-  .meetings-form-split {
+  .meetings-workspace-grid {
     grid-template-columns: 1fr;
   }
 
