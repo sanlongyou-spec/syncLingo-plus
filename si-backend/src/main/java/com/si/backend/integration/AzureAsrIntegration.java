@@ -63,9 +63,10 @@ public class AzureAsrIntegration {
      *
      * @param sessionId  会话 ID
      * @param sourceLang 源语言，传 "auto" 或 null 启用自动检测
+     * @param hotwords   ASR 热词
      * @return ASR 会话实例
      */
-    public AsrSession createSession(String sessionId, String sourceLang, List<String> hotwords, String enabledLanguages) {
+    public AsrSession createSession(String sessionId, String sourceLang, List<String> hotwords) {
         if (sessions.containsKey(sessionId)) {
             log.warn("[AzureAsrIntegration] session already exists, sessionId={}", sessionId);
             return sessions.get(sessionId);
@@ -122,11 +123,7 @@ public class AzureAsrIntegration {
         AsrSession session;
         if (Constants.LANG_AUTO.equalsIgnoreCase(sourceLang) || sourceLang == null || sourceLang.isBlank()) {
             log.info("[AzureAsrIntegration] creating session with ConversationTranscriber (Continuous LID + diarization), sessionId={}", sessionId);
-            String[] languages = parseLanguages(
-                    enabledLanguages != null && !enabledLanguages.isBlank()
-                            ? enabledLanguages
-                            : asrProperties.getAsr().getLanguage()
-            );
+            String[] languages = parseLanguages(asrProperties.getAsr().getLanguage());
             config.setProperty(PropertyId.SpeechServiceConnection_LanguageIdMode, "Continuous");
             AutoDetectSourceLanguageConfig autoConfig = AutoDetectSourceLanguageConfig.fromLanguages(List.of(languages));
             session = new AsrSession(config, autoConfig, pushStream, asrConfig, hotwords, punctuationService, segmentationService, idSegmenter, idGuard, enGuard);
@@ -146,7 +143,7 @@ public class AzureAsrIntegration {
      * 兼容旧调用，使用配置默认值。
      */
     public AsrSession createSession(String sessionId) {
-        return createSession(sessionId, null, List.of(), null);
+        return createSession(sessionId, null, List.of());
     }
 
     /**

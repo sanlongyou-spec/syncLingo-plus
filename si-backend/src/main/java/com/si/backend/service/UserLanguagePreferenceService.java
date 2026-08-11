@@ -1,6 +1,8 @@
 package com.si.backend.service;
 
+import com.si.backend.common.BizException;
 import com.si.backend.common.Constants;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.dto.SaveUserLanguagePreferenceRequest;
 import com.si.backend.entity.UserLanguagePreference;
 import com.si.backend.mapper.UserLanguagePreferenceMapper;
@@ -24,6 +26,7 @@ import java.util.Set;
 public class UserLanguagePreferenceService {
 
     private static final List<String> DEFAULT_ENABLED_LANGUAGES = List.of(Constants.LANG_ZH_CN, Constants.LANG_ID);
+    private static final int MIN_OUTPUT_LANGUAGE_COUNT = 1;
 
     private final UserLanguagePreferenceMapper preferenceMapper;
 
@@ -45,10 +48,14 @@ public class UserLanguagePreferenceService {
     @Transactional
     public UserLanguagePreferenceVo save(Long userId, SaveUserLanguagePreferenceRequest request) {
         log.info("[UserLanguagePreferenceService] save start, userId={}", userId);
+        List<String> enabledLanguages = request == null || request.getEnabledLanguages() == null
+                ? DEFAULT_ENABLED_LANGUAGES
+                : normalizeEnabledLanguages(request.getEnabledLanguages());
+        requireOutputLanguages(enabledLanguages);
         UserLanguagePreference preference = new UserLanguagePreference();
         preference.setUserId(userId);
         preference.setDefaultSourceLang(normalizeSourceLang(request != null ? request.getDefaultSourceLang() : null));
-        preference.setEnabledLanguages(String.join(",", normalizeEnabledLanguages(request != null ? request.getEnabledLanguages() : null)));
+        preference.setEnabledLanguages(String.join(",", enabledLanguages));
         preferenceMapper.upsert(preference);
         UserLanguagePreferenceVo result = get(userId);
         log.info("[UserLanguagePreferenceService] save end, userId={}, enabledCount={}", userId, result.getEnabledLanguages().size());
@@ -56,8 +63,10 @@ public class UserLanguagePreferenceService {
     }
 
     public List<String> resolveEnabledLanguages(Long userId, List<String> requestedLanguages) {
-        if (requestedLanguages != null && !requestedLanguages.isEmpty()) {
-            return normalizeEnabledLanguages(requestedLanguages);
+        if (requestedLanguages != null) {
+            List<String> enabledLanguages = normalizeEnabledLanguages(requestedLanguages);
+            requireOutputLanguages(enabledLanguages);
+            return enabledLanguages;
         }
         return get(userId).getEnabledLanguages();
     }
@@ -73,7 +82,7 @@ public class UserLanguagePreferenceService {
         return UserLanguagePreferenceVo.builder()
                 .userId(userId)
                 .defaultSourceLang(normalizeSourceLang(preference.getDefaultSourceLang()))
-                .enabledLanguages(normalizeEnabledLanguages(parseLanguages(preference.getEnabledLanguages())))
+                .enabledLanguages(normalizeStoredEnabledLanguages(parseLanguages(preference.getEnabledLanguages())))
                 .build();
     }
 
@@ -99,10 +108,21 @@ public class UserLanguagePreferenceService {
                     .filter(value -> value != null && !value.isBlank() && !Constants.LANG_AUTO.equals(value))
                     .forEach(normalized::add);
         }
-        if (normalized.size() < 2) {
-            normalized.addAll(DEFAULT_ENABLED_LANGUAGES);
-        }
         return List.copyOf(normalized);
+    }
+
+    private List<String> normalizeStoredEnabledLanguages(List<String> enabledLanguages) {
+        List<String> normalized = normalizeEnabledLanguages(enabledLanguages);
+        if (normalized.size() < MIN_OUTPUT_LANGUAGE_COUNT) {
+            return DEFAULT_ENABLED_LANGUAGES;
+        }
+        return normalized;
+    }
+
+    private void requireOutputLanguages(List<String> enabledLanguages) {
+        if (enabledLanguages == null || enabledLanguages.size() < MIN_OUTPUT_LANGUAGE_COUNT) {
+            throw BizException.of(ErrorCode.BAD_REQUEST, "请至少选择一种输出语言");
+        }
     }
 
     private String normalizeLanguage(String lang) {

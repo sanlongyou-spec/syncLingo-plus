@@ -79,6 +79,11 @@ const normalizeVoiceCode = (code?: string | null) => {
 const isUnknownSpeakerId = (speakerId?: string | null) =>
   speakerId?.trim().toLowerCase() === 'unknown'
 const RUNNING_STATUS = 'running'
+const MIN_OUTPUT_LANGUAGE_COUNT = 1
+const DEFAULT_OUTPUT_LANGUAGES = [LANGUAGE.ZH_CN, LANGUAGE.ID_ID]
+
+const uniqueLanguages = (languages: string[]) =>
+  Array.from(new Set(languages.filter(Boolean)))
 
 const mappedSpeakerName = (speakerId: string | undefined, speakerNameMap: Record<string, string>) =>
   speakerId && !isUnknownSpeakerId(speakerId) ? speakerNameMap[speakerId] : ''
@@ -102,7 +107,7 @@ export default function InterpretationView() {
   const [currentSpeakerId, setCurrentSpeakerId] = useState('')
   const [speakerNameMap, setSpeakerNameMap] = useState<Record<string, string>>({})
   const [selectedHotwordIds, setSelectedHotwordIds] = useState<number[]>([])
-  const [enabledLanguages, setEnabledLanguages] = useState<string[]>([LANGUAGE.ZH_CN, LANGUAGE.ID_ID])
+  const [enabledLanguages, setEnabledLanguages] = useState<string[]>(DEFAULT_OUTPUT_LANGUAGES)
 
   // ── Meeting & speaker summary ─────────────────────────────
   const [meetings, setMeetings] = useState<Meeting[]>([])
@@ -168,8 +173,12 @@ export default function InterpretationView() {
 
     getUserLanguagePreference()
       .then(res => {
-        // 中文/印尼语必选：无论用户偏好如何，恒含 zh/id。
-        setEnabledLanguages(Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...(res.data?.enabledLanguages ?? [])])))
+        const savedLanguages = uniqueLanguages(res.data?.enabledLanguages ?? [])
+        setEnabledLanguages(
+          savedLanguages.length >= MIN_OUTPUT_LANGUAGE_COUNT
+            ? savedLanguages
+            : DEFAULT_OUTPUT_LANGUAGES,
+        )
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getUserLanguagePreference failed:', err))
 
@@ -459,7 +468,7 @@ export default function InterpretationView() {
     return null
   }
 
-  const connectSession = async (sid: string) => {
+  const connectSession = async (sid: string, outputLanguages = enabledLanguages) => {
     setSessionId(sid)
     sessionIdRef.current = sid
     localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
@@ -479,10 +488,10 @@ export default function InterpretationView() {
     ttsChunkIndexByTaskRef.current.clear()
     await voiceMeeter.init()
     await voiceMeeter.applySinks()
-    if (!voiceMeeter.isReady()) {
+    if (!voiceMeeter.isReady(outputLanguages)) {
       voiceMeeter.stop()
       voiceMeeterRef.current = null
-      throw new Error('未检测到就绪的 VoiceMeeter 输出设备（中文需 VoiceMeeter Input，印尼语需 VoiceMeeter Aux Input）。请先启动并配置 VoiceMeeter，并授予浏览器音频设备权限后再开始。')
+      throw new Error('未检测到已选择输出语言对应的 VoiceMeeter 输出设备。请先启动并配置 VoiceMeeter，并授予浏览器音频设备权限后再开始。')
     }
     await voiceMeeter.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
     void refreshAudioOutputs()
@@ -515,8 +524,9 @@ export default function InterpretationView() {
       setError('请先在"会议"页面新建会议，并在此选择关联会议')
       return
     }
-    if (enabledLanguages.length < 2) {
-      setError('请至少勾选两种翻译语种')
+    const selectedLanguages = uniqueLanguages(enabledLanguages)
+    if (selectedLanguages.length < MIN_OUTPUT_LANGUAGE_COUNT) {
+      setError('请至少勾选一种输出语言')
       return
     }
     setError('')
@@ -530,11 +540,11 @@ export default function InterpretationView() {
         targetLang: LANGUAGE.AUTO,
         title: sessionTitle,
         hotwordIds: selectedHotwordIds,
-        enabledLanguages,
+        enabledLanguages: selectedLanguages,
         meetingId: selectedMeetingId,
       })
       const sid = res.data
-      await connectSession(sid)
+      await connectSession(sid, selectedLanguages)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '启动失败')
     } finally {
@@ -828,30 +838,27 @@ export default function InterpretationView() {
                       <option key={m.id} value={m.id}>{m.title}{m.scheduledTime ? ` (${m.scheduledTime})` : ''}</option>
                     ))}
                   </select>
+                  <label className="si-meeting-selector-label">输出语言</label>
                   <div className="si-language-checkboxes">
-                    {LANGUAGE_OPTIONS.map(opt => {
-                      // 中文、印尼语是开会必选语种：恒为勾选且不可取消；仅英语可选。
-                      const required = opt.value === LANGUAGE.ZH_CN || opt.value === LANGUAGE.ID_ID
-                      return (
-                        <label key={opt.value} className="si-language-checkbox-item">
-                          <input
-                            type="checkbox"
-                            checked={required || enabledLanguages.includes(opt.value)}
-                            onChange={e => {
-                              if (required) return
-                              const next = e.target.checked
-                                ? [...enabledLanguages, opt.value]
-                                : enabledLanguages.filter(l => l !== opt.value)
-                              const ensured = Array.from(new Set([LANGUAGE.ZH_CN, LANGUAGE.ID_ID, ...next]))
-                              setEnabledLanguages(ensured)
-                              void saveUserLanguagePreference({ defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: ensured })
+                    {LANGUAGE_OPTIONS.map(opt => (
+                      <label key={opt.value} className="si-language-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={enabledLanguages.includes(opt.value)}
+                          onChange={e => {
+                            const next = e.target.checked
+                              ? uniqueLanguages([...enabledLanguages, opt.value])
+                              : enabledLanguages.filter(l => l !== opt.value)
+                            setEnabledLanguages(next)
+                            if (next.length >= MIN_OUTPUT_LANGUAGE_COUNT) {
+                              void saveUserLanguagePreference({ defaultSourceLang: LANGUAGE.AUTO, enabledLanguages: next })
                                 .catch(err => console.warn('[InterpretationView] saveUserLanguagePreference failed:', err))
-                            }}
-                          />
-                          <span>{opt.label}</span>
-                        </label>
-                      )
-                    })}
+                            }
+                          }}
+                        />
+                        <span>{opt.label}</span>
+                      </label>
+                    ))}
                   </div>
                 </div>
               )}

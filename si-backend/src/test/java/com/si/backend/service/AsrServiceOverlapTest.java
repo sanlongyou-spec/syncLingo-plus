@@ -27,14 +27,13 @@ class AsrServiceOverlapTest {
 
         when(hotwordService.listActive(1L, null)).thenReturn(List.of());
         when(hotwordService.filterSelected(anyList(), isNull())).thenReturn(List.of());
-        when(integration.createSession(eq(sessionId), eq("auto"), anyList(), isNull())).thenReturn(asrSession);
+        when(integration.createSession(eq(sessionId), eq("auto"), anyList())).thenReturn(asrSession);
 
         List<String> finalSegments = new ArrayList<>();
         service.startRecognition(
                 sessionId,
                 1L,
                 "auto",
-                null,
                 null,
                 (text, language, speakerId) -> {
                 },

@@ -42,7 +42,6 @@ public class AsrService {
             Long userId,
             String sourceLang,
             String selectedHotwordIds,
-            String enabledLanguages,
             AsrCallback onRecognizing,
             AsrCallback onRecognized,
             AsrErrorCallback onError
@@ -74,7 +73,7 @@ public class AsrService {
                     .map(com.si.backend.entity.AsrHotword::getId)
                     .filter(java.util.Objects::nonNull)
                     .toList());
-            asrSession = asrIntegration.createSession(sessionId, sourceLang, hotwords, enabledLanguages);
+            asrSession = asrIntegration.createSession(sessionId, sourceLang, hotwords);
         } catch (Exception e) {
             log.error("[AsrService] createSession failed, sessionId={}", sessionId, e);
             onError.onError("ASR 会话创建失败: " + e.getMessage());

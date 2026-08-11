@@ -182,8 +182,11 @@ export class VoiceMeeterOutput {
     return this.applyMonitorSink()
   }
 
-  isReady(): boolean {
-    return this.channels.zh.sinkReady && this.channels.id.sinkReady
+  isReady(targetLanguages?: string[]): boolean {
+    const requiredLanguages: OutputLang[] = targetLanguages && targetLanguages.length > 0
+      ? Array.from(new Set(targetLanguages.map(lang => VoiceMeeterOutput.resolveLang(lang))))
+      : ['zh', 'id']
+    return requiredLanguages.every(lang => this.channels[lang].sinkReady)
   }
 
   play(pcmData: Int16Array, targetLang: string, meta: PlaybackMeta = {}): void {

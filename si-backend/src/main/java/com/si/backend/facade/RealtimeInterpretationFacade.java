@@ -119,7 +119,6 @@ public class RealtimeInterpretationFacade {
                 sessionService.getSession(sessionId).map(InterpretationSession::getUserId).orElse(1L),
                 sourceLang,
                 sessionService.getSession(sessionId).map(InterpretationSession::getHotwordIds).orElse(null),
-                sessionService.getSession(sessionId).map(InterpretationSession::getEnabledLanguages).orElse(null),
                 (text, lang, speakerId) -> {
                     sessionUtteranceStartMs.computeIfAbsent(sessionId, k -> new AtomicLong(0))
                             .compareAndSet(0, System.currentTimeMillis());
@@ -279,11 +278,11 @@ public class RealtimeInterpretationFacade {
             }
             return List.of(requestedTargetLang);
         }
-        List<String> enabledLanguages = sessionService.getSession(sessionId)
+        List<String> outputLanguages = sessionService.getSession(sessionId)
                 .map(InterpretationSession::getEnabledLanguages)
                 .map(this::parseEnabledLanguages)
                 .orElse(List.of(Constants.LANG_ZH_CN, Constants.LANG_ID_SHORT));
-        return enabledLanguages.stream()
+        return outputLanguages.stream()
                 .map(this::normalizeAsrLang)
                 .filter(lang -> !isSameLanguage(sourceLang, lang))
                 .distinct()
