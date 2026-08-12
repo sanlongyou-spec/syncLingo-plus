@@ -595,7 +595,7 @@ export default function UserShareView() {
           <div className="si-share-invalid">
             <div className="si-share-invalid-icon">🔗</div>
             <p className="si-share-invalid-title">分享链接已失效</p>
-            <p className="si-share-invalid-text">该链接已过期或被停用（链接自生成起 6 小时内有效）。请向会议组织者索取新的分享链接。</p>
+            <p className="si-share-invalid-text">该链接已过期或被停用（链接自生成起 36 小时内有效）。请向会议组织者索取新的分享链接。</p>
           </div>
         </main>
       </div>

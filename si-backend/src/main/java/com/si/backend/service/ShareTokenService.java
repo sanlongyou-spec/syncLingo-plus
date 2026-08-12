@@ -36,8 +36,8 @@ public class ShareTokenService {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     /** 共享链接有效期（小时）：所有链接自签发起仅在此时长内有效。 */
-    @org.springframework.beans.factory.annotation.Value("${share.token-validity-hours:6}")
-    private long tokenValidityHours = 6;
+    @org.springframework.beans.factory.annotation.Value("${share.token-validity-hours:36}")
+    private long tokenValidityHours = 36;
 
     /** 操作员为自己拥有的会话签发单会话分享令牌。返回原始令牌(仅此一次)。 */
     public Issued mintSessionToken(AuthenticatedActor actor, String sessionId) {
@@ -47,7 +47,7 @@ public class ShareTokenService {
         token.setTokenHash(hash(raw));
         token.setKind(KIND_SESSION);
         token.setSessionId(sessionId);
-        token.setExpiresAt(LocalDateTime.now().plusHours(tokenValidityHours)); // 6 小时后失效
+        token.setExpiresAt(LocalDateTime.now().plusHours(tokenValidityHours)); // 36 小时后失效
         shareTokenMapper.insert(token);
         auditService.record("SHARE_TOKEN_MINT", "SUCCESS", "SESSION", sessionId, "kind=SESSION");
         return new Issued(token.getId(), raw, KIND_SESSION);
@@ -61,7 +61,7 @@ public class ShareTokenService {
         token.setTokenHash(hash(raw));
         token.setKind(KIND_CHANNEL);
         token.setOwnerUserId(actor.userId());
-        token.setExpiresAt(LocalDateTime.now().plusHours(tokenValidityHours)); // 6 小时后失效
+        token.setExpiresAt(LocalDateTime.now().plusHours(tokenValidityHours)); // 36 小时后失效
         shareTokenMapper.insert(token);
         auditService.record("SHARE_TOKEN_MINT", "SUCCESS", "CHANNEL", String.valueOf(actor.userId()), "kind=CHANNEL");
         return new Issued(token.getId(), raw, KIND_CHANNEL);
