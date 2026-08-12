@@ -5,7 +5,6 @@ import {
   getInterpretationStatus,
   getMeetings,
   getUserLanguagePreference,
-  listUserVoices,
   logout,
   saveUserLanguagePreference,
   saveInterpretationResult,
@@ -18,12 +17,11 @@ import { LANGUAGE, ROUTES, STORAGE_KEYS } from '../constants'
 import FontSizeControl from '../components/FontSizeControl'
 import { AudioCapture, pcmToBase64 } from '../lib/audioCapture'
 import { VoiceMeeterOutput } from '../lib/voiceMeeterOutput'
-import type { TtsMonitorLanguage } from '../lib/voiceMeeterOutput'
 import { useSmartAutoScroll } from '../lib/useSmartAutoScroll'
 import { useTranscriptFontScale } from '../lib/useTranscriptFontScale'
 import { AsrWebSocket } from '../lib/websocket'
 import { LANGUAGE_OPTIONS } from '../types'
-import type { Meeting, TtsPlaybackLog, UserVoice, WsMessage } from '../types'
+import type { Meeting, TtsPlaybackLog, WsMessage } from '../types'
 import './InterpretationView.css'
 
 interface TranscriptTranslation {
@@ -96,11 +94,6 @@ export default function InterpretationView() {
   const [transcripts, setTranscripts] = useState<TranscriptItem[]>([])
   const [currentSource, setCurrentSource] = useState('')
   const [currentTranslated, setCurrentTranslated] = useState('')
-  const [voices, setVoices] = useState<UserVoice[]>([])
-  const [selectedVoiceId, setSelectedVoiceId] = useState('')
-  const [monitorLanguage, setMonitorLanguage] = useState<TtsMonitorLanguage>('off')
-  const [monitorDeviceId, setMonitorDeviceId] = useState('')
-  const [audioOutputDevices, setAudioOutputDevices] = useState<MediaDeviceInfo[]>([])
   const [error, setError] = useState('')
   const [shareHint, setShareHint] = useState('')
   const [detectedLang, setDetectedLang] = useState('')
@@ -121,9 +114,6 @@ export default function InterpretationView() {
   const sessionIdRef = useRef<string | null>(null)
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
-  const selectedVoiceIdRef = useRef('')
-  const monitorLanguageRef = useRef<TtsMonitorLanguage>('off')
-  const monitorDeviceIdRef = useRef('')
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -133,31 +123,9 @@ export default function InterpretationView() {
 
   const speakerNameMapRef = useRef<Record<string, string>>({})
 
-  const refreshVoices = useCallback(() => {
-    listUserVoices()
-      .then(res => setVoices(res.data || []))
-      .catch((err: unknown) => console.warn('[InterpretationView] listUserVoices failed:', err))
-  }, [])
-
-  const refreshAudioOutputs = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      setAudioOutputDevices([])
-      return
-    }
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      setAudioOutputDevices(devices.filter(device => device.kind === 'audiooutput'))
-    } catch (err: unknown) {
-      console.warn('[InterpretationView] enumerate audio outputs failed:', err)
-    }
-  }, [])
-
   useEffect(() => { detectedLangRef.current = detectedLang }, [detectedLang])
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
-  useEffect(() => { selectedVoiceIdRef.current = selectedVoiceId }, [selectedVoiceId])
-  useEffect(() => { monitorLanguageRef.current = monitorLanguage }, [monitorLanguage])
-  useEffect(() => { monitorDeviceIdRef.current = monitorDeviceId }, [monitorDeviceId])
   useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
   useEffect(() => {
     getMeetings()
@@ -182,8 +150,6 @@ export default function InterpretationView() {
       })
       .catch((err: unknown) => console.warn('[InterpretationView] getUserLanguagePreference failed:', err))
 
-    refreshVoices()
-
     return () => {
       wsRef.current?.close()
       audioRef.current?.stop()
@@ -192,18 +158,6 @@ export default function InterpretationView() {
       voiceMeeterRef.current = null
     }
   }, [])
-
-  useEffect(() => {
-    void refreshAudioOutputs()
-    const mediaDevices = navigator.mediaDevices
-    if (!mediaDevices?.addEventListener) return
-
-    const handleDeviceChange = () => {
-      void refreshAudioOutputs()
-    }
-    mediaDevices.addEventListener('devicechange', handleDeviceChange)
-    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange)
-  }, [refreshAudioOutputs])
 
   // Refresh meetings whenever an overlay is closed and user returns here
   useEffect(() => {
@@ -218,7 +172,6 @@ export default function InterpretationView() {
           )
         })
         .catch((err: unknown) => console.warn('[InterpretationView] getMeetings refresh failed:', err))
-      refreshVoices()
     }
     window.addEventListener('hashchange', refreshMeetings)
     return () => window.removeEventListener('hashchange', refreshMeetings)
@@ -234,47 +187,14 @@ export default function InterpretationView() {
     const displayName = speakerName?.trim()
     if (!speakerId || !displayName || isUnknownSpeakerId(speakerId)) return
     setSpeakerNameMap(prev => prev[speakerId] === displayName ? prev : { ...prev, [speakerId]: displayName })
-  }, [refreshVoices])
+  }, [])
 
   const rememberCurrentSpeaker = useCallback((speakerId?: string) => {
     const normalizedSpeakerId = normalizeVoiceCode(speakerId)
     if (!normalizedSpeakerId || isUnknownSpeakerId(normalizedSpeakerId)) return
-    const previousSpeakerId = currentSpeakerIdRef.current
-    if (previousSpeakerId && previousSpeakerId !== normalizedSpeakerId && selectedVoiceIdRef.current) {
-      setSelectedVoiceId('')
-      selectedVoiceIdRef.current = ''
-      const sid = sessionIdRef.current
-      if (sid) {
-        wsRef.current?.setVoice(sid, normalizedSpeakerId, '')
-      }
-    }
     setCurrentSpeakerId(normalizedSpeakerId)
     currentSpeakerIdRef.current = normalizedSpeakerId
-  }, [refreshVoices])
-
-  const handleManualVoiceChange = (voiceId: string) => {
-    setSelectedVoiceId(voiceId)
-    selectedVoiceIdRef.current = voiceId
-    const sid = sessionIdRef.current
-    const speakerId = currentSpeakerIdRef.current
-    if (!sid || !speakerId) {
-      if (voiceId) setError('请先等待系统识别到当前汇报人')
-      return
-    }
-    wsRef.current?.setVoice(sid, speakerId, voiceId)
-  }
-
-  const handleMonitorLanguageChange = (language: TtsMonitorLanguage) => {
-    setMonitorLanguage(language)
-    monitorLanguageRef.current = language
-    void voiceMeeterRef.current?.setMonitor(language, monitorDeviceIdRef.current)
-  }
-
-  const handleMonitorDeviceChange = (deviceId: string) => {
-    setMonitorDeviceId(deviceId)
-    monitorDeviceIdRef.current = deviceId
-    void voiceMeeterRef.current?.setMonitor(monitorLanguageRef.current, deviceId)
-  }
+  }, [])
 
   const reportTtsPlaybackLog = useCallback((event: TtsPlaybackLog) => {
     const activeSessionId = sessionIdRef.current
@@ -436,11 +356,9 @@ export default function InterpretationView() {
         setIsRunning(true)
         setError('')
         setCurrentSpeakerId('')
-        setSelectedVoiceId('')
         setSpeakerNameMap({})
         setDetectedLang(msg.language || '')
         currentSpeakerIdRef.current = ''
-        selectedVoiceIdRef.current = ''
         speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''
         break
@@ -490,7 +408,6 @@ export default function InterpretationView() {
       await voiceMeeter.init()
       await voiceMeeter.applySinks()
       voiceMeeterRef.current = voiceMeeter
-      await voiceMeeter.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
     } catch (err) {
       console.warn('[InterpretationView] VoiceMeeter output unavailable; continuing with shared-page audio:', err)
       voiceMeeter.stop()
@@ -498,7 +415,6 @@ export default function InterpretationView() {
         voiceMeeterRef.current = null
       }
     }
-    void refreshAudioOutputs()
 
     const audio = new AudioCapture({
       sampleRate: AUDIO_DEFAULTS.SAMPLE_RATE,
@@ -583,9 +499,7 @@ export default function InterpretationView() {
     setCurrentTranslated('')
     setDetectedLang('')
     setCurrentSpeakerId('')
-    setSelectedVoiceId('')
     currentSpeakerIdRef.current = ''
-    selectedVoiceIdRef.current = ''
   }
 
   const voiceCodeForDisplay = (speakerId?: string) => {
@@ -656,10 +570,6 @@ export default function InterpretationView() {
             <span className="si-side-action-icon">$</span>
             <span>成本分析</span>
           </button>
-          <button className="si-side-action" onClick={() => { window.location.hash = ROUTES.VOICES }}>
-            <span className="si-side-action-icon">V</span>
-            <span>音色</span>
-          </button>
           <button className="si-side-action" onClick={copyShareLink}>
             <span className="si-side-action-icon">S</span>
             <span>{shareHint || '分享链接'}</span>
@@ -676,49 +586,6 @@ export default function InterpretationView() {
           <h1 className="si-brand">聚龙同传</h1>
         </div>
         <div className="si-topbar-right">
-          <label className="si-manual-voice-select">
-            <span>音色</span>
-            <select
-              value={selectedVoiceId}
-              onChange={event => handleManualVoiceChange(event.target.value)}
-              disabled={!isRunning || !currentSpeakerId || voices.length === 0}
-            >
-              <option value="">默认音色</option>
-              {voices.map(voice => (
-                <option key={voice.voiceId} value={voice.voiceId}>{voice.voiceName}</option>
-              ))}
-            </select>
-          </label>
-          <label className="si-monitor-language-select">
-            <span>监听</span>
-            <select
-              value={monitorLanguage}
-              onChange={event => handleMonitorLanguageChange(event.target.value as TtsMonitorLanguage)}
-            >
-              <option value="off">关闭</option>
-              <option value="zh">中文</option>
-              <option value="id">印尼语</option>
-              <option value="en">英语</option>
-            </select>
-          </label>
-          <label className="si-monitor-device-select">
-            <span>输出</span>
-            <select
-              value={monitorDeviceId}
-              onChange={event => handleMonitorDeviceChange(event.target.value)}
-              onFocus={() => void refreshAudioOutputs()}
-              disabled={monitorLanguage === 'off'}
-            >
-              <option value="">系统默认</option>
-              {audioOutputDevices
-                .filter(device => device.deviceId !== 'default')
-                .map((device, index) => (
-                  <option key={`${device.deviceId}-${index}`} value={device.deviceId}>
-                    {device.label || `音频输出 ${index + 1}`}
-                  </option>
-                ))}
-            </select>
-          </label>
           <button className="si-logout-btn" type="button" onClick={handleLogout} disabled={logoutBusy}>
             {logoutBusy ? '退出中...' : '退出登录'}
           </button>
