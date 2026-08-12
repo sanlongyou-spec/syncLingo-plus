@@ -24,6 +24,7 @@ public interface InterpretationResultMapper {
                 target_lang VARCHAR(16) DEFAULT NULL,
                 create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_result_session_id (session_id),
+                INDEX idx_result_session_id_id (session_id, id),
                 CONSTRAINT fk_result_session
                     FOREIGN KEY (session_id)
                     REFERENCES interpretation_session (session_id)
@@ -38,6 +39,9 @@ public interface InterpretationResultMapper {
     @Update("ALTER TABLE interpretation_result ADD COLUMN speaker_name VARCHAR(128) DEFAULT NULL")
     void addSpeakerNameColumnIfNotExists();
 
+    @Update("ALTER TABLE interpretation_result ADD INDEX idx_result_session_id_id (session_id, id)")
+    void addSessionIdIdIndexIfNotExists();
+
     @Insert("INSERT INTO interpretation_result (session_id, source_text, translated_text, source_lang, target_lang, speaker_id, speaker_name, create_time) " +
             "VALUES (#{sessionId}, #{sourceText}, #{translatedText}, #{sourceLang}, #{targetLang}, #{speakerId}, #{speakerName}, NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
@@ -45,6 +49,18 @@ public interface InterpretationResultMapper {
 
     @Select("SELECT * FROM interpretation_result WHERE session_id = #{sessionId} ORDER BY id ASC")
     List<InterpretationResult> findBySessionId(String sessionId);
+
+    @Select("""
+            SELECT * FROM interpretation_result
+            WHERE session_id = #{sessionId}
+              AND id > #{afterId}
+            ORDER BY id ASC
+            LIMIT #{limit}
+            """)
+    List<InterpretationResult> findBySessionIdAfterId(
+            @Param("sessionId") String sessionId,
+            @Param("afterId") long afterId,
+            @Param("limit") int limit);
 
     @Update("UPDATE interpretation_result SET speaker_name = #{speakerName} WHERE session_id = #{sessionId} AND speaker_id = #{speakerId}")
     int updateSpeakerName(@Param("sessionId") String sessionId, @Param("speakerId") String speakerId, @Param("speakerName") String speakerName);

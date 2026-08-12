@@ -117,8 +117,21 @@ export const getInterpretationStatus = (sessionId: string): Promise<Result<Inter
 export const saveInterpretationResult = (params: SaveInterpretationResultParams): Promise<Result<InterpretationResultItem>> =>
   client.post<Result<InterpretationResultItem>>('/api/interpretation/results', params).then(r => r.data)
 
-export const getPublicInterpretationResults = (sessionId: string): Promise<Result<InterpretationResultItem[]>> =>
-  client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`).then(r => r.data)
+export interface PublicInterpretationResultsQuery {
+  afterId?: number
+  limit?: number
+}
+
+export const getPublicInterpretationResults = (
+  sessionId: string,
+  query: PublicInterpretationResultsQuery = {},
+): Promise<Result<InterpretationResultItem[]>> =>
+  client.get<Result<InterpretationResultItem[]>>(`/api/interpretation/public/${sessionId}/results`, {
+    params: {
+      ...(typeof query.afterId === 'number' && Number.isFinite(query.afterId) ? { afterId: query.afterId } : {}),
+      ...(typeof query.limit === 'number' && Number.isFinite(query.limit) ? { limit: query.limit } : {}),
+    },
+  }).then(r => r.data)
 
 export const getPublicSessionInfo = (sessionId: string): Promise<Result<PublicSessionInfo>> =>
   client.get<Result<PublicSessionInfo>>(`/api/interpretation/public/${sessionId}/info`).then(r => r.data)

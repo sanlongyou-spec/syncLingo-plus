@@ -468,7 +468,7 @@ export default function InterpretationView() {
     return null
   }
 
-  const connectSession = async (sid: string, outputLanguages = enabledLanguages) => {
+  const connectSession = async (sid: string) => {
     setSessionId(sid)
     sessionIdRef.current = sid
     localStorage.setItem(STORAGE_KEYS.CURRENT_SESSION_ID, sid)
@@ -479,21 +479,25 @@ export default function InterpretationView() {
     ws.onMessage(handleWsMessage)
     ws.start({ sessionId: sid, sourceLang: LANGUAGE.AUTO, targetLang: LANGUAGE.AUTO })
 
-    // Confirm VoiceMeeter outputs before starting capture; never fall back to the default speaker.
+    ttsChunkIndexByTaskRef.current.clear()
+
+    // VoiceMeeter is an extra local/Teams output path. Shared-page audio must keep working
+    // even when this browser has no routed VoiceMeeter devices.
     const voiceMeeter = new VoiceMeeterOutput(event => {
       ws.sendTtsPlaybackLog(sessionIdRef.current || sid, event)
     })
-
-    voiceMeeterRef.current = voiceMeeter
-    ttsChunkIndexByTaskRef.current.clear()
-    await voiceMeeter.init()
-    await voiceMeeter.applySinks()
-    if (!voiceMeeter.isReady(outputLanguages)) {
+    try {
+      await voiceMeeter.init()
+      await voiceMeeter.applySinks()
+      voiceMeeterRef.current = voiceMeeter
+      await voiceMeeter.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
+    } catch (err) {
+      console.warn('[InterpretationView] VoiceMeeter output unavailable; continuing with shared-page audio:', err)
       voiceMeeter.stop()
-      voiceMeeterRef.current = null
-      throw new Error('未检测到已选择输出语言对应的 VoiceMeeter 输出设备。请先启动并配置 VoiceMeeter，并授予浏览器音频设备权限后再开始。')
+      if (voiceMeeterRef.current === voiceMeeter) {
+        voiceMeeterRef.current = null
+      }
     }
-    await voiceMeeter.setMonitor(monitorLanguageRef.current, monitorDeviceIdRef.current)
     void refreshAudioOutputs()
 
     const audio = new AudioCapture({
@@ -544,7 +548,7 @@ export default function InterpretationView() {
         meetingId: selectedMeetingId,
       })
       const sid = res.data
-      await connectSession(sid, selectedLanguages)
+      await connectSession(sid)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '启动失败')
     } finally {

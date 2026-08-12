@@ -3,6 +3,7 @@ package com.si.backend.facade;
 import com.si.backend.common.ErrorCode;
 import com.si.backend.common.BizException;
 import com.si.backend.dto.StartInterpretationRequest;
+import com.si.backend.entity.InterpretationSession;
 import com.si.backend.security.AuthenticatedActor;
 import com.si.backend.service.InterpretationRecordService;
 import com.si.backend.service.InterpretationResultService;
@@ -11,9 +12,11 @@ import com.si.backend.service.MeetingSummaryService;
 import com.si.backend.service.ResourceOwnershipPolicy;
 import com.si.backend.service.SessionSpeakerNameService;
 import com.si.backend.service.UserLanguagePreferenceService;
+import com.si.backend.vo.InterpretationResultItemVo;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -81,5 +84,25 @@ class InterpretationFacadeSecurityTest {
 
         assertEquals(404, error.getCode());
         verifyNoInteractions(sessionService);
+    }
+
+    @Test
+    void listPublicResultsIncrementalAddsMeetingTitle() {
+        InterpretationSession session = new InterpretationSession();
+        session.setTitle("Weekly Meeting");
+        InterpretationResultItemVo item = InterpretationResultItemVo.builder()
+                .id(21L)
+                .sessionId("session-public")
+                .sourceText("source")
+                .translatedText("translated")
+                .build();
+        when(sessionService.getSession("session-public")).thenReturn(Optional.of(session));
+        when(resultService.listBySessionIdAfterId("session-public", 20L, 200)).thenReturn(List.of(item));
+
+        List<InterpretationResultItemVo> results = facade.listPublicResults("session-public", 20L, 200);
+
+        verify(resultService).listBySessionIdAfterId("session-public", 20L, 200);
+        assertEquals(1, results.size());
+        assertEquals("Weekly Meeting", results.get(0).getMeetingTitle());
     }
 }

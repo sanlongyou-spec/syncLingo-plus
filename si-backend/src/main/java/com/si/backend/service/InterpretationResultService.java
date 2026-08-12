@@ -26,6 +26,10 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class InterpretationResultService {
 
+    private static final long MIN_INCREMENTAL_AFTER_ID = 0L;
+    private static final int DEFAULT_INCREMENTAL_RESULT_LIMIT = 200;
+    private static final int MAX_INCREMENTAL_RESULT_LIMIT = 500;
+
     private final InterpretationResultMapper resultMapper;
     private final InterpretationEmbeddingMapper embeddingMapper;
     private final InterpretationSessionMapper sessionMapper;
@@ -38,6 +42,7 @@ public class InterpretationResultService {
         resultMapper.createTableIfNotExists();
         addColumnIfMissing("speaker_id", resultMapper::addSpeakerIdColumnIfNotExists);
         addColumnIfMissing("speaker_name", resultMapper::addSpeakerNameColumnIfNotExists);
+        addColumnIfMissing("idx_result_session_id_id index", resultMapper::addSessionIdIdIndexIfNotExists);
         embeddingMapper.createTableIfNotExists();
         addColumnIfMissing("result_id nullable",  embeddingMapper::makeResultIdNullable);
         addColumnIfMissing("source_type",         embeddingMapper::addSourceTypeColumnIfNotExists);
@@ -115,6 +120,35 @@ public class InterpretationResultService {
         log.info("[InterpretationResultService] listBySessionId end, sessionId={}, count={}",
                 sessionId, results.size());
         return results;
+    }
+
+    public List<InterpretationResultItemVo> listBySessionIdAfterId(String sessionId, Long afterId, Integer limit) {
+        long normalizedAfterId = normalizeAfterId(afterId);
+        int normalizedLimit = normalizeIncrementalLimit(limit);
+        log.info("[InterpretationResultService] listBySessionIdAfterId start, sessionId={}, afterId={}, limit={}",
+                sessionId, normalizedAfterId, normalizedLimit);
+        List<InterpretationResultItemVo> results = resultMapper
+                .findBySessionIdAfterId(sessionId, normalizedAfterId, normalizedLimit)
+                .stream()
+                .map(this::toVo)
+                .toList();
+        log.info("[InterpretationResultService] listBySessionIdAfterId end, sessionId={}, afterId={}, limit={}, count={}",
+                sessionId, normalizedAfterId, normalizedLimit, results.size());
+        return results;
+    }
+
+    private static long normalizeAfterId(Long afterId) {
+        if (afterId == null || afterId < MIN_INCREMENTAL_AFTER_ID) {
+            return MIN_INCREMENTAL_AFTER_ID;
+        }
+        return afterId;
+    }
+
+    private static int normalizeIncrementalLimit(Integer limit) {
+        if (limit == null || limit <= 0) {
+            return DEFAULT_INCREMENTAL_RESULT_LIMIT;
+        }
+        return Math.min(limit, MAX_INCREMENTAL_RESULT_LIMIT);
     }
 
     /**

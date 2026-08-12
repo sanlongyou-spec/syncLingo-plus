@@ -3,15 +3,19 @@ package com.si.backend.controller;
 import com.si.backend.common.BizException;
 import com.si.backend.facade.InterpretationFacade;
 import com.si.backend.security.AnonymousRequestRateLimiter;
+import com.si.backend.vo.InterpretationResultItemVo;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies anonymous compatibility endpoints are sunset where needed and still validate latency fields.
@@ -66,5 +70,23 @@ class PublicInterpretationEndpointSecurityTest {
 
         assertEquals(400, error.getCode());
         verifyNoInteractions(limiter);
+    }
+
+    @Test
+    void publicResultsPassesIncrementalQueryToFacade() {
+        InterpretationResultItemVo item = InterpretationResultItemVo.builder()
+                .id(12L)
+                .sessionId("s1")
+                .sourceText("source")
+                .translatedText("translated")
+                .build();
+        when(facade.listPublicResults("s1", 10L, 200)).thenReturn(List.of(item));
+
+        var response = controller.getPublicResults("s1", 10L, 200);
+
+        verify(facade).listPublicResults("s1", 10L, 200);
+        assertEquals(200, response.getCode());
+        assertEquals(1, response.getData().size());
+        assertEquals(12L, response.getData().get(0).getId());
     }
 }

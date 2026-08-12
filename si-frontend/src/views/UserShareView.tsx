@@ -22,6 +22,8 @@ const AUDIO_SAMPLE_RATE = 48000
 const DROP_BACKLOG_SEC = 25.0
 // 与后端 Constants.WS_CLOSE_SHARE_FULL 对应：收听人数已满的 WS 关闭码
 const SHARE_FULL_CLOSE_CODE = 4290
+const PUBLIC_RESULTS_PAGE_SIZE = 200
+const PUBLIC_RESULTS_MAX_PAGES_PER_LOAD = 5
 
 const toCanonicalLang = (lang: string): string => {
   const lower = lang.trim().toLowerCase()
@@ -101,6 +103,7 @@ export default function UserShareView() {
   const { scale: transcriptFontScale, setScale: setTranscriptFontScale } = useTranscriptFontScale()
   const wsRef = useRef<WebSocket | null>(null)
   const liveIdRef = useRef(-1)
+  const lastResultIdRef = useRef(0)
   const activeSessionIdRef = useRef<string | null>(null)
   const wsStoppedRef = useRef(false)
 
@@ -386,6 +389,7 @@ export default function UserShareView() {
     setCurrentRecognizing('')
     setCurrentLanguage('')
     liveIdRef.current = -1
+    lastResultIdRef.current = 0
   }, [])
 
   const handleWsMessage = (msg: WsMessage) => {
@@ -521,9 +525,24 @@ export default function UserShareView() {
             // Load persisted results for this session
             const load = async () => {
               try {
-                const r = await getPublicInterpretationResults(newSessionId)
-                if (!pollStopped && activeSessionIdRef.current === newSessionId) {
+                let loadedPages = 0
+                while (!pollStopped
+                  && activeSessionIdRef.current === newSessionId
+                  && loadedPages < PUBLIC_RESULTS_MAX_PAGES_PER_LOAD) {
+                  const previousAfterId = lastResultIdRef.current
+                  const r = await getPublicInterpretationResults(newSessionId, {
+                    afterId: previousAfterId,
+                    limit: PUBLIC_RESULTS_PAGE_SIZE,
+                  })
+                  if (pollStopped || activeSessionIdRef.current !== newSessionId) return
                   const list = r.data || []
+                  if (list.length === 0) return
+                  const maxId = list.reduce((current, item) => (
+                    typeof item.id === 'number' ? Math.max(current, item.id) : current
+                  ), previousAfterId)
+                  if (maxId > previousAfterId) {
+                    lastResultIdRef.current = maxId
+                  }
                   list.forEach(item => { addAudioLang(item.sourceLang); addAudioLang(item.targetLang) })
                   setItems(prev => {
                     const next = [...prev]
@@ -545,6 +564,8 @@ export default function UserShareView() {
                     })
                     return next
                   })
+                  loadedPages += 1
+                  if (list.length < PUBLIC_RESULTS_PAGE_SIZE || maxId <= previousAfterId) return
                 }
               } catch { /* ignore load error */ }
             }

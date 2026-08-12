@@ -205,6 +205,20 @@ public class InterpretationFacade {
         return results;
     }
 
+    public List<InterpretationResultItemVo> listPublicResults(String sessionId, Long afterId, Integer limit) {
+        if (afterId == null) {
+            return listPublicResults(sessionId);
+        }
+        log.info("[InterpretationFacade] listPublicResults incremental start, sessionId={}, afterId={}, limit={}",
+                sessionId, afterId, limit);
+        String meetingTitle = resolveSessionTitle(sessionId);
+        List<InterpretationResultItemVo> results = resultService.listBySessionIdAfterId(sessionId, afterId, limit);
+        results.forEach(result -> result.setMeetingTitle(meetingTitle));
+        log.info("[InterpretationFacade] listPublicResults incremental end, sessionId={}, afterId={}, limit={}, count={}",
+                sessionId, afterId, limit, results.size());
+        return results;
+    }
+
     private List<String> parseEnabledLanguages(String enabledLanguages) {
         if (enabledLanguages == null || enabledLanguages.isBlank()) {
             return List.of("zh-CN", "id-ID");

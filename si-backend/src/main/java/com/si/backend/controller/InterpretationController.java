@@ -209,8 +209,12 @@ public class InterpretationController {
             scope = com.si.backend.security.authorization.ResourceScope.PUBLIC,
             expectedStatuses = {200, 404})
     @GetMapping("/public/{sessionId}/results")
-    public Result<List<InterpretationResultItemVo>> getPublicResults(@PathVariable String sessionId) {
-        return Result.ok(facade.listPublicResults(sessionId));
+    public Result<List<InterpretationResultItemVo>> getPublicResults(
+            @PathVariable String sessionId,
+            @RequestParam(required = false) Long afterId,
+            @RequestParam(required = false) Integer limit
+    ) {
+        return Result.ok(facade.listPublicResults(sessionId, afterId, limit));
     }
 
     /** P4 分享令牌解析:匿名听众用不可枚举的分享令牌换取当前可收听的 sessionId(替代 /public/user/{id}/active)。 */
