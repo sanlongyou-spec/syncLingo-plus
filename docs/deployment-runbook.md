@@ -368,8 +368,8 @@ Also back up `speaker-service/embeddings.json` or any production speaker databas
 
 ### 共享链接（分享令牌）策略
 
-- **有效期 6 小时**：所有共享链接自签发起仅 6 小时内有效，过期自动失效（由后端 `expires_at` 控制）。可用 `SHARE_TOKEN_VALIDITY_HOURS` 覆盖（默认 6）。
-- **历史链接已全部失效**：6 小时策略上线后，后端启动时会一次性撤销所有"无过期时间"的旧链接（`ShareTokenSchemaInitializer` → `revokeLegacyTokensWithoutExpiry`）。上线前发出去的旧共享链接一律作废。
+- **有效期 36 小时**：所有共享链接自签发起仅 36 小时内有效，过期自动失效（由后端 `expires_at` 控制）。可用 `SHARE_TOKEN_VALIDITY_HOURS` 覆盖（默认 36）。
+- **历史链接已全部失效**：有效期策略上线后，后端启动时会一次性撤销所有"无过期时间"的旧链接（`ShareTokenSchemaInitializer` → `revokeLegacyTokensWithoutExpiry`）。上线前发出去的旧共享链接一律作废。
 - **收听并发上限**：分享音频最多 `SHARE_MAX_AUDIO_CONNECTIONS`（默认 130）路同时连接，超出的新听众会被拒绝并提示"人数已满"，用于防止公网带宽/内存被打满（曾在 ~167 并发时触发整机 OOM）。
 - 听众超过该规模前，需先提升公网带宽或改用 CDN 分发音频，详见本节"运维注意"。
 

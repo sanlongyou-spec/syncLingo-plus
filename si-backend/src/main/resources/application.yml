@@ -258,7 +258,7 @@ jwt:
 share:
   max-audio-connections: ${SHARE_MAX_AUDIO_CONNECTIONS:0}
   # 共享链接有效期（小时）：所有链接自签发起仅在此时长内有效，过期自动失效。
-  token-validity-hours: ${SHARE_TOKEN_VALIDITY_HOURS:6}
+  token-validity-hours: ${SHARE_TOKEN_VALIDITY_HOURS:36}
 
 app:
   authz:
