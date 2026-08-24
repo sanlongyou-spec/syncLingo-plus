@@ -252,16 +252,10 @@ const downloadWord = (title: string, groups: TranscriptGroup[]) => {
     const speakerHtml = speaker
       ? `<p style="font-weight:bold;color:#555;margin-bottom:2px;">${escapeHtml(speaker)}</p>`
       : ''
-    const translationsHtml = group.translations.map(translation => {
-      const lang = targetLanguageLabel(translation.targetLang)
-      const langHtml = lang ? `<strong>[${escapeHtml(lang)}]</strong> ` : ''
-      return `<p style="margin:0;color:#333;">${langHtml}${escapeHtml(translation.text || '')}</p>`
-    }).join('')
     return `
     <div style="margin-bottom:12px;">
       ${speakerHtml}
       <p style="margin:0 0 2px 0;">${escapeHtml(group.sourceText)}</p>
-      ${translationsHtml}
     </div>`
   }).join('')
   const html = `<html><head><meta charset="utf-8"/></head>
