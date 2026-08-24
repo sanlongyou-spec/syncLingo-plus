@@ -15,12 +15,18 @@ interface OutputChannel {
   dest: MediaStreamAudioDestinationNode | null
   audioEl: HTMLAudioElement | null
   keepAlive: ConstantSourceNode | null
+  guardSource: AudioBufferSourceNode | null
+  guardGain: GainNode | null
   sinkReady: boolean
   scheduleTime: number
   pending: Set<AudioBufferSourceNode>
 }
 
 const SCHEDULE_LEAD_SECONDS = 0.08
+const SOURCE_GUARD_HOLD_MS = 1800
+const SOURCE_GUARD_GAIN = 0.0025
+const SOURCE_GUARD_FADE_SECONDS = 0.08
+const SOURCE_GUARD_BUFFER_SECONDS = 1.2
 
 /**
  * Routes translated TTS PCM to per-language VoiceMeeter output devices.
@@ -44,12 +50,17 @@ export class VoiceMeeterOutput {
   private monitorDeviceId = ''
   private monitorScheduleTime = 0
   private monitorSinkReady = false
+  private guardedTargets = new Set<OutputLang>()
+  private guardReleaseTimer: ReturnType<typeof window.setTimeout> | null = null
+  private guardNoiseBuffer: AudioBuffer | null = null
 
   private static emptyChannel(): OutputChannel {
     return {
       dest: null,
       audioEl: null,
       keepAlive: null,
+      guardSource: null,
+      guardGain: null,
       sinkReady: false,
       scheduleTime: 0,
       pending: new Set(),
@@ -182,6 +193,40 @@ export class VoiceMeeterOutput {
     return this.applyMonitorSink()
   }
 
+  markSourceSpeaking(sourceLang: string, outputLanguages: string[] = []): void {
+    const source = VoiceMeeterOutput.resolveKnownLang(sourceLang)
+    if (!source) return
+
+    const resolvedOutputs = outputLanguages
+      .map(lang => VoiceMeeterOutput.resolveKnownLang(lang))
+      .filter((lang): lang is OutputLang => !!lang)
+    const targets = resolvedOutputs.filter(lang => lang !== source)
+
+    this.guardedTargets = new Set(resolvedOutputs.length > 0
+      ? targets
+      : (['zh', 'id', 'en'] as OutputLang[]).filter(lang => lang !== source))
+
+    if (this.guardReleaseTimer) {
+      window.clearTimeout(this.guardReleaseTimer)
+    }
+    this.guardReleaseTimer = window.setTimeout(() => {
+      this.clearSourceGuard('source_idle_timeout')
+    }, SOURCE_GUARD_HOLD_MS)
+
+    this.refreshSourceGuards()
+  }
+
+  clearSourceGuard(reason = 'manual'): void {
+    if (this.guardReleaseTimer) {
+      window.clearTimeout(this.guardReleaseTimer)
+      this.guardReleaseTimer = null
+    }
+    this.guardedTargets.clear()
+    for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
+      this.stopSourceGuard(lang, this.channels[lang], reason)
+    }
+  }
+
   play(pcmData: Int16Array, targetLang: string, meta: PlaybackMeta = {}): void {
     const lang = VoiceMeeterOutput.resolveLang(targetLang)
     const channel = this.channels[lang]
@@ -200,6 +245,7 @@ export class VoiceMeeterOutput {
 
     const ctx = this.context
     this.ensureOutputActive(lang, targetLang, channel, meta)
+    this.stopSourceGuard(lang, channel, 'tts_scheduled')
 
     const floatData = new Float32Array(pcmData.length)
     for (let i = 0; i < pcmData.length; i += 1) {
@@ -222,6 +268,7 @@ export class VoiceMeeterOutput {
       channel.pending.delete(source)
       console.debug('[VoiceMeeterOutput] chunk ended, lang=%s taskId=%s sequence=%s chunk=%s pending=%d',
         lang, meta.taskId ?? '', meta.sequence ?? '', meta.chunkIndex ?? '', channel.pending.size)
+      this.refreshSourceGuards()
     }
 
     try {
@@ -264,6 +311,7 @@ export class VoiceMeeterOutput {
   }
 
   stop(): void {
+    this.clearSourceGuard('stop')
     this.teardownMonitor()
     for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
       const channel = this.channels[lang]
@@ -290,6 +338,7 @@ export class VoiceMeeterOutput {
       try { channel.keepAlive?.stop() } catch { /* already stopped */ }
       channel.keepAlive?.disconnect()
       channel.keepAlive = null
+      this.stopSourceGuard(lang, channel, 'stop')
       this.muteAndPause(channel)
       channel.dest = null
       channel.audioEl = null
@@ -297,6 +346,7 @@ export class VoiceMeeterOutput {
     }
     void this.context?.close()
     this.context = null
+    this.guardNoiseBuffer = null
   }
 
   private async setSink(lang: OutputLang, channel: OutputChannel, device: MediaDeviceInfo): Promise<boolean> {
@@ -418,6 +468,114 @@ export class VoiceMeeterOutput {
     } catch (err) {
       console.warn('[VoiceMeeterOutput] monitor schedule failed, lang=%s targetLang=%s:', lang, targetLang, err)
     }
+  }
+
+  private refreshSourceGuards(): void {
+    const ctx = this.context
+    if (!ctx || ctx.state === 'closed') return
+    for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
+      const channel = this.channels[lang]
+      const channelIdle = channel.pending.size === 0
+        && channel.scheduleTime <= ctx.currentTime + SCHEDULE_LEAD_SECONDS
+      const shouldGuard = this.guardedTargets.has(lang)
+        && channel.sinkReady
+        && !!channel.dest
+        && channelIdle
+      if (shouldGuard) {
+        this.startSourceGuard(lang, channel)
+      } else if (!this.guardedTargets.has(lang) || !channelIdle || !channel.sinkReady || !channel.dest) {
+        this.stopSourceGuard(lang, channel, channelIdle ? 'guard_not_needed' : 'tts_active')
+      }
+    }
+  }
+
+  private startSourceGuard(lang: OutputLang, channel: OutputChannel): void {
+    const ctx = this.context
+    if (!ctx || !channel.dest || channel.guardSource) return
+    try {
+      const source = ctx.createBufferSource()
+      const gain = ctx.createGain()
+      source.buffer = this.getSourceGuardNoiseBuffer(ctx)
+      source.loop = true
+      gain.gain.setValueAtTime(0, ctx.currentTime)
+      gain.gain.linearRampToValueAtTime(SOURCE_GUARD_GAIN, ctx.currentTime + SOURCE_GUARD_FADE_SECONDS)
+      source.connect(gain)
+      gain.connect(channel.dest)
+      source.start()
+      channel.guardSource = source
+      channel.guardGain = gain
+      console.info('[VoiceMeeterOutput] source guard start, lang=%s', lang)
+      this.emit('source_guard_start', lang, undefined, {}, {
+        pendingCount: channel.pending.size,
+        contextState: ctx.state,
+        audioPaused: channel.audioEl?.paused ?? true,
+        sinkReady: channel.sinkReady,
+        detail: `gain=${SOURCE_GUARD_GAIN}`,
+      })
+    } catch (err) {
+      console.warn('[VoiceMeeterOutput] source guard start failed, lang=%s:', lang, err)
+      this.emit('source_guard_start_failed', lang, undefined, {}, {
+        pendingCount: channel.pending.size,
+        contextState: ctx.state,
+        audioPaused: channel.audioEl?.paused ?? true,
+        sinkReady: channel.sinkReady,
+        detail: err instanceof Error ? err.message : String(err),
+      })
+      channel.guardSource = null
+      channel.guardGain = null
+    }
+  }
+
+  private stopSourceGuard(lang: OutputLang, channel: OutputChannel, reason: string): void {
+    const source = channel.guardSource
+    const gain = channel.guardGain
+    if (!source || !gain) return
+    const ctx = this.context
+    channel.guardSource = null
+    channel.guardGain = null
+    try {
+      if (ctx && ctx.state !== 'closed') {
+        gain.gain.cancelScheduledValues(ctx.currentTime)
+        gain.gain.setValueAtTime(gain.gain.value, ctx.currentTime)
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + SOURCE_GUARD_FADE_SECONDS)
+        source.stop(ctx.currentTime + SOURCE_GUARD_FADE_SECONDS)
+      } else {
+        source.stop()
+      }
+    } catch { /* already stopped */ }
+    source.onended = () => {
+      try { source.disconnect() } catch { /* ignored */ }
+      try { gain.disconnect() } catch { /* ignored */ }
+    }
+    console.info('[VoiceMeeterOutput] source guard stop, lang=%s reason=%s', lang, reason)
+    this.emit('source_guard_stop', lang, undefined, {}, {
+      pendingCount: channel.pending.size,
+      contextState: ctx?.state ?? 'none',
+      audioPaused: channel.audioEl?.paused ?? true,
+      sinkReady: channel.sinkReady,
+      detail: reason,
+    })
+  }
+
+  private getSourceGuardNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (this.guardNoiseBuffer && this.guardNoiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.guardNoiseBuffer
+    }
+    const length = Math.max(1, Math.floor(ctx.sampleRate * SOURCE_GUARD_BUFFER_SECONDS))
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate)
+    const data = buffer.getChannelData(0)
+    let seed = 0x6d2b79f5
+    let last = 0
+    for (let i = 0; i < length; i += 1) {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      const white = (((t ^ (t >>> 14)) >>> 0) / 4294967296) * 2 - 1
+      last = last * 0.96 + white * 0.04
+      data[i] = last
+    }
+    this.guardNoiseBuffer = buffer
+    return buffer
   }
 
   private stopMonitorSources(): void {
@@ -562,5 +720,13 @@ export class VoiceMeeterOutput {
     if (lower.startsWith('en')) return 'en'
     if (lower.startsWith('id')) return 'id'
     return 'zh'
+  }
+
+  private static resolveKnownLang(lang?: string | null): OutputLang | null {
+    const lower = (lang || '').trim().toLowerCase()
+    if (lower.startsWith('zh')) return 'zh'
+    if (lower.startsWith('id') || lower.startsWith('in')) return 'id'
+    if (lower.startsWith('en')) return 'en'
+    return null
   }
 }

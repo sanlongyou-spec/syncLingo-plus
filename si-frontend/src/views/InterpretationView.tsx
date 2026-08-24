@@ -114,6 +114,7 @@ export default function InterpretationView() {
   const sessionIdRef = useRef<string | null>(null)
   const detectedLangRef = useRef('')
   const currentSpeakerIdRef = useRef('')
+  const enabledLanguagesRef = useRef(enabledLanguages)
   const {
     scrollRef: bodyRef,
     isPaused: isTranscriptAutoScrollPaused,
@@ -127,6 +128,7 @@ export default function InterpretationView() {
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => { currentSpeakerIdRef.current = currentSpeakerId }, [currentSpeakerId])
   useEffect(() => { speakerNameMapRef.current = speakerNameMap }, [speakerNameMap])
+  useEffect(() => { enabledLanguagesRef.current = enabledLanguages }, [enabledLanguages])
   useEffect(() => {
     getMeetings()
       .then(res => setMeetings(res.data || []))
@@ -212,6 +214,12 @@ export default function InterpretationView() {
     switch (msg.type) {
       case 'recognizing':
         setCurrentSource(msg.text || '')
+        if (msg.text) {
+          voiceMeeterRef.current?.markSourceSpeaking(
+            msg.language || msg.sourceLang || detectedLangRef.current,
+            enabledLanguagesRef.current,
+          )
+        }
         if (messageSpeakerId) {
           rememberCurrentSpeaker(messageSpeakerId)
         }
@@ -223,6 +231,10 @@ export default function InterpretationView() {
         break
       case 'recognized':
         if (msg.text) {
+          voiceMeeterRef.current?.markSourceSpeaking(
+            msg.language || msg.sourceLang || detectedLangRef.current,
+            enabledLanguagesRef.current,
+          )
           rememberCurrentSpeaker(messageSpeakerId)
           rememberSpeakerName(messageSpeakerId, messageSpeakerName)
           setTranscripts(prev => [
@@ -354,6 +366,7 @@ export default function InterpretationView() {
       }
       case 'started':
         setIsRunning(true)
+        voiceMeeterRef.current?.clearSourceGuard('session_started')
         setError('')
         setCurrentSpeakerId('')
         setSpeakerNameMap({})
@@ -364,6 +377,7 @@ export default function InterpretationView() {
         break
       case 'stopped':
         setIsRunning(false)
+        voiceMeeterRef.current?.clearSourceGuard('session_stopped')
         break
       case 'error':
         setError(msg.message || '发生错误')

@@ -45,11 +45,13 @@ import './HistoryView.css'
 const DEFAULT_TITLE = '未命名会议'
 const SUMMARY_REQ_KEY = 'si_summary_requirements'
 const SUMMARY_RECIPIENTS_KEY = 'si_summary_default_recipients'
+const TRANSCRIPT_EXPORT_ALL_KEY = '__all__'
 
 type SpeakerActionStatus = 'idle' | 'loading' | 'done' | 'error'
 type SearchMatchKind = 'exact' | 'fuzzy'
 type TextSearchMatch = { kind: SearchMatchKind; start: number; end: number }
 type TranscriptSearchMatch = { groupIndex: number; kind: SearchMatchKind }
+type TranscriptExportSpeakerOption = { key: string; label: string; count: number }
 
 const escapeHtml = (text: string) =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -206,6 +208,36 @@ const targetLanguageLabel = (lang?: string) => {
   return LANGUAGE_LABELS[lang] || lang
 }
 
+const isUnknownTranscriptSpeaker = (value?: string | null) => {
+  const normalized = (value || '').trim().toLowerCase()
+  return normalized === '' || normalized === 'unknown' || normalized.includes('未识别汇报者')
+}
+
+const transcriptSpeakerExportKey = (group: TranscriptGroup) => {
+  const speakerId = group.speakerId?.trim()
+  if (speakerId && !isUnknownTranscriptSpeaker(speakerId)) {
+    return `id:${speakerId}`
+  }
+  const speakerName = group.speakerName?.trim()
+  if (speakerName && !isUnknownTranscriptSpeaker(speakerName)) {
+    return `name:${speakerName.toLowerCase()}`
+  }
+  return ''
+}
+
+const resolveTranscriptSpeakerLabel = (
+  group: TranscriptGroup,
+  speakerMappings: Record<string, string>,
+) => {
+  const speakerId = group.speakerId?.trim()
+  const mappedName = speakerId ? speakerMappings[speakerId]?.trim() : ''
+  const speakerName = group.speakerName?.trim()
+  if (mappedName && !isUnknownTranscriptSpeaker(mappedName)) return mappedName
+  if (speakerName && !isUnknownTranscriptSpeaker(speakerName)) return speakerName
+  if (speakerId && !isUnknownTranscriptSpeaker(speakerId)) return speakerId
+  return ''
+}
+
 const languageBadgeClass = (lang?: string) => {
   const lower = (lang || '').toLowerCase()
   if (lower.startsWith('zh')) return 'si-tri-line-lang-badge si-tri-line-lang-badge--zh'
@@ -277,6 +309,8 @@ export default function HistoryView() {
   const [results, setResults] = useState<InterpretationResultItem[]>([])
   const [resultsLoading, setResultsLoading] = useState(false)
   const [transcriptKeyword, setTranscriptKeyword] = useState('')
+  const [transcriptExportSpeakerKey, setTranscriptExportSpeakerKey] = useState(TRANSCRIPT_EXPORT_ALL_KEY)
+  const [transcriptExporting, setTranscriptExporting] = useState(false)
   const [activeTranscriptMatchIndex, setActiveTranscriptMatchIndex] = useState(0)
   const transcriptGroupRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
@@ -335,6 +369,22 @@ export default function HistoryView() {
 
   const selectedMeeting = meetings.find(m => m.id === selectedMeetingId) ?? null
   const transcriptGroups = useMemo(() => buildTranscriptGroups(results), [results])
+  const transcriptExportSpeakers = useMemo<TranscriptExportSpeakerOption[]>(() => {
+    const options = new Map<string, TranscriptExportSpeakerOption>()
+    transcriptGroups.forEach(group => {
+      const key = transcriptSpeakerExportKey(group)
+      if (!key) return
+      const label = resolveTranscriptSpeakerLabel(group, speakerMappings)
+      if (!label) return
+      const existing = options.get(key)
+      if (existing) {
+        existing.count += 1
+      } else {
+        options.set(key, { key, label, count: 1 })
+      }
+    })
+    return Array.from(options.values())
+  }, [speakerMappings, transcriptGroups])
 
   const transcriptSearchTerm = useMemo(() => normalizeSearchKeyword(transcriptKeyword), [transcriptKeyword])
   const transcriptMatches = useMemo<TranscriptSearchMatch[]>(
@@ -382,6 +432,13 @@ export default function HistoryView() {
     }
     setActiveTranscriptMatchIndex(prev => Math.min(prev, transcriptMatchIndexes.length - 1))
   }, [transcriptMatchIndexes.length])
+
+  useEffect(() => {
+    if (transcriptExportSpeakerKey === TRANSCRIPT_EXPORT_ALL_KEY) return
+    if (!transcriptExportSpeakers.some(option => option.key === transcriptExportSpeakerKey)) {
+      setTranscriptExportSpeakerKey(TRANSCRIPT_EXPORT_ALL_KEY)
+    }
+  }, [transcriptExportSpeakerKey, transcriptExportSpeakers])
 
   useEffect(() => {
     if (activeTab !== 'transcript' || transcriptMatchIndexes.length === 0) return
@@ -601,6 +658,37 @@ export default function HistoryView() {
       setResults(res.data || [])
     } catch { /* ignore */ }
     finally { setSpeakerRenameSaving(prev => ({ ...prev, [speakerId]: false })) }
+  }
+
+  const handleTranscriptExport = async () => {
+    if (!selectedSessionId) return
+    setTranscriptExporting(true)
+    setDownloadError('')
+    try {
+      const res = await getPublicInterpretationResults(selectedSessionId)
+      const latestResults = res.data || []
+      const latestGroups = buildTranscriptGroups(latestResults)
+      setResults(latestResults)
+
+      const groupsToExport = transcriptExportSpeakerKey === TRANSCRIPT_EXPORT_ALL_KEY
+        ? latestGroups
+        : latestGroups.filter(group => transcriptSpeakerExportKey(group) === transcriptExportSpeakerKey)
+
+      if (groupsToExport.length === 0) {
+        setDownloadError('当前导出范围暂无文本')
+        return
+      }
+
+      const selectedSpeaker = transcriptExportSpeakers.find(option => option.key === transcriptExportSpeakerKey)
+      const exportScope = transcriptExportSpeakerKey === TRANSCRIPT_EXPORT_ALL_KEY
+        ? '全部文本'
+        : (selectedSpeaker?.label || resolveTranscriptSpeakerLabel(groupsToExport[0], speakerMappings) || '汇报者')
+      downloadWord(`${selectedMeeting?.title || '同传记录'}-${exportScope}`, groupsToExport)
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : '导出文本失败')
+    } finally {
+      setTranscriptExporting(false)
+    }
   }
 
   const formatDuration = (ms: number) => {
@@ -1157,11 +1245,28 @@ export default function HistoryView() {
                             onClick={() => { setTranscriptKeyword(''); setActiveTranscriptMatchIndex(0) }}
                           >清空</button>
                         </div>
-                        <button
-                          className="history-summary-export-btn"
-                          onClick={() => downloadWord(selectedMeeting.title || '同传记录', transcriptGroups)}
-                          disabled={results.length === 0}
-                        >导出 Word</button>
+                        <div className="history-transcript-export">
+                          <label className="history-transcript-export-select">
+                            <span>导出范围</span>
+                            <select
+                              value={transcriptExportSpeakerKey}
+                              onChange={e => setTranscriptExportSpeakerKey(e.target.value)}
+                              disabled={transcriptExporting || results.length === 0}
+                            >
+                              <option value={TRANSCRIPT_EXPORT_ALL_KEY}>全部文本</option>
+                              {transcriptExportSpeakers.map(option => (
+                                <option key={option.key} value={option.key}>
+                                  {option.label}（{option.count}段）
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            className="history-summary-export-btn"
+                            onClick={() => { void handleTranscriptExport() }}
+                            disabled={results.length === 0 || transcriptExporting}
+                          >{transcriptExporting ? '导出中...' : '导出 Word'}</button>
+                        </div>
                       </div>
                       {/* ── 说话人重命名 ── */}
                       {(() => {
