@@ -404,7 +404,7 @@ public class RealtimeInterpretationFacade {
 
         TranslationResultCallback onTranslated = sessionTranslatedCallbackMap.get(sessionId);
         if (onTranslated != null && isPipelineActive(sessionId, "before_translated_callback")) {
-            onTranslated.accept(text, translated, sourceLang, targetLang, speakerId, speakerName);
+            onTranslated.accept(text, translated, sourceLang, targetLang, speakerId, speakerName, speechStartAtMs);
         }
 
         if (!isPipelineActive(sessionId, "before_tts_queue")) {
@@ -960,7 +960,8 @@ public class RealtimeInterpretationFacade {
 
     @FunctionalInterface
     public interface TranslationResultCallback {
-        void accept(String originalText, String translatedText, String sourceLang, String targetLang, String speakerId, String speakerName);
+        void accept(String originalText, String translatedText, String sourceLang, String targetLang,
+                    String speakerId, String speakerName, long speechStartAtMs);
     }
 
     @FunctionalInterface

@@ -2007,3 +2007,90 @@ GET    /api/admin/audit-logs
 - Real VoiceMeeter audio routing still requires manual live validation on a host with VoiceMeeter installed, browser audio-device permission granted, and the expected `VoiceMeeter Input` / `VoiceMeeter Aux Input` / `VoiceMeeter VAIO3` devices visible to Chrome or Edge.
 - `npm ci` on the server still reports existing npm audit warnings. They did not block this deployment and were not introduced by the VoiceMeeter routing change.
 - The production Indonesian compression model is currently configured by server env as `google/gemini-2.5-flash-lite`; prompt behavior should be judged in a live zh-CN -> id meeting sample before deciding whether to tighten or loosen the prompt further.
+
+## Weekly Optimization Record: 2026-W36 Transcript Export Speaking-Time Timestamps
+
+### Goal
+
+- Add a speaking-time timestamp to every source sentence in the Word transcript export.
+- Use the time when the speaker began the ASR utterance, not the later translation, persistence, or export time.
+- Keep timestamps visually subordinate to the transcript text and preserve export compatibility for historical meetings.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| ASR speaking-time propagation | Done | The existing utterance start time now travels through the translation callback and WebSocket translation message as `speechStartAtMs`. |
+| Result persistence and API | Done | Added nullable `speech_start_at_ms` storage and exposed it through the save request and history/public result response. |
+| Multilingual row grouping | Done | When one source sentence has multiple target-language rows, the export group keeps the earliest valid speaking time and still emits the source sentence only once. |
+| Word timestamp layout | Done | Each exported sentence renders `[HH:mm:ss]` at `9pt`; source text remains `12pt`. Speaker labels remain `10.5pt`. |
+| Historical-data compatibility | Done | Rows without `speech_start_at_ms` fall back to their existing `createTime`; invalid or missing timestamps do not block source-text export. |
+| Regression coverage | Done | Added backend propagation/persistence tests and frontend grouping, formatting, escaping, and historical fallback tests. |
+
+### Affected Modules
+
+- Backend realtime pipeline: `RealtimeInterpretationFacade`, `AsrWebSocketHandler`, `WsMessage`.
+- Backend history persistence/API: `SaveInterpretationResultRequest`, `InterpretationResult`, `InterpretationResultMapper`, `InterpretationResultService`, `InterpretationResultItemVo`.
+- Frontend realtime persistence: `InterpretationView`, shared result types.
+- Frontend history export: `HistoryView`, `transcriptGrouping`, `transcriptExport`.
+- Tests: `RealtimeInterpretationOrderTest`, `InterpretationResultServiceTest`, `transcriptExport.test.ts`.
+
+### Acceptance Criteria
+
+- A new translation result stores the same positive `speechStartAtMs` captured for its ASR source utterance.
+- History and public result APIs return `speechStartAtMs` when it is available.
+- A source sentence translated into multiple selected languages exports once with the earliest valid speaking timestamp.
+- Word output shows the timestamp before each source sentence, with timestamp font smaller than source-text font.
+- Existing meetings with no new database value continue to export using `createTime`; no translated text is added to the export.
+- Focused backend/frontend tests, full backend tests, frontend production build, and generated export layout checks pass.
+
+### Residual Issues
+
+- Historical rows cannot recover an exact ASR utterance start time that was never stored. Their timestamp is therefore the nearest available legacy result creation time.
+- The ASR speaking time is captured at the first recognizing event, so it may trail the physical start of speech by the recognizer's initial detection latency.
+- This version is local only until a separate deployment request is approved.
+
+## Weekly Optimization Record: 2026-W36 Account-Isolated Summary Preferences
+
+### Goal
+
+- Prevent meeting-summary recipients and summary prompts from leaking between accounts that use the same browser profile.
+- Make the authenticated user's backend record the sole source of truth, including intentionally empty settings.
+- Preserve the existing manual-send and automatic speaker-summary workflows without changing Teams delivery behavior.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Recipient isolation | Done | Removed the frontend fallback from an empty per-user backend setting to the browser-wide `si_summary_default_recipients` value and removed automatic write-back of that fallback. |
+| Account-owned prompts | Done | Added nullable `meeting_summary_requirements` and `speaker_summary_requirements` fields on `si_user`, with authenticated GET/PUT APIs scoped by `userId`. |
+| Partial prompt updates | Done | Saving one prompt preserves the other prompt; an empty string intentionally clears the selected prompt. Each prompt is limited to 4000 characters. |
+| Legacy browser cleanup | Done | The four historical shared summary keys are deleted without migration because no trustworthy account owner was stored with them. Runtime code no longer reads those keys. |
+| Failure visibility | Done | Preference persistence failures return an explicit server error; frontend loading, saving, saved, and failed states no longer silently fall back to another account's data. |
+| Architecture and compatibility | Done | Added `UserPreferenceFacade` so the changed controller follows controller-to-facade-to-service-to-mapper layering. Existing recipient endpoints and automatic session-owner sending remain compatible. |
+| Regression coverage | Done | Added backend account-boundary, empty/clear, DDL, validation, persistence-failure, and unauthenticated tests plus frontend account-isolation and legacy-key cleanup tests. |
+
+### Affected Modules
+
+- Backend user preference API: `UserPreferenceController`, `UserPreferenceFacade`, `UserPreferenceService`.
+- Backend persistence contract: `SiUser`, `UserMapper`, `SaveUserSummaryRequirementsRequest`, `UserSummaryRequirementsVo`.
+- Frontend API and state: `api/index.ts`, `types/index.ts`, `HistoryView`, `userSummaryPreferences`.
+- Frontend interaction styling: summary prompt disabled/save states in `HistoryView.css`.
+- Tests: user-preference controller/facade/service/DTO tests and `userSummaryPreferences.test.ts`.
+
+### Acceptance Criteria
+
+- Accounts A and B can hold different recipients and prompt values; every read and write uses the authenticated actor's `userId`.
+- An empty backend recipient list or prompt remains empty and never consumes a browser-wide fallback.
+- Clearing all recipients persists `[]` for the current account and remains empty after reload.
+- Saving one prompt does not overwrite an unsaved or previously stored value for the other prompt.
+- Unauthenticated preference operations fail with 401 before reaching the facade.
+- Persistence failures are visible to the frontend instead of being reported as saved.
+- Source search finds legacy summary storage keys only in the explicit cleanup list and its tests.
+- Full backend tests, frontend tests/build, and affected browser workflow verification pass.
+
+### Residual Issues
+
+- Recipient values already copied into another account's database record by the old frontend cannot be distinguished from legitimate choices and are not deleted automatically. They must be cleared once from that account if incorrect.
+- Old browser-only prompt values are intentionally not migrated because the historical keys did not record which account owned them.
+- This version is not deployed to the server per request.

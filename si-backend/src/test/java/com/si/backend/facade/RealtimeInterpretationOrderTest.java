@@ -56,6 +56,69 @@ class RealtimeInterpretationOrderTest {
     }
 
     @Test
+    void translatedCallbackKeepsOriginalSpeechStartTime() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService,
+                ttsService,
+                translationService,
+                sessionService,
+                new CartesiaProperties(),
+                recordService,
+                audioRecordService,
+                speakerTurnService,
+                userVoiceService,
+                indonesianIncompleteGuard,
+                new TtsPcmSpeedService()
+        );
+
+        String sessionId = "translated-start-time-session";
+        long speechStartAtMs = 1_788_142_511_000L;
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        when(translationService.translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any()))
+                .thenReturn("The meeting starts now");
+        doAnswer(invocation -> {
+            Runnable onComplete = invocation.getArgument(6);
+            onComplete.run();
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(),
+                anyString(),
+                anyInt(),
+                anyDouble(),
+                anyString(),
+                any(),
+                any(),
+                any()
+        );
+
+        AtomicReference<Long> callbackStartAtMs = new AtomicReference<>();
+        putTranslatedCallback(facade, sessionId,
+                (originalText, translatedText, sourceLang, targetLang, speakerId, speakerName, callbackSpeechStartAtMs) ->
+                        callbackStartAtMs.set(callbackSpeechStartAtMs));
+
+        facade.translateAndStreamTts(
+                "会议现在开始", "zh-CN", "en-US", null, sessionId, "speaker-1", "Guest-1", speechStartAtMs
+        );
+
+        assertEquals(speechStartAtMs, callbackStartAtMs.get());
+        awaitTtsChain(facade, sessionId, "en-US");
+    }
+
+    @Test
     void laterTranslationCannotPlayBeforeEarlierSentence() throws Exception {
         AsrService asrService = mock(AsrService.class);
         TtsService ttsService = mock(TtsService.class);
@@ -722,6 +785,18 @@ class RealtimeInterpretationOrderTest {
         Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsAudioCallbackMap");
         field.setAccessible(true);
         ((Map<String, RealtimeInterpretationFacade.TtsAudioCallback>) field.get(facade)).put(sessionId, callback);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void putTranslatedCallback(
+            RealtimeInterpretationFacade facade,
+            String sessionId,
+            RealtimeInterpretationFacade.TranslationResultCallback callback
+    ) throws Exception {
+        Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTranslatedCallbackMap");
+        field.setAccessible(true);
+        ((Map<String, RealtimeInterpretationFacade.TranslationResultCallback>) field.get(facade))
+                .put(sessionId, callback);
     }
 
     @SuppressWarnings("unchecked")

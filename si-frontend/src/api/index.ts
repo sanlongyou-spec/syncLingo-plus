@@ -38,6 +38,8 @@ import type {
   CloneVoiceResponse,
   UserVoice,
   PublicSessionInfo,
+  SaveUserSummaryRequirementsParams,
+  UserSummaryRequirements,
 } from '../types'
 
 const RESULT_OK_CODE = 200
@@ -678,6 +680,14 @@ export const getSummaryRecipients = (): Promise<Result<string[]>> =>
 
 export const saveSummaryRecipients = (recipients: string[]): Promise<Result<void>> =>
   client.put<Result<void>>('/api/user/preference/summary-recipients', recipients).then(r => r.data)
+
+export const getSummaryRequirements = (): Promise<Result<UserSummaryRequirements>> =>
+  client.get<Result<UserSummaryRequirements>>('/api/user/preference/summary-requirements').then(r => r.data)
+
+export const saveSummaryRequirements = (
+  params: SaveUserSummaryRequirementsParams,
+): Promise<Result<UserSummaryRequirements>> =>
+  client.put<Result<UserSummaryRequirements>>('/api/user/preference/summary-requirements', params).then(r => r.data)
 
 // ── P1 用户管理(仅 ADMIN;/me 任意已登录用户) ──────────────────────────
 export const getMe = (): Promise<Result<UserSummary>> =>

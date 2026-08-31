@@ -2275,3 +2275,134 @@ Pass criteria:
 - Server frontend deployment passed at commit `9dae16c`; `npm ci && npm run build` succeeded; assets synced to `/var/www/si`; `nginx -t` succeeded; nginx reloaded and is active.
 - Public frontend verification passed: `/` references `/assets/index-BEAeQIh2.js`; deployed JS contains `VoiceMeeterOutput`; deployed JS does not contain `VbCableOutput`, `TTS_OUTPUT_CABLE`, or `CABLE-A`.
 - Residual unverified item: physical VoiceMeeter channel routing and audio listening quality still require a live browser/device test on the production host.
+
+## Weekly Validation Record: 2026-W36 Transcript Export Speaking-Time Timestamps
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W36 Transcript Export Speaking-Time Timestamps`.
+
+### Validation Goals
+
+- Prove the ASR utterance start time is preserved through translation WebSocket delivery, frontend save, database storage, and history/public result responses.
+- Prove multilingual translations of one source sentence export as one source row with the earliest valid speaking time.
+- Prove timestamp typography is smaller than source-text typography.
+- Prove old rows without the new column value remain exportable.
+
+### API / Data Validation First
+
+For a newly spoken source sentence translated to two target languages:
+
+- Inspect both `translated` WebSocket messages and confirm they contain the same positive `speechStartAtMs`.
+- Confirm the saved `interpretation_result` rows contain that value in `speech_start_at_ms`.
+- Confirm authenticated history and public incremental result responses expose `speechStartAtMs`.
+- Confirm a pre-change row with `speech_start_at_ms IS NULL` still appears in the export and uses `createTime` as its fallback timestamp.
+
+Pass criteria:
+
+- The timestamp remains unchanged across the realtime and persistence boundaries.
+- The schema addition is nullable and startup migration succeeds against an existing database.
+- No translation text is included in the Word export body.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=InterpretationResultServiceTest,RealtimeInterpretationOrderTest" test
+mvn test
+
+cd ..\si-frontend
+npm test
+npm run build
+```
+
+Pass criteria:
+
+- `RealtimeInterpretationOrderTest.translatedCallbackKeepsOriginalSpeechStartTime` proves the translation callback receives the original ASR utterance start.
+- `InterpretationResultServiceTest.savePersistsAndReturnsSpeechStartTime` proves persistence and response mapping retain the value.
+- Frontend tests prove earliest-time grouping, stable `HH:mm:ss` formatting, HTML escaping, `9pt` timestamp versus `12pt` source text, and legacy fallback behavior.
+- Full backend tests and the frontend production build pass.
+
+### Browser / Export Artifact Validation
+
+- Generate a Word-compatible HTML export containing multiple speakers, multilingual translation rows, special characters, and a legacy row.
+- Open the generated artifact in a browser at desktop and narrow mobile-sized viewports.
+- Confirm each available timestamp precedes its source sentence, remains visibly smaller, and does not overlap the source text or speaker label.
+- Confirm the legacy row remains readable and no translated text is present.
+
+### Result Record
+
+- Focused backend test passed: `mvn -q "-Dtest=InterpretationResultServiceTest,RealtimeInterpretationOrderTest" test`.
+- Frontend export tests passed: 4 tests, 0 failures.
+- Full clean backend verification passed: `mvn clean test`; 467 tests, 0 failures, 0 errors, 0 skipped.
+- Frontend production build passed: TypeScript compilation and Vite build completed with 122 transformed modules.
+- Browser/export artifact verification passed at desktop width and a constrained 320 px layout: timestamps remained smaller than source text, long text wrapped without overlap, old-data fallback rendered, and translations were absent.
+- No server deployment performed for this optimization.
+
+## Weekly Validation Record: 2026-W36 Account-Isolated Summary Preferences
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W36 Account-Isolated Summary Preferences`.
+
+### Validation Goals
+
+- Prove summary recipients and both prompt types are isolated by authenticated user ID.
+- Prove empty and cleared settings remain empty without local browser fallback or cross-account write-back.
+- Prove permission, input-length, persistence-failure, legacy cleanup, and unchanged automatic-send behavior.
+
+### Log / API / Data Validation First
+
+For two test users A and B:
+
+- Save different recipient arrays and different meeting/speaker prompts while authenticated as each user.
+- GET `/api/user/preference/summary-recipients` and `/api/user/preference/summary-requirements` for each session and compare responses.
+- Clear B's recipients with `[]`, reload, and confirm the response remains empty.
+- Query `si_user` by the two user IDs and confirm each row owns its own `summary_recipients`, `meeting_summary_requirements`, and `speaker_summary_requirements` values.
+- Inspect backend logs for preference method start/end rows containing the correct authenticated `userId`; failed persistence must produce an error response and error log.
+- Verify unauthenticated GET/PUT calls return 401 and do not invoke the facade.
+
+Pass criteria:
+
+- A's values never appear in B's API response unless explicitly selected and saved by B.
+- B's empty values stay empty after reload and are not rewritten from browser storage.
+- Partial prompt updates preserve the omitted prompt column via `COALESCE` while an explicit empty string clears the supplied column.
+- Existing automatic speaker-summary sending still reads recipients from the session owner's user preference.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=UserPreferenceServiceTest,UserPreferenceFacadeTest,UserPreferenceControllerSecurityTest,SaveUserSummaryRequirementsRequestTest,SpeakerSummaryServiceTest" test
+mvn clean test
+
+cd ..\si-frontend
+npm test
+npm run build
+```
+
+Pass criteria:
+
+- Backend tests cover two-account isolation, authenticated actor ID propagation, empty and null data, clearing recipients, partial prompt saves, DDL columns, 4000-character validation, unauthenticated denial, and explicit database-failure behavior.
+- `SpeakerSummaryServiceTest` remains green, proving automatic summary behavior was not regressed.
+- Frontend tests prove an empty backend response remains empty, A/B settings remain independent, recipient normalization is deterministic, and legacy shared keys are removed without migration.
+- Full backend tests and frontend production build pass.
+
+### Browser Workflow Validation
+
+- Verify the history summary and speaker-summary tabs at desktop and narrow viewport widths.
+- Check loading state: prompt inputs and save buttons are disabled until account settings finish loading.
+- Check empty state: no recipients or prompts are prefilled when the current account has no values.
+- Check success state: prompt save button moves through saving and saved labels.
+- Check failure state: failed preference load/save displays an error and does not restore a local fallback.
+- Switch between two test accounts in the same browser profile and confirm each account reloads its own settings.
+
+### Result Record
+
+- Focused backend tests passed for user preference, authorization, validation, explicit prompt clearing, and automatic speaker-summary regression.
+- Full backend verification passed: `mvn clean test`; 484 tests, 0 failures, 0 errors, 0 skipped.
+- Frontend tests passed: 8 tests, 0 failures, including 4 account-isolation/legacy-cleanup cases.
+- Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
+- Browser state validation passed for loading, empty, saved, load-failure, and constrained 320 px layouts; controls did not overflow, loading controls remained disabled, and the production login build rendered normally.
+- Two-account persistence boundaries were verified at controller/facade/service tests. A live account-switch check against the production database was intentionally not performed because this version was not deployed.
+- No server deployment performed.

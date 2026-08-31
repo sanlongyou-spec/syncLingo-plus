@@ -15,6 +15,7 @@ public class WsMessage {
     private String language;
     private String speakerId;
     private String speakerName;
+    private Long speechStartAtMs;
     private String translatedText;
     private String targetLanguage;
     private String ttsTaskId;

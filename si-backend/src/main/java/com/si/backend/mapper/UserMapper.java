@@ -35,6 +35,18 @@ public interface UserMapper {
     @Update("UPDATE si_user SET summary_recipients = #{recipients}, update_time = NOW() WHERE id = #{userId}")
     int updateSummaryRecipients(@Param("userId") Long userId, @Param("recipients") String recipients);
 
+    @Update("""
+            UPDATE si_user
+            SET meeting_summary_requirements = COALESCE(#{meetingSummaryRequirements}, meeting_summary_requirements),
+                speaker_summary_requirements = COALESCE(#{speakerSummaryRequirements}, speaker_summary_requirements),
+                update_time = NOW()
+            WHERE id = #{userId}
+            """)
+    int updateSummaryRequirements(
+            @Param("userId") Long userId,
+            @Param("meetingSummaryRequirements") String meetingSummaryRequirements,
+            @Param("speakerSummaryRequirements") String speakerSummaryRequirements);
+
     /** P1:为存量库补 status 列(列已存在时 MySQL 抛 Duplicate column,由调用方忽略)。 */
     @Update("ALTER TABLE si_user ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE'")
     void addStatusColumnIfNotExists();

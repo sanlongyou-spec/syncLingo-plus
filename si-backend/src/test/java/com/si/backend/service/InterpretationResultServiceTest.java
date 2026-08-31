@@ -1,6 +1,7 @@
 package com.si.backend.service;
 
 import com.si.backend.config.OpenAiProperties;
+import com.si.backend.dto.SaveInterpretationResultRequest;
 import com.si.backend.entity.InterpretationResult;
 import com.si.backend.integration.LlmIntegration;
 import com.si.backend.mapper.InterpretationEmbeddingMapper;
@@ -13,9 +14,12 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class InterpretationResultServiceTest {
 
@@ -46,6 +50,7 @@ class InterpretationResultServiceTest {
         assertEquals("translated", results.get(0).getTranslatedText());
         assertEquals("zh-CN", results.get(0).getSourceLang());
         assertEquals("en-US", results.get(0).getTargetLang());
+        assertEquals(1_788_142_511_000L, results.get(0).getSpeechStartAtMs());
     }
 
     @Test
@@ -71,6 +76,31 @@ class InterpretationResultServiceTest {
         assertEquals("all", results.get(0).getSourceText());
     }
 
+    @Test
+    void savePersistsAndReturnsSpeechStartTime() throws Exception {
+        when(llmIntegration.embed(any())).thenReturn(new float[0]);
+        doAnswer(invocation -> {
+            InterpretationResult inserted = invocation.getArgument(0);
+            inserted.setId(21L);
+            return 1;
+        }).when(resultMapper).insert(any(InterpretationResult.class));
+
+        SaveInterpretationResultRequest request = new SaveInterpretationResultRequest();
+        request.setSessionId("session-save");
+        request.setSourceText("会议现在开始");
+        request.setTranslatedText("The meeting starts now");
+        request.setSourceLang("zh-CN");
+        request.setTargetLang("en-US");
+        request.setSpeechStartAtMs(1_788_142_511_000L);
+
+        InterpretationResultItemVo saved = service.save(request);
+
+        ArgumentCaptor<InterpretationResult> captor = ArgumentCaptor.forClass(InterpretationResult.class);
+        verify(resultMapper).insert(captor.capture());
+        assertEquals(1_788_142_511_000L, captor.getValue().getSpeechStartAtMs());
+        assertEquals(1_788_142_511_000L, saved.getSpeechStartAtMs());
+    }
+
     private static InterpretationResult row(
             Long id,
             String sessionId,
@@ -86,6 +116,7 @@ class InterpretationResultServiceTest {
         result.setTranslatedText(translatedText);
         result.setSourceLang(sourceLang);
         result.setTargetLang(targetLang);
+        result.setSpeechStartAtMs(1_788_142_511_000L);
         result.setCreateTime(LocalDateTime.of(2026, 8, 12, 10, 0));
         return result;
     }

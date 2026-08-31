@@ -20,6 +20,10 @@ public class SiUser {
     private Integer tokenVersion;
     /** 发言摘要自动发送收件人，JSON 数组格式，如 ["a@jlg.co.id","b@jlg.co.id"] */
     private String summaryRecipients;
+    /** 当前账号的会议总结默认提示词。 */
+    private String meetingSummaryRequirements;
+    /** 当前账号的发言摘要默认提示词。 */
+    private String speakerSummaryRequirements;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
 }

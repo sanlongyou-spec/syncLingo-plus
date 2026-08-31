@@ -42,6 +42,7 @@ public class InterpretationResultService {
         resultMapper.createTableIfNotExists();
         addColumnIfMissing("speaker_id", resultMapper::addSpeakerIdColumnIfNotExists);
         addColumnIfMissing("speaker_name", resultMapper::addSpeakerNameColumnIfNotExists);
+        addColumnIfMissing("speech_start_at_ms", resultMapper::addSpeechStartAtMsColumnIfNotExists);
         addColumnIfMissing("idx_result_session_id_id index", resultMapper::addSessionIdIdIndexIfNotExists);
         embeddingMapper.createTableIfNotExists();
         addColumnIfMissing("result_id nullable",  embeddingMapper::makeResultIdNullable);
@@ -93,8 +94,9 @@ public class InterpretationResultService {
     }
 
     public InterpretationResultItemVo save(SaveInterpretationResultRequest request) {
-        log.info("[InterpretationResultService] save start, sessionId={}, sourceLen={}, translatedLen={}",
-                request.getSessionId(), request.getSourceText().length(), request.getTranslatedText().length());
+        log.info("[InterpretationResultService] save start, sessionId={}, sourceLen={}, translatedLen={}, speechStartAtMs={}",
+                request.getSessionId(), request.getSourceText().length(), request.getTranslatedText().length(),
+                request.getSpeechStartAtMs());
         InterpretationResult result = new InterpretationResult();
         result.setSessionId(request.getSessionId());
         result.setSourceText(request.getSourceText());
@@ -103,6 +105,7 @@ public class InterpretationResultService {
         result.setTargetLang(request.getTargetLang());
         result.setSpeakerId(request.getSpeakerId());
         result.setSpeakerName(request.getSpeakerName());
+        result.setSpeechStartAtMs(request.getSpeechStartAtMs());
         resultMapper.insert(result);
         log.info("[InterpretationResultService] save end, sessionId={}, resultId={}",
                 request.getSessionId(), result.getId());
@@ -278,6 +281,7 @@ public class InterpretationResultService {
                 .targetLang(result.getTargetLang())
                 .speakerId(result.getSpeakerId())
                 .speakerName(result.getSpeakerName())
+                .speechStartAtMs(result.getSpeechStartAtMs())
                 .createTime(result.getCreateTime() != null ? result.getCreateTime().toString() : null)
                 .build();
     }

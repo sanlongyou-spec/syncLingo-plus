@@ -15,5 +15,6 @@ public class InterpretationResult {
     private String targetLang;
     private String speakerId;
     private String speakerName;
+    private Long speechStartAtMs;
     private LocalDateTime createTime;
 }

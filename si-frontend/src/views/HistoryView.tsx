@@ -24,9 +24,11 @@ import {
   downloadMeetingFile,
   getAudioDownloadUrl,
   getSummaryRecipients,
+  getSummaryRequirements,
   saveSummaryRecipients,
+  saveSummaryRequirements,
 } from '../api'
-import { LANGUAGE_LABELS, ROUTES, STORAGE_KEYS } from '../constants'
+import { LANGUAGE_LABELS, ROUTES } from '../constants'
 import type {
   AudioRecord,
   InterpretationResultItem,
@@ -39,12 +41,16 @@ import type {
   TeamsSummarySendResponse,
 } from '../types'
 import { buildTranscriptGroups, type TranscriptGroup } from '../utils/transcriptGrouping'
+import { buildTranscriptWordHtml } from '../utils/transcriptExport'
+import {
+  buildUserSummaryPreferenceState,
+  clearLegacySharedSummaryStorage,
+  MAX_SUMMARY_REQUIREMENTS_LENGTH,
+} from '../utils/userSummaryPreferences'
 import './InterpretationView.css'
 import './HistoryView.css'
 
 const DEFAULT_TITLE = '未命名会议'
-const SUMMARY_REQ_KEY = 'si_summary_requirements'
-const SUMMARY_RECIPIENTS_KEY = 'si_summary_default_recipients'
 const TRANSCRIPT_EXPORT_ALL_KEY = '__all__'
 
 type SpeakerActionStatus = 'idle' | 'loading' | 'done' | 'error'
@@ -53,8 +59,12 @@ type TextSearchMatch = { kind: SearchMatchKind; start: number; end: number }
 type TranscriptSearchMatch = { groupIndex: number; kind: SearchMatchKind }
 type TranscriptExportSpeakerOption = { key: string; label: string; count: number }
 
-const escapeHtml = (text: string) =>
-  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const preferenceSaveLabel = (status: SpeakerActionStatus) => {
+  if (status === 'loading') return '保存中...'
+  if (status === 'done') return '已保存'
+  if (status === 'error') return '保存失败'
+  return '设为默认'
+}
 
 const sanitizeFilename = (name: string) =>
   name.replace(/[\\/:*?"<>|]/g, '_').trim() || '记录'
@@ -247,19 +257,7 @@ const languageBadgeClass = (lang?: string) => {
 }
 
 const downloadWord = (title: string, groups: TranscriptGroup[]) => {
-  const body = groups.map(group => {
-    const speaker = group.speakerName || group.speakerId || ''
-    const speakerHtml = speaker
-      ? `<p style="font-weight:bold;color:#555;margin-bottom:2px;">${escapeHtml(speaker)}</p>`
-      : ''
-    return `
-    <div style="margin-bottom:12px;">
-      ${speakerHtml}
-      <p style="margin:0 0 2px 0;">${escapeHtml(group.sourceText)}</p>
-    </div>`
-  }).join('')
-  const html = `<html><head><meta charset="utf-8"/></head>
-    <body style="font-family:Microsoft YaHei,Arial,sans-serif;line-height:1.8;font-size:12pt;">${body}</body></html>`
+  const html = buildTranscriptWordHtml(groups)
   const blob = new Blob(['﻿', html], { type: 'application/msword' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -311,17 +309,13 @@ export default function HistoryView() {
   // ── Summary tab ─────────────────────────────────────────
   const [summaryText, setSummaryText] = useState<string | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
-  const [summaryRequirements, setSummaryRequirements] = useState(
-    () => localStorage.getItem(SUMMARY_REQ_KEY) ?? ''
-  )
-  const [summaryReqSaved, setSummaryReqSaved] = useState(false)
+  const [summaryRequirements, setSummaryRequirements] = useState('')
+  const [summaryReqSaveStatus, setSummaryReqSaveStatus] = useState<SpeakerActionStatus>('idle')
   const [teamsPushStatus, setTeamsPushStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
   const [summaryPushResult, setSummaryPushResult] = useState<TeamsSummarySendResponse | null>(null)
   const [systemUsers, setSystemUsers] = useState<SystemUserInfo[]>([])
   const [systemUsersLoading, setSystemUsersLoading] = useState(false)
-  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(
-    () => new Set(JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]') as string[])
-  )
+  const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set())
   const hasFetchedSummaryRef = useRef(false)
   const [recipientSearch, setRecipientSearch] = useState('')
   const [showRecipientDropdown, setShowRecipientDropdown] = useState(false)
@@ -332,10 +326,10 @@ export default function HistoryView() {
   // ── Speaker tab ─────────────────────────────────────────
   const [speakerRecords, setSpeakerRecords] = useState<SpeakerSummaryRecord[]>([])
   const [speakerLoading, setSpeakerLoading] = useState(false)
-  const [speakerRequirements, setSpeakerRequirements] = useState(
-    () => localStorage.getItem(STORAGE_KEYS.SPEAKER_SUMMARY_REQUIREMENTS) ?? ''
-  )
-  const [speakerReqSaved, setSpeakerReqSaved] = useState(false)
+  const [speakerRequirements, setSpeakerRequirements] = useState('')
+  const [speakerReqSaveStatus, setSpeakerReqSaveStatus] = useState<SpeakerActionStatus>('idle')
+  const [summaryPreferencesLoading, setSummaryPreferencesLoading] = useState(true)
+  const [summaryPreferencesLoadError, setSummaryPreferencesLoadError] = useState(false)
   const [speakerRegenStatus, setSpeakerRegenStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerSaveStatus, setSpeakerSaveStatus] = useState<Record<string, SpeakerActionStatus>>({})
   const [speakerPushStatus, setSpeakerPushStatus] = useState<Record<string, SpeakerActionStatus>>({})
@@ -486,31 +480,46 @@ export default function HistoryView() {
   }, [selectedMeetingId])
 
   useEffect(() => {
+    let disposed = false
+    try {
+      clearLegacySharedSummaryStorage(localStorage)
+    } catch {
+      // Account settings still come from the backend when browser storage is unavailable.
+    }
     setSystemUsersLoading(true)
-    Promise.all([getSystemUsers(), getSummaryRecipients().catch(() => ({ data: null }))])
-      .then(([usersRes, recipientsRes]) => {
-        const withEmail = (usersRes.data || []).filter(u => u.email && u.email.trim())
-        setSystemUsers(withEmail)
-        // Prefer backend-stored recipients; fall back to localStorage
-        const backendEmails: string[] | null = recipientsRes.data ?? null
-        const backendEmpty = !(backendEmails && backendEmails.length > 0)
-        const sourceEmails: string[] = backendEmpty
-          ? JSON.parse(localStorage.getItem(SUMMARY_RECIPIENTS_KEY) || '[]')
-          : backendEmails!
-        // Keep all stored emails, even if not currently in systemUsers —
-        // systemUsers may load partially or the user list may change over time.
-        // Only filter out blank/null entries.
-        const valid = sourceEmails.filter(e => e && e.trim())
-        const validSet = new Set(valid)
-        setSelectedRecipients(validSet)
-        localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(Array.from(validSet)))
-        // Always sync to backend: covers both "never saved" and "backend cleared" cases.
-        if (valid.length > 0) {
-          saveSummaryRecipients(valid).catch(() => {})
+    setSummaryPreferencesLoading(true)
+    setSummaryPreferencesLoadError(false)
+    Promise.allSettled([getSystemUsers(), getSummaryRecipients(), getSummaryRequirements()])
+      .then(([usersResult, recipientsResult, requirementsResult]) => {
+        if (disposed) return
+
+        if (usersResult.status === 'fulfilled') {
+          setSystemUsers((usersResult.value.data || []).filter(u => u.email && u.email.trim()))
+        } else {
+          setSystemUsers([])
         }
+
+        const recipients = recipientsResult.status === 'fulfilled'
+          ? recipientsResult.value.data
+          : []
+        const requirements = requirementsResult.status === 'fulfilled'
+          ? requirementsResult.value.data
+          : null
+        const settings = buildUserSummaryPreferenceState(recipients, requirements)
+        setSelectedRecipients(new Set(settings.recipients))
+        setSummaryRequirements(settings.meetingSummaryRequirements)
+        setSpeakerRequirements(settings.speakerSummaryRequirements)
+
+        if (recipientsResult.status === 'rejected') setRecipientSaveStatus('error')
+        setSummaryPreferencesLoadError(requirementsResult.status === 'rejected')
       })
-      .catch(() => setSystemUsers([]))
-      .finally(() => setSystemUsersLoading(false))
+      .finally(() => {
+        if (disposed) return
+        setSystemUsersLoading(false)
+        setSummaryPreferencesLoading(false)
+      })
+
+    return () => { disposed = true }
   }, [])
 
   useEffect(() => {
@@ -764,20 +773,33 @@ export default function HistoryView() {
     }
   }
 
-  const saveSummaryRequirementsDefault = () => {
-    localStorage.setItem(SUMMARY_REQ_KEY, summaryRequirements)
-    setSummaryReqSaved(true)
-    setTimeout(() => setSummaryReqSaved(false), 1500)
+  const saveSummaryRequirementsDefault = async () => {
+    setSummaryReqSaveStatus('loading')
+    try {
+      await saveSummaryRequirements({ meetingSummaryRequirements: summaryRequirements })
+      setSummaryPreferencesLoadError(false)
+      setSummaryReqSaveStatus('done')
+      setTimeout(() => setSummaryReqSaveStatus('idle'), 1500)
+    } catch {
+      setSummaryReqSaveStatus('error')
+      setTimeout(() => setSummaryReqSaveStatus('idle'), 3000)
+    }
   }
 
-  const saveSpeakerRequirementsDefault = () => {
-    localStorage.setItem(STORAGE_KEYS.SPEAKER_SUMMARY_REQUIREMENTS, speakerRequirements)
-    setSpeakerReqSaved(true)
-    setTimeout(() => setSpeakerReqSaved(false), 1500)
+  const saveSpeakerRequirementsDefault = async () => {
+    setSpeakerReqSaveStatus('loading')
+    try {
+      await saveSummaryRequirements({ speakerSummaryRequirements: speakerRequirements })
+      setSummaryPreferencesLoadError(false)
+      setSpeakerReqSaveStatus('done')
+      setTimeout(() => setSpeakerReqSaveStatus('idle'), 1500)
+    } catch {
+      setSpeakerReqSaveStatus('error')
+      setTimeout(() => setSpeakerReqSaveStatus('idle'), 3000)
+    }
   }
 
   const persistRecipients = (list: string[]) => {
-    localStorage.setItem(SUMMARY_RECIPIENTS_KEY, JSON.stringify(list))
     if (recipientSaveTimerRef.current) clearTimeout(recipientSaveTimerRef.current)
     setRecipientSaveStatus('saving')
     recipientSaveTimerRef.current = setTimeout(() => {
@@ -1342,19 +1364,25 @@ export default function HistoryView() {
                         <label className="history-summary-requirements-label">发言摘要提示词（可选）</label>
                         <button
                           className="history-summary-requirements-default-btn"
-                          onClick={saveSpeakerRequirementsDefault}
+                          onClick={() => { void saveSpeakerRequirementsDefault() }}
+                          disabled={summaryPreferencesLoading || speakerReqSaveStatus === 'loading'}
                           title="保存为默认提示词"
                         >
-                          {speakerReqSaved ? '已保存' : '设为默认'}
+                          {preferenceSaveLabel(speakerReqSaveStatus)}
                         </button>
                       </div>
                       <textarea
                         className="history-summary-requirements-input"
                         value={speakerRequirements}
                         onChange={e => setSpeakerRequirements(e.target.value)}
+                        disabled={summaryPreferencesLoading}
+                        maxLength={MAX_SUMMARY_REQUIREMENTS_LENGTH}
                         placeholder="例如：突出决策、风险和行动项；每条要点不超过 30 字；保留产品名和数字。"
                         rows={3}
                       />
+                      {summaryPreferencesLoadError && (
+                        <div className="history-summary-edit-hint">账号默认提示词加载失败，请重新保存后再使用。</div>
+                      )}
                     </div>
                     {renderRecipientPicker('发言摘要发送账号（默认，修改后自动保存）')}
                     {!selectedSessionId && <div className="si-tri-empty">该会议尚未进行同传，暂无发言摘要</div>}
@@ -1434,16 +1462,22 @@ export default function HistoryView() {
                       <div className="history-summary-requirements-header">
                         <label className="history-summary-requirements-label">会议总结提示词（可选）</label>
                         <button className="history-summary-requirements-default-btn"
-                          onClick={saveSummaryRequirementsDefault}
-                          title="保存为默认提示词">{summaryReqSaved ? '已保存' : '设为默认'}</button>
+                          onClick={() => { void saveSummaryRequirementsDefault() }}
+                          disabled={summaryPreferencesLoading || summaryReqSaveStatus === 'loading'}
+                          title="保存为默认提示词">{preferenceSaveLabel(summaryReqSaveStatus)}</button>
                       </div>
                       <textarea
                         className="history-summary-requirements-input"
                         value={summaryRequirements}
                         onChange={e => setSummaryRequirements(e.target.value)}
+                        disabled={summaryPreferencesLoading}
+                        maxLength={MAX_SUMMARY_REQUIREMENTS_LENGTH}
                         placeholder="例如：重点突出决议和待办事项，输出中英双语，按议题分段..."
                         rows={3}
                       />
+                      {summaryPreferencesLoadError && (
+                        <div className="history-summary-edit-hint">账号默认提示词加载失败，请重新保存后再使用。</div>
+                      )}
                     </div>
                     <div className="history-summary-send-settings">
                       {renderRecipientPicker('会议总结发送账号（默认，修改后自动保存）')}

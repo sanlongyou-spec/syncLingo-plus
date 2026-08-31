@@ -26,6 +26,7 @@ export interface WsMessage {
   language?: string
   speakerId?: string
   speakerName?: string
+  speechStartAtMs?: number
   speakerProfileId?: string
   speakerIdentityStatus?: string
   speakerIdentitySource?: string
@@ -141,6 +142,7 @@ export interface InterpretationResultItem {
   targetLang?: string
   speakerId?: string
   speakerName?: string
+  speechStartAtMs?: number
   createTime?: string
 }
 
@@ -159,6 +161,7 @@ export interface SaveInterpretationResultParams {
   targetLang?: string
   speakerId?: string
   speakerName?: string
+  speechStartAtMs?: number
 }
 
 export interface CloneVoiceParams {
@@ -398,6 +401,16 @@ export interface UserLanguagePreference {
   userId: number
   defaultSourceLang: string
   enabledLanguages: string[]
+}
+
+export interface UserSummaryRequirements {
+  meetingSummaryRequirements: string
+  speakerSummaryRequirements: string
+}
+
+export interface SaveUserSummaryRequirementsParams {
+  meetingSummaryRequirements?: string
+  speakerSummaryRequirements?: string
 }
 
 /**

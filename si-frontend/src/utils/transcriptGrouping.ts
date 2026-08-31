@@ -14,6 +14,8 @@ export type TranscriptGroup = {
   sourceLang?: string
   speakerId?: string
   speakerName?: string
+  speechStartAtMs?: number
+  createTime?: string
   translations: TranscriptGroupTranslation[]
 }
 
@@ -25,6 +27,24 @@ const normalizeSpeakerKey = (speakerId?: string, speakerName?: string) =>
   (speakerId || speakerName || '').trim().toLowerCase()
 
 const sameOptionalKey = (left: string, right: string) => left === '' || right === '' || left === right
+
+const earlierCreateTime = (left?: string, right?: string) => {
+  if (!left) return right
+  if (!right) return left
+
+  const leftTime = Date.parse(left.replace(' ', 'T'))
+  const rightTime = Date.parse(right.replace(' ', 'T'))
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return left
+  return rightTime < leftTime ? right : left
+}
+
+const earlierSpeechStartAtMs = (left?: number, right?: number) => {
+  const validLeft = typeof left === 'number' && Number.isFinite(left) && left > 0 ? left : undefined
+  const validRight = typeof right === 'number' && Number.isFinite(right) && right > 0 ? right : undefined
+  if (validLeft === undefined) return validRight
+  if (validRight === undefined) return validLeft
+  return Math.min(validLeft, validRight)
+}
 
 const hasTargetTranslation = (group: TranscriptGroup, targetLang?: string) => {
   const targetKey = normalizeLangKey(targetLang)
@@ -67,6 +87,8 @@ export const buildTranscriptGroups = (results: InterpretationResultItem[]): Tran
         sourceLang: current.sourceLang || item.sourceLang,
         speakerId: current.speakerId || item.speakerId,
         speakerName: current.speakerName || item.speakerName,
+        speechStartAtMs: earlierSpeechStartAtMs(current.speechStartAtMs, item.speechStartAtMs),
+        createTime: earlierCreateTime(current.createTime, item.createTime),
         translations: translation ? [...current.translations, translation] : current.translations,
       }
       continue
@@ -78,6 +100,8 @@ export const buildTranscriptGroups = (results: InterpretationResultItem[]): Tran
       sourceLang: item.sourceLang,
       speakerId: item.speakerId,
       speakerName: item.speakerName,
+      speechStartAtMs: item.speechStartAtMs,
+      createTime: item.createTime,
       translations: translation ? [translation] : [],
     })
   }

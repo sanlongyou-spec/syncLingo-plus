@@ -8,8 +8,6 @@ export const STORAGE_KEYS = {
   ROLE: 'si_role',
   CURRENT_SESSION_ID: 'si_current_session_id',
   MEETING_SUMMARY_INCLUDE_CHAT: 'si_meeting_summary_include_chat',
-  SPEAKER_SUMMARY_REQUIREMENTS: 'si_speaker_summary_requirements',
-  MEETING_SUMMARY_REQUIREMENTS: 'si_meeting_summary_requirements',
   TRANSCRIPT_FONT_SCALE: 'si_transcript_font_scale',
 } as const
 

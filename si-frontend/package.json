@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite --port 5173",
     "build": "tsc && vite build",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "preview": "vite preview",
     "start": "serve -s dist -l 4173"
   },

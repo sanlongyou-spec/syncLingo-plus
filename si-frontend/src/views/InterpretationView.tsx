@@ -268,6 +268,7 @@ export default function InterpretationView() {
             targetLang: targetLanguage,
             speakerId: msg.speakerId || undefined,
             speakerName: messageSpeakerName || undefined,
+            speechStartAtMs: msg.speechStartAtMs,
           }).catch(err => console.warn('[InterpretationView] saveInterpretationResult failed:', err))
         }
         if (!translatedText) break

@@ -22,6 +22,7 @@ public interface InterpretationResultMapper {
                 translated_text TEXT NOT NULL,
                 source_lang VARCHAR(16) DEFAULT NULL,
                 target_lang VARCHAR(16) DEFAULT NULL,
+                speech_start_at_ms BIGINT DEFAULT NULL,
                 create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_result_session_id (session_id),
                 INDEX idx_result_session_id_id (session_id, id),
@@ -39,11 +40,14 @@ public interface InterpretationResultMapper {
     @Update("ALTER TABLE interpretation_result ADD COLUMN speaker_name VARCHAR(128) DEFAULT NULL")
     void addSpeakerNameColumnIfNotExists();
 
+    @Update("ALTER TABLE interpretation_result ADD COLUMN speech_start_at_ms BIGINT DEFAULT NULL")
+    void addSpeechStartAtMsColumnIfNotExists();
+
     @Update("ALTER TABLE interpretation_result ADD INDEX idx_result_session_id_id (session_id, id)")
     void addSessionIdIdIndexIfNotExists();
 
-    @Insert("INSERT INTO interpretation_result (session_id, source_text, translated_text, source_lang, target_lang, speaker_id, speaker_name, create_time) " +
-            "VALUES (#{sessionId}, #{sourceText}, #{translatedText}, #{sourceLang}, #{targetLang}, #{speakerId}, #{speakerName}, NOW())")
+    @Insert("INSERT INTO interpretation_result (session_id, source_text, translated_text, source_lang, target_lang, speaker_id, speaker_name, speech_start_at_ms, create_time) " +
+            "VALUES (#{sessionId}, #{sourceText}, #{translatedText}, #{sourceLang}, #{targetLang}, #{speakerId}, #{speakerName}, #{speechStartAtMs}, NOW())")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(InterpretationResult result);
 

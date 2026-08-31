@@ -538,9 +538,15 @@
   cursor: pointer;
 }
 
-.history-summary-requirements-default-btn:hover {
+.history-summary-requirements-default-btn:hover:not(:disabled) {
   background: rgba(255,255,255,0.12);
   color: var(--si-text, #edf6ff);
+}
+
+.history-summary-requirements-default-btn:disabled,
+.history-summary-requirements-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .history-summary-requirements-input {

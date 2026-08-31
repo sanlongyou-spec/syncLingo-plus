@@ -16,5 +16,6 @@ public class InterpretationResultItemVo {
     private String targetLang;
     private String speakerId;
     private String speakerName;
+    private Long speechStartAtMs;
     private String createTime;
 }

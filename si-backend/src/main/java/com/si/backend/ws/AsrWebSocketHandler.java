@@ -160,7 +160,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },
                 // onTranslated：将译文推送给前端展示
-                (originalText, translatedText, sLang, tLang, speakerId, speakerName) -> {
+                (originalText, translatedText, sLang, tLang, speakerId, speakerName, speechStartAtMs) -> {
                     log.info("[AsrWebSocketHandler] translated, sessionId={}, {}→{}, origLen={}, transLen={}",
                             sessionId, sLang, tLang,
                             originalText != null ? originalText.length() : 0,
@@ -174,6 +174,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setTargetLanguage(tLang);
                     out.setSpeakerId(speakerId);
                     out.setSpeakerName(speakerName);
+                    out.setSpeechStartAtMs(speechStartAtMs);
                     sendMessage(session, out);
                     shareWebSocketHandler.broadcast(sessionId, out);
                 },
