@@ -2337,7 +2337,7 @@ Pass criteria:
 - Full clean backend verification passed: `mvn clean test`; 467 tests, 0 failures, 0 errors, 0 skipped.
 - Frontend production build passed: TypeScript compilation and Vite build completed with 122 transformed modules.
 - Browser/export artifact verification passed at desktop width and a constrained 320 px layout: timestamps remained smaller than source text, long text wrapped without overlap, old-data fallback rendered, and translations were absent.
-- No server deployment performed for this optimization.
+- Production deployment passed in release commit `e287e75f85c2765b4aee1c1257a24beaf2310787`: the nullable `speech_start_at_ms` column exists, backend health is `UP`, and the production frontend serves the expected hashed assets.
 
 ## Weekly Validation Record: 2026-W36 Account-Isolated Summary Preferences
 
@@ -2404,5 +2404,10 @@ Pass criteria:
 - Frontend tests passed: 8 tests, 0 failures, including 4 account-isolation/legacy-cleanup cases.
 - Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
 - Browser state validation passed for loading, empty, saved, load-failure, and constrained 320 px layouts; controls did not overflow, loading controls remained disabled, and the production login build rendered normally.
-- Two-account persistence boundaries were verified at controller/facade/service tests. A live account-switch check against the production database was intentionally not performed because this version was not deployed.
-- No server deployment performed.
+- Two-account persistence boundaries were verified at controller/facade/service tests. A live production account-switch check was intentionally not performed to avoid changing a second account's saved recipients; the production `test` account was used for a reversible partial-save/read/clear verification.
+- Production deployment passed in release commit `e287e75f85c2765b4aee1c1257a24beaf2310787`: backend image `si-backend:e287e75f85c2` is healthy with zero restarts, nginx and the Bot/speaker services are active, and the production frontend serves `index-Cr_syXkF.js` plus `index-Dwv10gLn.css`.
+- Database validation confirmed nullable `meeting_summary_requirements`, `speaker_summary_requirements`, and `speech_start_at_ms` columns while preserving the existing `summary_recipients` column and the `test` account's two stored recipients.
+- Public API validation passed: unauthenticated prompt preference access returned 401; authenticated GET returned 200; partial prompt save/read and explicit clearing both succeeded without changing the omitted prompt field.
+- Production browser validation passed: the login page rendered from the deployed bundle with no browser console warnings or errors.
+- Rollback baseline: commit `c14f3b894889b065344fc4d4fc74553808f2b448`, image `si-backend:rollback-c14f3b894889-20260831-164110`, and frontend backup `/opt/backups/synclingo-pre-e287e75-20260831-164110/frontend`.
+- One deployment attempt initially omitted the existing `si-mysql:127.0.0.1` host mapping and could not resolve the database hostname. The container was recreated with the original mapping before the frontend switch; the final container started in 8 seconds and has restart count 0.

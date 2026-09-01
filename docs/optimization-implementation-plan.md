@@ -2048,7 +2048,7 @@ GET    /api/admin/audit-logs
 
 - Historical rows cannot recover an exact ASR utterance start time that was never stored. Their timestamp is therefore the nearest available legacy result creation time.
 - The ASR speaking time is captured at the first recognizing event, so it may trail the physical start of speech by the recognizer's initial detection latency.
-- This version is local only until a separate deployment request is approved.
+- Deployed to production on 2026-08-31 in release commit `e287e75f85c2765b4aee1c1257a24beaf2310787`.
 
 ## Weekly Optimization Record: 2026-W36 Account-Isolated Summary Preferences
 
@@ -2093,4 +2093,5 @@ GET    /api/admin/audit-logs
 
 - Recipient values already copied into another account's database record by the old frontend cannot be distinguished from legitimate choices and are not deleted automatically. They must be cleared once from that account if incorrect.
 - Old browser-only prompt values are intentionally not migrated because the historical keys did not record which account owned them.
-- This version is not deployed to the server per request.
+- Deployed to production on 2026-08-31 in release commit `e287e75f85c2765b4aee1c1257a24beaf2310787`.
+- The pre-deployment application baseline is commit `c14f3b894889b065344fc4d4fc74553808f2b448`; its backend image and frontend files are retained under the deployment-specific rollback point.
