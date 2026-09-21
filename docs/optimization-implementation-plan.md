@@ -2133,3 +2133,43 @@ GET    /api/admin/audit-logs
 
 - Abrupt device power loss can prevent the unload beacon. The login remains protected until its existing absolute/idle expiry; this change does not add a separate administrative force-logout operation.
 - Deployments must occur while no live meeting is running because backend restart intentionally closes realtime processing and reconciles orphaned `running` rows.
+
+## Weekly Optimization Record: 2026-W39 Language-Switch TTS Reset
+
+### Goal
+
+- Preserve every recognized source sentence, translation result, persistence write, and shared-page text update when the detected source language changes.
+- Immediately cancel and discard only the obsolete TTS synthesis and playback produced for the previous source language.
+- Keep VoiceMeeter and public share-page audio synchronized after a source-language switch.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Independent audio generation | Done | Added a monotonic per-session `audioEpoch`; translation and persistence do not depend on it. |
+| Stale synthesis cancellation | Done | Old reservations are released and active Cartesia stream handles are cancelled on a confirmed final-result language switch. |
+| Late-result protection | Done | A late old-language translation is still published and saved, but epoch checks prevent it from starting or forwarding TTS. |
+| Host playback reset | Done | `tts_reset` clears queued/playing VoiceMeeter and monitor audio without tearing down configured output devices. |
+| Share playback reset | Done | The share-audio protocol adds a reset frame that clears server subscriber queues and browser-scheduled audio; stale-epoch PCM is rejected server-side. |
+| Regression coverage | Done | Added asynchronous language-switch and share-audio reset tests while retaining existing TTS order and WebSocket security coverage. |
+
+### Affected Modules
+
+- Backend realtime pipeline: `RealtimeInterpretationFacade`, `AsrWebSocketHandler`, `WsMessage`.
+- Shared audio transport: `ShareAudioWebSocketHandler`.
+- Frontend host playback: `InterpretationView`, `VoiceMeeterOutput`.
+- Frontend public playback: `UserShareView`.
+- Tests: `RealtimeInterpretationOrderTest`, `ShareAudioWebSocketHandlerTest`, `AsrWebSocketHandlerSecurityTest`.
+
+### Acceptance Criteria
+
+- A translation started before a language switch still reaches the UI and persistence after the switch.
+- No stale translation may start TTS, and no stale synthesized chunk may reach either playback client.
+- Currently playing and queued old TTS stops on both VoiceMeeter and the public share page.
+- The first new-language translation can synthesize and play without waiting for old reservations.
+- Normal same-language TTS ordering, recording, transcript history, and exported text remain unchanged.
+
+### Residual Issues
+
+- The switch is driven by the normalized language on finalized ASR results; recognition accuracy therefore determines whether a real switch is detected.
+- A live multilingual microphone and Teams routing test is required after deployment to validate physical output devices and audible transition quality.

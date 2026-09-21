@@ -204,6 +204,8 @@ export default function InterpretationView() {
     wsRef.current?.sendTtsPlaybackLog(activeSessionId, event)
   }, [])
 
+  const audioEpochRef = useRef(0)
+
   const handleWsMessage = useCallback((msg: WsMessage) => {
     const messageSpeakerId =
       normalizeVoiceCode(msg.speakerId) ||
@@ -318,6 +320,10 @@ export default function InterpretationView() {
         break
       }
       case 'tts_audio': {
+        if (typeof msg.audioEpoch === 'number') {
+          if (msg.audioEpoch < audioEpochRef.current) break
+          audioEpochRef.current = Math.max(audioEpochRef.current, msg.audioEpoch)
+        }
         if (msg.audioBase64 && msg.targetLanguage) {
           // Track duplicate/missing TTS chunks before routing PCM to VoiceMeeter.
           if (msg.ttsTaskId && typeof msg.chunkIndex === 'number') {
@@ -365,6 +371,11 @@ export default function InterpretationView() {
         }
         break
       }
+      case 'tts_reset':
+        audioEpochRef.current = Math.max(audioEpochRef.current, msg.audioEpoch ?? 0)
+        ttsChunkIndexByTaskRef.current.clear()
+        voiceMeeterRef.current?.resetPlayback(msg.reason || 'source_language_changed')
+        break
       case 'started':
         setIsRunning(true)
         voiceMeeterRef.current?.clearSourceGuard('session_started')
@@ -372,6 +383,7 @@ export default function InterpretationView() {
         setCurrentSpeakerId('')
         setSpeakerNameMap({})
         setDetectedLang(msg.language || '')
+        audioEpochRef.current = 0
         currentSpeakerIdRef.current = ''
         speakerNameMapRef.current = {}
         detectedLangRef.current = msg.language || ''

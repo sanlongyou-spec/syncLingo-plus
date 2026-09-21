@@ -35,6 +35,7 @@ export interface WsMessage {
   ttsTaskId?: string
   ttsSequence?: number
   chunkIndex?: number
+  audioEpoch?: number
   event?: string
   reason?: string
   playbackLang?: string

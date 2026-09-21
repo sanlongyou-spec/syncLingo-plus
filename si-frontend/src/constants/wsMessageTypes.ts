@@ -11,6 +11,7 @@ export const WS_MESSAGE_TYPE = {
   ERROR: 'error',
   AUDIO: 'audio',
   TTS_AUDIO: 'tts_audio',
+  TTS_RESET: 'tts_reset',
   TTS_PLAYBACK_LOG: 'tts_playback_log',
   START: 'start',
   STOP: 'stop',

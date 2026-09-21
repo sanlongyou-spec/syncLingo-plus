@@ -2465,3 +2465,56 @@ Pass criteria:
 - Same-origin logout returns 200 through production HTTPS after restoring the required `X-Forwarded-Proto` and `X-Forwarded-For` headers in the live nginx `/api/`, `/bot-api/`, and `/ws/` locations. Cross-origin logout remains rejected.
 - Public and loopback health checks returned 200/UP. The previous backend remains available as `si-backend:rollback-e287e75`, and the previous frontend is backed up under `/opt/backups/si-frontend-e287e75-20260921-093501`.
 - A destructive refresh/logout check against the user's active production session was not forced during deployment; automated lifecycle tests cover the cleanup path and the production no-session logout path was verified.
+
+## Weekly Validation Record: 2026-W39 Language-Switch TTS Reset
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W39 Language-Switch TTS Reset`.
+
+### Validation Goals
+
+- Prove language switching cancels only audio work while preserving text translation and persistence.
+- Prove stale asynchronous callbacks cannot reintroduce old audio after a reset.
+- Prove host and share-page playback queues reset without stopping the interpretation session.
+
+### Log / Protocol Validation First
+
+- Confirm one `language audio reset` log with incremented `audioEpoch` per finalized source-language change.
+- Confirm old reservations log `source_language_changed` or `stale_after_translation` and the late translation still emits `translated`.
+- Confirm `tts_reset` reaches the host, the share-audio reset frame contains the same epoch, and stale share PCM logs as dropped.
+- Confirm new-epoch `TTS queued`, first chunk, and stream completion logs proceed without waiting on old reservations.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=RealtimeInterpretationOrderTest,AsrWebSocketHandlerSecurityTest,ShareAudioWebSocketHandlerTest" test
+mvn clean test
+
+cd ..\si-frontend
+npm test
+npm run build
+```
+
+Pass criteria:
+
+- Delayed old translation is published but never synthesized after the switch.
+- New-language TTS is synthesized exactly once and uses the incremented epoch.
+- Share subscribers receive the reset frame and epoch.
+- Existing TTS ordering, WebSocket authorization, frontend tests, and production build remain green.
+
+### Browser / Live Validation
+
+- Start a three-language interpretation and listen through both VoiceMeeter/Teams and a public share page.
+- Speak a long Chinese sentence, switch to English before its queued TTS finishes, then switch to Indonesian.
+- Confirm displayed translations remain complete while old audio stops and only the new source-language path continues speaking.
+- Confirm output device bindings remain initialized, the page stays connected, and no click, duplicate phrase, stale tail, or dead queue is audible.
+
+### Result Record
+
+- Focused backend language-switch, share-audio reset, ordering, and WebSocket security tests passed locally.
+- Full backend verification passed: `mvn clean test`; 492 tests, 0 failures, 0 errors, 0 skipped.
+- Frontend tests passed: 8 tests, 0 failures.
+- Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
+- Production runtime and live audible switching results are recorded after deployment.

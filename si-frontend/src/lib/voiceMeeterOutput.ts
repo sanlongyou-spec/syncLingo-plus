@@ -349,6 +349,35 @@ export class VoiceMeeterOutput {
     this.guardNoiseBuffer = null
   }
 
+  /** Stop only queued/playing TTS while preserving initialized VoiceMeeter devices. */
+  resetPlayback(reason = 'source_language_changed'): void {
+    this.clearSourceGuard(reason)
+    for (const lang of ['zh', 'id', 'en'] as OutputLang[]) {
+      const channel = this.channels[lang]
+      const scheduledAheadMs = this.context
+        ? Math.round(Math.max(0, channel.scheduleTime - this.context.currentTime) * 1000)
+        : 0
+      channel.pending.forEach(source => {
+        try { source.stop() } catch { /* already ended */ }
+      })
+      channel.pending.clear()
+      channel.scheduleTime = this.context?.currentTime ?? 0
+      this.emit('language_switch_clears_audio', lang, undefined, {}, {
+        scheduledAheadMs,
+        pendingCount: 0,
+        contextState: this.context?.state,
+        audioPaused: channel.audioEl?.paused ?? true,
+        sinkReady: channel.sinkReady,
+        detail: reason,
+      })
+    }
+    this.monitorPending.forEach(source => {
+      try { source.stop() } catch { /* already ended */ }
+    })
+    this.monitorPending.clear()
+    this.monitorScheduleTime = this.context?.currentTime ?? 0
+  }
+
   private async setSink(lang: OutputLang, channel: OutputChannel, device: MediaDeviceInfo): Promise<boolean> {
     const el = channel.audioEl
     if (!el || !('setSinkId' in el)) {

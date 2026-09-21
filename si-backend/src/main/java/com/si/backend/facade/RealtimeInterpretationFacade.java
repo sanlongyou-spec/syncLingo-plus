@@ -1,6 +1,7 @@
 package com.si.backend.facade;
 
 import com.si.backend.common.Constants;
+import com.si.backend.common.TtsStreamHandle;
 import com.si.backend.config.CartesiaProperties;
 import com.si.backend.entity.InterpretationRecord;
 import com.si.backend.entity.InterpretationSession;
@@ -73,11 +74,14 @@ public class RealtimeInterpretationFacade {
 
     private final ConcurrentHashMap<String, TranslationResultCallback> sessionTranslatedCallbackMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, TtsAudioCallback> sessionTtsAudioCallbackMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, TtsResetCallback> sessionTtsResetCallbackMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AsrErrorCallback> sessionErrorCallbackMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionTtsChain = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionFinalRecognitionChain = new ConcurrentHashMap<>();
     private static final TtsBufferedChunk TTS_END = new TtsBufferedChunk(null, null, null, -1L, -1, -1L);
     private final ConcurrentHashMap<String, String> sessionLastSourceLang = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> sessionAudioEpoch = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ActiveTtsTask> activeTtsTasks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> sessionTargetLangMap = new ConcurrentHashMap<>();
     /** 会话级印尼语(原文→中文译文)滑动上下文：供 id→zh LLM 纠错翻译消歧并保持术语/称谓/风格一致 */
     private final ConcurrentHashMap<String, java.util.ArrayDeque<String[]>> sessionIdSourceContext = new ConcurrentHashMap<>();
@@ -96,12 +100,15 @@ public class RealtimeInterpretationFacade {
     public void startInterpretation(
             String sessionId, String sourceLang, String targetLang, String voiceId,
             AsrRecognitionCallback onRecognizing, AsrRecognitionCallback onRecognized,
-            TranslationResultCallback onTranslated, TtsAudioCallback onTtsAudio, AsrErrorCallback onError) {
+            TranslationResultCallback onTranslated, TtsAudioCallback onTtsAudio,
+            TtsResetCallback onTtsReset, AsrErrorCallback onError) {
         log.info("[RealtimeInterpretationFacade] startInterpretation, sessionId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, sourceLang, targetLang, voiceId);
         sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
+        sessionAudioEpoch.computeIfAbsent(sessionId, key -> new AtomicLong()).set(1L);
+        cancelSessionTts(sessionId, "session_restarted");
         sessionTargetLangMap.put(sessionId, normalizeTargetLang(targetLang));
         sessionTtsQueueSize.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
         sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).set(0);
@@ -113,6 +120,7 @@ public class RealtimeInterpretationFacade {
         audioRecordService.startRecording(sessionId, audioUserId, audioMeetingId);
         sessionTranslatedCallbackMap.put(sessionId, onTranslated);
         sessionTtsAudioCallbackMap.put(sessionId, onTtsAudio);
+        sessionTtsResetCallbackMap.put(sessionId, onTtsReset);
         sessionErrorCallbackMap.put(sessionId, onError);
         asrService.startRecognition(
                 sessionId,
@@ -180,10 +188,13 @@ public class RealtimeInterpretationFacade {
         catch (Exception e) { log.error("[RealtimeInterpretationFacade] stopSession failed, sessionId={}", sessionId, e); }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionTtsResetCallbackMap.remove(sessionId);
         sessionErrorCallbackMap.remove(sessionId);
         sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
+        cancelSessionTts(sessionId, "session_stopped");
+        sessionAudioEpoch.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
         sessionIdSourceContext.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
@@ -239,14 +250,22 @@ public class RealtimeInterpretationFacade {
 
         String prevLang = sessionLastSourceLang.put(sessionId, sourceLang);
         if (prevLang != null && !prevLang.equals(sourceLang)) {
-            log.info("[RealtimeInterpretationFacade] lang switch {}->{}, sessionId={}", prevLang, sourceLang, sessionId);
+            long audioEpoch = sessionAudioEpoch.computeIfAbsent(sessionId, key -> new AtomicLong(1L)).incrementAndGet();
+            cancelStaleTts(sessionId, audioEpoch, "source_language_changed");
+            TtsResetCallback resetCallback = sessionTtsResetCallbackMap.get(sessionId);
+            if (resetCallback != null) {
+                resetCallback.accept(prevLang, sourceLang, audioEpoch);
+            }
+            log.info("[RealtimeInterpretationFacade] language audio reset, sessionId={}, previousLang={}, currentLang={}, audioEpoch={}",
+                    sessionId, prevLang, sourceLang, audioEpoch);
         }
+        long audioEpoch = currentAudioEpoch(sessionId);
 
         final String finalVoiceId = resolveManualVoiceId(sessionId, speakerId);
 
         targetLangs.forEach(targetLang -> {
             if (!isPipelineActive(sessionId, "before_target_translate")) return;
-            TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang);
+            TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang, audioEpoch);
             CompletableFuture.runAsync(
                     () -> translateAndStreamTts(text, sourceLang, targetLang, finalVoiceId,
                             sessionId, speakerId, speakerId, speechStartAtMs, reservation),
@@ -321,7 +340,7 @@ public class RealtimeInterpretationFacade {
             String text, String sourceLang, String targetLang, String voiceId,
             String sessionId, String speakerId, String speakerName, long speechStartAtMs) {
         if (text == null || text.isBlank()) return;
-        TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang);
+        TtsPlaybackReservation reservation = reserveTtsPlayback(sessionId, targetLang, currentAudioEpoch(sessionId));
         try {
             translateAndStreamTts(text, sourceLang, targetLang, voiceId, sessionId, speakerId, speakerName, speechStartAtMs, reservation);
         } catch (RuntimeException e) {
@@ -411,6 +430,12 @@ public class RealtimeInterpretationFacade {
             completeTtsReservation(reservation, "inactive_before_tts");
             return;
         }
+        if (!isCurrentAudioEpoch(reservation)) {
+            log.info("[RealtimeInterpretationFacade] translated text kept but stale TTS skipped, sessionId={}, taskId={}, taskEpoch={}, currentEpoch={}",
+                    sessionId, reservation.taskId(), reservation.audioEpoch(), currentAudioEpoch(sessionId));
+            completeTtsReservation(reservation, "stale_after_translation");
+            return;
+        }
         final String resolvedVoiceId = resolveVoiceId(voiceId, targetLang, sessionId, speakerId);
         final String finalTranslated = translated;
         final String finalTargetLang = targetLang;
@@ -450,14 +475,14 @@ public class RealtimeInterpretationFacade {
         final AtomicReference<String> terminalReason = new AtomicReference<>();
 
         CompletableFuture.runAsync(() -> {
-            if (!isPipelineActive(sessionId, "before_tts_synth")) {
+            if (!isPipelineActive(sessionId, "before_tts_synth") || !isCurrentAudioEpoch(reservation)) {
                 completeTtsReservation(reservation, "inactive_before_tts_synth");
                 return;
             }
 
             long ttsStart = System.currentTimeMillis();
             AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
-            ttsService.synthesizeStream(
+            TtsStreamHandle streamHandle = ttsService.synthesizeStream(
                     resolvedVoiceId, finalTtsText, cartesiaProperties.getTts().getSampleRate(),
                     cartesiaSynthesisSpeed, cartesiaLanguage(finalTargetLang),
                     pcm -> {
@@ -467,7 +492,8 @@ public class RealtimeInterpretationFacade {
                         if (acceleratedPcm == null || acceleratedPcm.length == 0) {
                             return;
                         }
-                        if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)) {
+                        if (!reservation.completion().isDone() && sessionService.isSessionActive(sessionId)
+                                && isCurrentAudioEpoch(reservation)) {
                             int chunkIndex = Math.toIntExact(forwardedChunkCounter.getAndIncrement());
                             forwardedPcmBytes.addAndGet(acceleratedPcm.length);
                             if (firstChunkLogged.compareAndSet(false, true)) {
@@ -518,6 +544,13 @@ public class RealtimeInterpretationFacade {
                             audioQueue.offer(TTS_END);
                         }
                     });
+            ActiveTtsTask activeTask = activeTtsTasks.get(ttsTaskId);
+            if (activeTask != null) {
+                activeTask.handle().set(streamHandle == null ? TtsStreamHandle.NOOP : streamHandle);
+                if (!isCurrentAudioEpoch(reservation)) {
+                    activeTask.handle().get().cancel("source_language_changed");
+                }
+            }
             try {
                 long orderedWaitStart = System.currentTimeMillis();
                 boolean ordered = awaitPreviousTtsReservation(
@@ -544,7 +577,7 @@ public class RealtimeInterpretationFacade {
                 completeTtsReservation(reservation, "ordered_wait_interrupted");
                 return;
             }
-            if (!isPipelineActive(sessionId, "before_tts_playback")) {
+            if (!isPipelineActive(sessionId, "before_tts_playback") || !isCurrentAudioEpoch(reservation)) {
                 completeTtsReservation(reservation, "inactive_before_tts_playback");
                 return;
             }
@@ -568,7 +601,7 @@ public class RealtimeInterpretationFacade {
                         completeTtsReservation(reservation, reason.equals("synth_complete") ? "stream_complete" : reason);
                         return;
                     }
-                    if (!isPipelineActive(sessionId, "before_tts_send")) {
+                    if (!isPipelineActive(sessionId, "before_tts_send") || !isCurrentAudioEpoch(reservation)) {
                         completeTtsReservation(reservation, "inactive_before_send");
                         return;
                     }
@@ -578,7 +611,8 @@ public class RealtimeInterpretationFacade {
                     }
                     TtsAudioCallback onTtsAudio = sessionTtsAudioCallbackMap.get(sessionId);
                     if (onTtsAudio != null) {
-                        onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(), speechStartAtMs);
+                        onTtsAudio.accept(chunk.pcm(), chunk.lang(), chunk.taskId(), chunk.sequence(), chunk.chunkIndex(),
+                                speechStartAtMs, reservation.audioEpoch());
                     }
                     if (!firstSentLogged) {
                         firstSentLogged = true;
@@ -664,7 +698,7 @@ public class RealtimeInterpretationFacade {
         return true;
     }
 
-    private TtsPlaybackReservation reserveTtsPlayback(String sessionId, String targetLang) {
+    private TtsPlaybackReservation reserveTtsPlayback(String sessionId, String targetLang, long audioEpoch) {
         long sequence = sessionTtsSequence.computeIfAbsent(sessionId, key -> new AtomicLong(0)).incrementAndGet();
         String taskId = sessionId + "-" + sequence;
         CompletableFuture<Void> completion = new CompletableFuture<>();
@@ -682,12 +716,17 @@ public class RealtimeInterpretationFacade {
         }
         log.info("[RealtimeInterpretationFacade] TTS order reserved, sessionId={}, lang={}, taskId={}, sequence={}, prevDone={}",
                 sessionId, targetLang, taskId, sequence, previousHolder[0].isDone());
-        return new TtsPlaybackReservation(sessionId, targetLang, taskId, sequence, previousHolder[0], completion, new AtomicBoolean(false));
+        TtsPlaybackReservation reservation = new TtsPlaybackReservation(
+                sessionId, targetLang, taskId, sequence, audioEpoch,
+                previousHolder[0], completion, new AtomicBoolean(false));
+        activeTtsTasks.put(taskId, new ActiveTtsTask(reservation, new AtomicReference<>(TtsStreamHandle.NOOP)));
+        return reservation;
     }
 
     private void completeTtsReservation(TtsPlaybackReservation reservation, String reason) {
         if (reservation.released().compareAndSet(false, true)) {
             reservation.completion().complete(null);
+            activeTtsTasks.remove(reservation.taskId());
             decrementTtsQueue(reservation.sessionId());
             log.info("[RealtimeInterpretationFacade] TTS order released, sessionId={}, lang={}, taskId={}, sequence={}, reason={}",
                     reservation.sessionId(), reservation.lang(), reservation.taskId(), reservation.sequence(), reason);
@@ -711,6 +750,33 @@ public class RealtimeInterpretationFacade {
         boolean active = sessionService.isSessionActive(sessionId);
         if (!active) log.info("[RealtimeInterpretationFacade] skip inactive session pipeline, sessionId={}, stage={}", sessionId, stage);
         return active;
+    }
+
+    private long currentAudioEpoch(String sessionId) {
+        return sessionAudioEpoch.computeIfAbsent(sessionId, key -> new AtomicLong(1L)).get();
+    }
+
+    private boolean isCurrentAudioEpoch(TtsPlaybackReservation reservation) {
+        return reservation.audioEpoch() == currentAudioEpoch(reservation.sessionId());
+    }
+
+    private void cancelStaleTts(String sessionId, long currentEpoch, String reason) {
+        activeTtsTasks.values().stream()
+                .filter(task -> task.reservation().sessionId().equals(sessionId))
+                .filter(task -> task.reservation().audioEpoch() < currentEpoch)
+                .forEach(task -> {
+                    task.handle().get().cancel(reason);
+                    completeTtsReservation(task.reservation(), reason);
+                });
+    }
+
+    private void cancelSessionTts(String sessionId, String reason) {
+        activeTtsTasks.values().stream()
+                .filter(task -> task.reservation().sessionId().equals(sessionId))
+                .forEach(task -> {
+                    task.handle().get().cancel(reason);
+                    completeTtsReservation(task.reservation(), reason);
+                });
     }
 
     private boolean isCompressionDirection(String sourceLang, String targetLang) {
@@ -760,8 +826,10 @@ public class RealtimeInterpretationFacade {
             byte[] pcm, String lang, String taskId, long sequence, int chunkIndex, long createdAtNanos) {}
 
     private record TtsPlaybackReservation(
-            String sessionId, String lang, String taskId, long sequence,
+            String sessionId, String lang, String taskId, long sequence, long audioEpoch,
             CompletableFuture<Void> previous, CompletableFuture<Void> completion, AtomicBoolean released) {}
+
+    private record ActiveTtsTask(TtsPlaybackReservation reservation, AtomicReference<TtsStreamHandle> handle) {}
 
     private String resolveVoiceId(String voiceId, String targetLang, String sessionId, String speakerId) {
         if (voiceId != null && !voiceId.isBlank()) {
@@ -864,10 +932,13 @@ public class RealtimeInterpretationFacade {
         }
         sessionTranslatedCallbackMap.remove(sessionId);
         sessionTtsAudioCallbackMap.remove(sessionId);
+        sessionTtsResetCallbackMap.remove(sessionId);
         sessionErrorCallbackMap.remove(sessionId);
         sessionTtsChain.entrySet().removeIf(e -> e.getKey().startsWith(sessionId + "::"));
         sessionFinalRecognitionChain.remove(sessionId);
         sessionLastSourceLang.remove(sessionId);
+        cancelSessionTts(sessionId, "session_cleanup");
+        sessionAudioEpoch.remove(sessionId);
         sessionTargetLangMap.remove(sessionId);
         sessionIdSourceContext.remove(sessionId);
         sessionTtsQueueSize.remove(sessionId);
@@ -966,6 +1037,12 @@ public class RealtimeInterpretationFacade {
 
     @FunctionalInterface
     public interface TtsAudioCallback {
-        void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex, long speechStartAtMs);
+        void accept(byte[] pcmData, String targetLang, String ttsTaskId, long ttsSequence, int chunkIndex,
+                    long speechStartAtMs, long audioEpoch);
+    }
+
+    @FunctionalInterface
+    public interface TtsResetCallback {
+        void accept(String previousSourceLang, String currentSourceLang, long audioEpoch);
     }
 }

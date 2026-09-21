@@ -181,6 +181,14 @@ export default function UserShareView() {
     }
   }, [])
 
+  const resetQueuedAudio = useCallback(() => {
+    pendingSourcesRef.current.forEach(source => { try { source.stop() } catch { /* ended */ } })
+    pendingSourcesRef.current.clear()
+    scheduleRef.current = audioCtxRef.current?.currentTime ?? 0
+    pendingMarkerRef.current = null
+    maxRateRef.current = 1.0
+  }, [])
+
   const startAudio = (lang: string) => {
     const sessionId = activeSessionIdRef.current
     if (!sessionId) return
@@ -332,6 +340,10 @@ export default function UserShareView() {
       const type = view[0]
       if (type === 0x03) {           // pong：算 RTT
         if (lastPingSentRef.current > 0) rttRef.current = performance.now() - lastPingSentRef.current
+        return
+      }
+      if (type === 0x04) {           // 源语言切换：仅清除旧 TTS，文本流保持不变
+        resetQueuedAudio()
         return
       }
       if (type === 0x02) {           // 句首音标记：服务端已耗时

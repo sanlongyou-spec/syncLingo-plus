@@ -48,6 +48,81 @@ import static org.mockito.Mockito.when;
 class RealtimeInterpretationOrderTest {
 
     @Test
+    void languageSwitchKeepsLateTranslationButCancelsItsTts() throws Exception {
+        AsrService asrService = mock(AsrService.class);
+        TtsService ttsService = mock(TtsService.class);
+        TranslationService translationService = mock(TranslationService.class);
+        InterpretationSessionService sessionService = mock(InterpretationSessionService.class);
+        InterpretationRecordService recordService = mock(InterpretationRecordService.class);
+        AudioRecordService audioRecordService = mock(AudioRecordService.class);
+        SpeakerTurnService speakerTurnService = mock(SpeakerTurnService.class);
+        UserVoiceService userVoiceService = mock(UserVoiceService.class);
+        com.si.backend.service.IndonesianIncompleteGuard indonesianIncompleteGuard =
+                mock(com.si.backend.service.IndonesianIncompleteGuard.class);
+        RealtimeInterpretationFacade facade = new RealtimeInterpretationFacade(
+                asrService, ttsService, translationService, sessionService, new CartesiaProperties(),
+                recordService, audioRecordService, speakerTurnService, userVoiceService,
+                indonesianIncompleteGuard, new TtsPcmSpeedService());
+
+        String sessionId = "language-switch-session";
+        InterpretationSession session = new InterpretationSession();
+        session.setSessionId(sessionId);
+        session.setUserId(1L);
+        when(sessionService.getSession(sessionId)).thenReturn(Optional.of(session));
+        when(sessionService.isSessionActive(sessionId)).thenReturn(true);
+        putMapValue(facade, "sessionTargetLangMap", sessionId, "en");
+
+        CountDownLatch oldTranslationStarted = new CountDownLatch(1);
+        CountDownLatch releaseOldTranslation = new CountDownLatch(1);
+        CountDownLatch translationsPublished = new CountDownLatch(2);
+        AtomicInteger synthesizedCount = new AtomicInteger();
+        AtomicInteger resetCount = new AtomicInteger();
+        AtomicReference<Long> resetEpoch = new AtomicReference<>();
+
+        doAnswer(invocation -> {
+            String text = invocation.getArgument(0);
+            if ("old chinese".equals(text)) {
+                oldTranslationStarted.countDown();
+                assertTrue(releaseOldTranslation.await(5, TimeUnit.SECONDS));
+            }
+            return "translated " + text;
+        }).when(translationService).translate(anyString(), anyString(), anyString(), anyLong(), any(), anyBoolean(), any());
+        doAnswer(invocation -> {
+            synthesizedCount.incrementAndGet();
+            @SuppressWarnings("unchecked")
+            Consumer<byte[]> onChunk = invocation.getArgument(5);
+            Runnable onComplete = invocation.getArgument(6);
+            onChunk.accept(new byte[480]);
+            onComplete.run();
+            return TtsStreamHandle.NOOP;
+        }).when(ttsService).synthesizeStream(
+                anyString(), anyString(), anyInt(), anyDouble(), anyString(), any(), any(), any());
+
+        putMapValue(facade, "sessionTranslatedCallbackMap", sessionId,
+                (RealtimeInterpretationFacade.TranslationResultCallback) (original, translated, source, target,
+                        speakerId, speakerName, speechStartAtMs) -> translationsPublished.countDown());
+        putMapValue(facade, "sessionTtsAudioCallbackMap", sessionId,
+                (RealtimeInterpretationFacade.TtsAudioCallback) (pcm, lang, taskId, sequence, chunkIndex,
+                        speechStartAtMs, audioEpoch) -> { });
+        putMapValue(facade, "sessionTtsResetCallbackMap", sessionId,
+                (RealtimeInterpretationFacade.TtsResetCallback) (previous, current, epoch) -> {
+                    resetCount.incrementAndGet();
+                    resetEpoch.set(epoch);
+                });
+
+        facade.processFinalRecognition("old chinese", "zh-CN", "speaker-1", sessionId, "voice", 100L);
+        assertTrue(oldTranslationStarted.await(5, TimeUnit.SECONDS));
+        facade.processFinalRecognition("new indonesian", "id-ID", "speaker-1", sessionId, "voice", 200L);
+        releaseOldTranslation.countDown();
+
+        assertTrue(translationsPublished.await(5, TimeUnit.SECONDS));
+        awaitTtsChain(facade, sessionId, "en");
+        assertEquals(1, synthesizedCount.get());
+        assertEquals(1, resetCount.get());
+        assertEquals(2L, resetEpoch.get());
+    }
+
+    @Test
     void targetLanguageControlsBackendPcmSpeedWhileCartesiaStaysNeutral() throws Exception {
         assertTtsSpeedForTarget("id", 1.0, 43_638);
         assertTtsSpeedForTarget("id-ID", 1.0, 43_638);
@@ -186,7 +261,7 @@ class RealtimeInterpretationOrderTest {
 
         List<Long> playedSequences = new CopyOnWriteArrayList<>();
         CountDownLatch played = new CountDownLatch(2);
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (chunkIndex == 0) {
                 playedSequences.add(sequence);
                 played.countDown();
@@ -283,7 +358,7 @@ class RealtimeInterpretationOrderTest {
 
         List<Long> playedSequences = new CopyOnWriteArrayList<>();
         CountDownLatch played = new CountDownLatch(2);
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (chunkIndex == 0) {
                 playedSequences.add(sequence);
                 played.countDown();
@@ -372,7 +447,7 @@ class RealtimeInterpretationOrderTest {
         CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
         CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
         AtomicInteger secondPlayed = new AtomicInteger();
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (sequence == 1L && chunkIndex == 0) {
                 firstPlaybackEntered.countDown();
                 try {
@@ -468,7 +543,7 @@ class RealtimeInterpretationOrderTest {
         CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
         CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
         AtomicInteger secondPlayed = new AtomicInteger();
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (sequence == 1L && chunkIndex == 0) {
                 firstPlaybackEntered.countDown();
                 try {
@@ -564,7 +639,7 @@ class RealtimeInterpretationOrderTest {
         CountDownLatch firstPlaybackEntered = new CountDownLatch(1);
         CountDownLatch releaseFirstPlayback = new CountDownLatch(1);
         List<Long> playedSequences = new CopyOnWriteArrayList<>();
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (chunkIndex == 0) {
                 playedSequences.add(sequence);
             }
@@ -670,7 +745,7 @@ class RealtimeInterpretationOrderTest {
         );
 
         AtomicInteger forwardedChunks = new AtomicInteger();
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) ->
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) ->
                 forwardedChunks.incrementAndGet());
 
         facade.translateAndStreamTts(
@@ -730,7 +805,7 @@ class RealtimeInterpretationOrderTest {
         AtomicReference<Integer> capturedForwardedBytes = new AtomicReference<>();
         CountDownLatch ttsCalled = new CountDownLatch(1);
         CountDownLatch audioForwarded = new CountDownLatch(1);
-        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs) -> {
+        putTtsCallback(facade, sessionId, (pcm, lang, taskId, sequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
             if (chunkIndex == 0) {
                 capturedForwardedBytes.set(pcm.length);
                 audioForwarded.countDown();
@@ -785,6 +860,14 @@ class RealtimeInterpretationOrderTest {
         Field field = RealtimeInterpretationFacade.class.getDeclaredField("sessionTtsAudioCallbackMap");
         field.setAccessible(true);
         ((Map<String, RealtimeInterpretationFacade.TtsAudioCallback>) field.get(facade)).put(sessionId, callback);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void putMapValue(RealtimeInterpretationFacade facade, String fieldName, String key, Object value)
+            throws Exception {
+        Field field = RealtimeInterpretationFacade.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        ((Map) field.get(facade)).put(key, value);
     }
 
     @SuppressWarnings("unchecked")

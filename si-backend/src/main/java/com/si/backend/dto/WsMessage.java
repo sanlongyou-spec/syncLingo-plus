@@ -21,6 +21,7 @@ public class WsMessage {
     private String ttsTaskId;
     private Long ttsSequence;
     private Integer chunkIndex;
+    private Long audioEpoch;
     private String event;
     private String reason;
     private String playbackLang;

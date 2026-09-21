@@ -180,7 +180,7 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                 },
                 // onTtsAudio：将译文 TTS PCM 回推宿主前端，由前端按目标语言 setSinkId 路由到 VoiceMeeter
                 // （中文→Input/B1、印尼→Aux/B2、英语→VAIO3/B3）。原始麦克风音频绝不回推，不进 VoiceMeeter。
-                (pcmData, tLang, ttsTaskId, ttsSequence, chunkIndex, speechStartAtMs) -> {
+                (pcmData, tLang, ttsTaskId, ttsSequence, chunkIndex, speechStartAtMs, audioEpoch) -> {
                     WsMessage out = new WsMessage();
                     out.setType(Constants.WS_MSG_TYPE_TTS_AUDIO);
                     out.setSessionId(sessionId);
@@ -189,12 +189,27 @@ public class AsrWebSocketHandler extends TextWebSocketHandler {
                     out.setTtsTaskId(ttsTaskId);
                     out.setTtsSequence(ttsSequence);
                     out.setChunkIndex(chunkIndex);
+                    out.setAudioEpoch(audioEpoch);
                     sendMessage(session, out);
                     if (chunkIndex == 0) {
                         int captureMs = (int) Math.min(Integer.MAX_VALUE, System.currentTimeMillis() - speechStartAtMs);
                         shareAudioWebSocketHandler.sendMarker(sessionId, tLang, captureMs);
                     }
-                    shareAudioWebSocketHandler.broadcastPcm(sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS);
+                    shareAudioWebSocketHandler.broadcastTtsPcm(
+                            sessionId, tLang, pcmData, Constants.DEFAULT_SAMPLE_RATE_TTS, audioEpoch);
+                },
+                // onTtsReset：文本继续保留，仅终止旧源语言产生的合成和播放。
+                (previousSourceLang, currentSourceLang, audioEpoch) -> {
+                    shareAudioWebSocketHandler.resetTtsAudio(sessionId, audioEpoch);
+                    WsMessage out = new WsMessage();
+                    out.setType(Constants.WS_MSG_TYPE_TTS_RESET);
+                    out.setSessionId(sessionId);
+                    out.setSourceLang(currentSourceLang);
+                    out.setLanguage(previousSourceLang);
+                    out.setAudioEpoch(audioEpoch);
+                    out.setReason("source_language_changed");
+                    sendMessage(session, out);
+                    shareWebSocketHandler.broadcast(sessionId, out);
                 },
                 // onError
                 errorMessage -> sendError(session, sessionId, Constants.WS_ERROR_ASR_ERROR, errorMessage)

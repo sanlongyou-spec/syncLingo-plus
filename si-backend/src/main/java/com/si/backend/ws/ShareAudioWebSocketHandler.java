@@ -45,6 +45,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     private static final byte FRAME_AUDIO = 0x01;   // 后跟 Opus 包
     private static final byte FRAME_MARKER = 0x02;  // 后跟 int32 captureMs（句首音标记）
     private static final byte FRAME_PING = 0x03;    // 心跳/RTT 测量，回显
+    private static final byte FRAME_TTS_RESET = 0x04; // 后跟 int64 audioEpoch
 
     private static final ExecutorService SENDER_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable);
@@ -59,6 +60,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
     private final Map<String, AudioSubscriber> connectionMap = new ConcurrentHashMap<>();
     /** sessionId::lang -> Opus 编码器 */
     private final Map<String, OpusStreamEncoder> encoders = new ConcurrentHashMap<>();
+    private final Map<String, Long> sessionAudioEpoch = new ConcurrentHashMap<>();
     private final ShareWsTicketService shareWsTicketService;
 
     /** 最大并发收听(音频)连接数：> 0 时超过即拒绝新听众；<= 0 表示不限制(当前默认不限制)。 */
@@ -130,6 +132,19 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
      * @param inSampleRate 输入采样率（原始麦克风 16000 / TTS 24000）
      */
     public void broadcastPcm(String sessionId, String lang, byte[] pcm, int inSampleRate) {
+        broadcastPcmInternal(sessionId, lang, pcm, inSampleRate);
+    }
+
+    public void broadcastTtsPcm(String sessionId, String lang, byte[] pcm, int inSampleRate, long audioEpoch) {
+        if (sessionAudioEpoch.getOrDefault(sessionId, audioEpoch) != audioEpoch) {
+            log.debug("[ShareAudioWebSocketHandler] stale TTS PCM dropped, sessionId={}, lang={}, audioEpoch={}, currentEpoch={}",
+                    sessionId, lang, audioEpoch, sessionAudioEpoch.get(sessionId));
+            return;
+        }
+        broadcastPcmInternal(sessionId, lang, pcm, inSampleRate);
+    }
+
+    private void broadcastPcmInternal(String sessionId, String lang, byte[] pcm, int inSampleRate) {
         if (sessionId == null || pcm == null || pcm.length == 0) {
             return;
         }
@@ -164,6 +179,24 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
                 subscriber.offer(framed);
             }
         }
+    }
+
+    /** 清空分享页旧音频发送队列，并通知浏览器停止已排队的旧 TTS。 */
+    public void resetTtsAudio(String sessionId, long audioEpoch) {
+        if (sessionId == null) {
+            return;
+        }
+        sessionAudioEpoch.put(sessionId, audioEpoch);
+        encoders.keySet().removeIf(key -> key.startsWith(sessionId + "::"));
+        Map<String, Set<AudioSubscriber>> byLang = subscribers.get(sessionId);
+        if (byLang == null) {
+            return;
+        }
+        byte[] resetFrame = new byte[9];
+        resetFrame[0] = FRAME_TTS_RESET;
+        java.nio.ByteBuffer.wrap(resetFrame, 1, Long.BYTES).putLong(audioEpoch);
+        byLang.values().forEach(targets -> targets.forEach(subscriber -> subscriber.reset(resetFrame)));
+        log.info("[ShareAudioWebSocketHandler] TTS audio reset, sessionId={}, audioEpoch={}", sessionId, audioEpoch);
     }
 
     /**
@@ -224,6 +257,7 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
             return;
         }
         encoders.keySet().removeIf(key -> key.startsWith(sessionId + "::"));
+        sessionAudioEpoch.remove(sessionId);
         log.info("[ShareAudioWebSocketHandler] session encoders cleared, sessionId={}", sessionId);
     }
 
@@ -294,6 +328,12 @@ public class ShareAudioWebSocketHandler extends BinaryWebSocketHandler {
             queue.clear();
             // 投入一个空包唤醒线程退出
             queue.offer(new byte[0]);
+        }
+
+        private void reset(byte[] resetFrame) {
+            if (!running.get()) return;
+            queue.clear();
+            offer(resetFrame);
         }
 
         @Override

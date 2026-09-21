@@ -91,6 +91,7 @@ class AsrWebSocketHandlerSecurityTest {
                 any(),
                 any(),
                 any(),
+                any(),
                 any()
         );
     }
@@ -109,7 +110,7 @@ class AsrWebSocketHandlerSecurityTest {
         ));
 
         verify(realtimeFacade, never()).startInterpretation(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(session).close(CloseStatus.POLICY_VIOLATION);
     }
 
