@@ -2459,4 +2459,9 @@ Pass criteria:
 - Focused backend authentication and interpretation lifecycle tests passed locally.
 - Full backend verification passed: `mvn clean test`; 490 tests, 0 failures, 0 errors, 0 skipped.
 - Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
-- Browser workflow, deployment, database, and production log results remain pending production verification.
+- Production deployed from commit `7189f28178a97b3140831354d71d076f327e3886`; backend image `si-backend:7189f28178a9` and the matching frontend asset are active.
+- Production login concurrency was observed directly: the first login succeeded and the second login for the same account was rejected with the single-login message.
+- Backend startup reconciled 3 historical orphaned `RUNNING` rows; the post-start database count is 0 and startup completed without errors.
+- Same-origin logout returns 200 through production HTTPS after restoring the required `X-Forwarded-Proto` and `X-Forwarded-For` headers in the live nginx `/api/`, `/bot-api/`, and `/ws/` locations. Cross-origin logout remains rejected.
+- Public and loopback health checks returned 200/UP. The previous backend remains available as `si-backend:rollback-e287e75`, and the previous frontend is backed up under `/opt/backups/si-frontend-e287e75-20260921-093501`.
+- A destructive refresh/logout check against the user's active production session was not forced during deployment; automated lifecycle tests cover the cleanup path and the production no-session logout path was verified.
