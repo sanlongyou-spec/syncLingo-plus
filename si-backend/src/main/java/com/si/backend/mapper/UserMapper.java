@@ -15,6 +15,10 @@ public interface UserMapper {
     @Select("SELECT * FROM si_user WHERE id = #{id}")
     SiUser findById(Long id);
 
+    /** Serializes login and interpretation-start decisions for one account. */
+    @Select("SELECT * FROM si_user WHERE id = #{id} FOR UPDATE")
+    SiUser findByIdForUpdate(@Param("id") Long id);
+
     @Select("""
             SELECT *
             FROM si_user

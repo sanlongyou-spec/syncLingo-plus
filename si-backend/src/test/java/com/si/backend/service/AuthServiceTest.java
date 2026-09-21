@@ -86,6 +86,7 @@ class AuthServiceTest {
     void successfulLogin_clearsThrottle_andReturnsToken() {
         SiUser user = userWithPassword("correct", "ACTIVE");
         when(userMapper.findByUsername("alice")).thenReturn(user);
+        when(userMapper.findByIdForUpdate(9L)).thenReturn(user);
         when(authSessionService.issueForUser(user)).thenReturn(
                 new AuthSessionService.IssuedAuth(new LoginResponse(9L, "access-token", "OPERATOR"), "refresh-token"));
 
@@ -95,5 +96,19 @@ class AuthServiceTest {
         assertEquals("refresh-token", issued.refreshToken());
         verify(throttle).onSuccessfulLogin(IP, "alice");
         verify(throttle, Mockito.never()).onFailedAttempt(eq(IP), anyString());
+    }
+
+    @Test
+    void accountDisabledWhileWaitingForLoginLock_isRejected() {
+        SiUser initial = userWithPassword("correct", "ACTIVE");
+        SiUser locked = userWithPassword("correct", "DISABLED");
+        when(userMapper.findByUsername("alice")).thenReturn(initial);
+        when(userMapper.findByIdForUpdate(9L)).thenReturn(locked);
+
+        BizException ex = assertThrows(BizException.class,
+                () -> service.login("alice", "correct", IP, null, null));
+
+        assertEquals(403, ex.getCode());
+        verifyNoInteractions(authSessionService);
     }
 }

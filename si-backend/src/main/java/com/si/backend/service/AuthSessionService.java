@@ -43,6 +43,12 @@ public class AuthSessionService {
 
     public IssuedAuth issueForUser(SiUser user) {
         log.info("[AuthSessionService] issueForUser start, userId={}", user.getId());
+        AuthSession active = authSessionMapper.findActiveByUserId(user.getId());
+        if (active != null) {
+            log.warn("[AuthSessionService] issueForUser rejected active login, userId={}, authSessionId={}",
+                    user.getId(), active.getSessionId());
+            throw BizException.of(ErrorCode.FORBIDDEN, "该账号已在其他设备或浏览器登录，请先在原设备退出");
+        }
         String refreshToken = randomToken();
         AuthSession session = newSession(user.getId(), UUID.randomUUID().toString(), null, hash(refreshToken));
         authSessionMapper.insert(session);
@@ -93,17 +99,25 @@ public class AuthSessionService {
         return new IssuedAuth(new LoginResponse(user.getId(), createAccessToken(user), user.getRole()), nextRefresh);
     }
 
-    public void logout(String refreshToken) {
+    public Long logout(String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
-            return;
+            return null;
         }
         String refreshHash = hash(refreshToken);
         AuthSession session = authSessionMapper.findByRefreshTokenHash(refreshHash);
         if (session != null) {
             authSessionMapper.revokeFamily(session.getFamilyId());
-            log.info("[AuthSessionService] logout, familyId={}", session.getFamilyId());
+            log.info("[AuthSessionService] logout, userId={}, familyId={}", session.getUserId(), session.getFamilyId());
+            return session.getUserId();
         } else {
             authSessionMapper.revokeByRefreshTokenHash(refreshHash);
+            return null;
+        }
+    }
+
+    public void invalidateAccessTokens(Long userId) {
+        if (userId != null) {
+            userMapper.incrementTokenVersion(userId);
         }
     }
 

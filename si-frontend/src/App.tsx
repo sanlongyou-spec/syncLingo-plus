@@ -13,48 +13,11 @@ import MeetingsView from './views/MeetingsView'
 import CostAnalysisView from './views/CostAnalysisView'
 import AdminConsoleView from './views/AdminConsoleView'
 import { STORAGE_KEYS } from './constants'
-import { getMe, refreshAuth } from './api'
+import { getMe, terminateAuthOnPageUnload } from './api'
 import { clearAccessToken, getAccessToken } from './api/authToken'
 
 function RequireAuth({ children }: { children: JSX.Element }) {
-  const [status, setStatus] = useState<'checking' | 'authenticated' | 'anonymous'>(() => {
-    const userId = Number(localStorage.getItem(STORAGE_KEYS.USER_ID))
-    if (getAccessToken()) return 'authenticated'
-    return Number.isSafeInteger(userId) && userId > 0 ? 'checking' : 'anonymous'
-  })
-
-  useEffect(() => {
-    if (status !== 'checking') return
-    let cancelled = false
-
-    refreshAuth()
-      .then(res => {
-        if (cancelled) return
-        if (res.code === 200 && res.data?.token) {
-          localStorage.setItem(STORAGE_KEYS.USER_ID, String(res.data.userId))
-          localStorage.removeItem(STORAGE_KEYS.TOKEN)
-          setStatus('authenticated')
-        } else {
-          clearStoredAuth()
-          setStatus('anonymous')
-        }
-      })
-      .catch(() => {
-        if (cancelled) return
-        clearStoredAuth()
-        setStatus('anonymous')
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [status])
-
-  if (status === 'checking') {
-    return <div className="auth-loading">正在恢复登录...</div>
-  }
-
-  if (status !== 'authenticated') {
+  if (!getAccessToken()) {
     clearStoredAuth()
     return <Navigate to="/login" replace />
   }
@@ -73,6 +36,12 @@ function AuthenticatedWorkspace() {
   const location = useLocation()
   const [currentRole, setCurrentRole] = useState<string>(localStorage.getItem(STORAGE_KEYS.ROLE) || '')
   const [roleChecked, setRoleChecked] = useState(Boolean(localStorage.getItem(STORAGE_KEYS.ROLE)))
+
+  useEffect(() => {
+    const terminate = () => terminateAuthOnPageUnload()
+    window.addEventListener('pagehide', terminate)
+    return () => window.removeEventListener('pagehide', terminate)
+  }, [])
 
   useEffect(() => {
     let cancelled = false

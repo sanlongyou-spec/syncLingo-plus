@@ -3,6 +3,9 @@ package com.si.backend.service;
 import com.si.backend.config.CostRatesProperties;
 import com.si.backend.entity.InterpretationSession;
 import com.si.backend.mapper.InterpretationSessionMapper;
+import com.si.backend.mapper.UserMapper;
+import com.si.backend.common.BizException;
+import com.si.backend.common.ErrorCode;
 import com.si.backend.common.Constants;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InterpretationSessionService {
 
     private final InterpretationSessionMapper sessionMapper;
+    private final UserMapper userMapper;
     private final CostRatesProperties costRatesProperties;
     private final ContentEmbeddingService contentEmbeddingService;
     private final Map<String, InterpretationSession> activeSessions = new ConcurrentHashMap<>();
@@ -56,6 +60,10 @@ public class InterpretationSessionService {
         addColumnIfMissing("enabled_languages", sessionMapper::addEnabledLanguagesColumnIfNotExists);
         addColumnIfMissing("meeting_summary", sessionMapper::addMeetingSummaryColumnIfNotExists);
         addColumnIfMissing("meeting_id", sessionMapper::addMeetingIdColumnIfNotExists);
+        int stoppedOrphans = sessionMapper.stopOrphanedRunningSessions();
+        if (stoppedOrphans > 0) {
+            log.warn("[InterpretationSessionService] stopped orphaned running sessions on startup, count={}", stoppedOrphans);
+        }
         log.info("[InterpretationSessionService] initColumns end");
     }
 
@@ -96,6 +104,17 @@ public class InterpretationSessionService {
     ) {
         log.info("[InterpretationSessionService] startSession start, sessionId={}, userId={}, sourceLang={}, targetLang={}, voiceId={}",
                 sessionId, userId, sourceLang, targetLang, voiceId);
+
+        if (userMapper.findByIdForUpdate(userId) == null) {
+            throw BizException.of(ErrorCode.UNAUTHORIZED, "账号不存在或已失效");
+        }
+        InterpretationSession runningSession = sessionMapper.findActiveByUserId(userId);
+        if (runningSession != null) {
+            log.warn("[InterpretationSessionService] startSession rejected active session, userId={}, activeSessionId={}",
+                    userId, runningSession.getSessionId());
+            throw BizException.of(ErrorCode.SESSION_ALREADY_STARTED,
+                    "当前账号已有正在运行的同传，请先结束后再启动");
+        }
 
         InterpretationSession session = new InterpretationSession();
         session.setSessionId(sessionId);

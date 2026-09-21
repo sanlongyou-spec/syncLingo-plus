@@ -71,12 +71,29 @@ class AuthControllerSecurityTest {
         AuthController controller = new AuthController(facade, mock(AnonymousRequestRateLimiter.class));
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        controller.logout("refresh", response);
+        controller.logout("refresh", "EXPLICIT_LOGOUT", new MockHttpServletRequest(), response);
 
         String setCookie = response.getHeader("Set-Cookie");
         assertNotNull(setCookie);
         assertEquals(true, setCookie.contains(AuthController.REFRESH_COOKIE + "="));
         assertEquals(true, setCookie.contains("Max-Age=0"));
+    }
+
+    @Test
+    void logout_rejectsCrossOriginRequest() {
+        AuthFacade facade = mock(AuthFacade.class);
+        AuthController controller = new AuthController(facade, mock(AnonymousRequestRateLimiter.class));
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setScheme("https");
+        request.setServerName("app.example.com");
+        request.setServerPort(443);
+        request.addHeader("Origin", "https://evil.example.com");
+
+        BizException error = assertThrows(BizException.class,
+                () -> controller.logout("refresh", "PAGE_UNLOAD", request, new MockHttpServletResponse()));
+
+        assertEquals(403, error.getCode());
+        verifyNoInteractions(facade);
     }
 
     @Test

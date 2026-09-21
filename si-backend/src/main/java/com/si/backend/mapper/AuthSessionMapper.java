@@ -56,6 +56,18 @@ public interface AuthSessionMapper {
     @Select("SELECT * FROM auth_session WHERE rotated_from_hash = #{hash} LIMIT 1")
     AuthSession findByRotatedFromHash(@Param("hash") String hash);
 
+    @Select("""
+            SELECT * FROM auth_session
+            WHERE user_id = #{userId}
+              AND status = 'ACTIVE'
+              AND revoked_at IS NULL
+              AND absolute_expires_at > NOW()
+              AND idle_expires_at > NOW()
+            ORDER BY id DESC
+            LIMIT 1
+            """)
+    AuthSession findActiveByUserId(@Param("userId") Long userId);
+
     @Update("""
             UPDATE auth_session
             SET status = 'ROTATED', rotated_at = NOW(), last_seen_at = NOW()

@@ -53,6 +53,31 @@ class AuthSessionServiceTest {
     }
 
     @Test
+    void issueForUser_rejectsSecondActiveLogin() {
+        SiUser user = user(9L, "alice", "ACTIVE", 2);
+        when(authSessionMapper.findActiveByUserId(9L))
+                .thenReturn(activeSession(9L, "family-existing", hash("existing")));
+
+        BizException error = assertThrows(BizException.class, () -> service.issueForUser(user));
+
+        assertEquals(403, error.getCode());
+        assertEquals("该账号已在其他设备或浏览器登录，请先在原设备退出", error.getMessage());
+    }
+
+    @Test
+    void logout_revokesFamilyAndReturnsUserId() {
+        String raw = "refresh-token";
+        String refreshHash = hash(raw);
+        AuthSession current = activeSession(9L, "family-logout", refreshHash);
+        when(authSessionMapper.findByRefreshTokenHash(refreshHash)).thenReturn(current);
+
+        Long userId = service.logout(raw);
+
+        assertEquals(9L, userId);
+        verify(authSessionMapper).revokeFamily("family-logout");
+    }
+
+    @Test
     void refresh_rotatesTokenAndKeepsFamily() {
         String raw = "refresh-token";
         String currentHash = hash(raw);

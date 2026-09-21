@@ -2094,3 +2094,42 @@ GET    /api/admin/audit-logs
 - Recipient values already copied into another account's database record by the old frontend cannot be distinguished from legitimate choices and are not deleted automatically. They must be cleared once from that account if incorrect.
 - Old browser-only prompt values are intentionally not migrated because the historical keys did not record which account owned them.
 - This version is not deployed to the server per request.
+
+## Weekly Optimization Record: 2026-W39 Single Login and Single Active Interpretation
+
+### Goal
+
+- Log the operator out and stop the account's active interpretation when the authenticated page is refreshed, closed, or explicitly logged out.
+- Reject a second login for the same account until the current login is terminated or expires.
+- Prevent one account from creating a second running interpretation session, including concurrent start requests.
+
+### Optimization Items
+
+| Item | Status | Notes |
+|---|---|---|
+| Atomic single-login guard | Done | Login locks the user row and rejects issuance when an unexpired active `auth_session` exists. A new login never displaces the existing login. |
+| Immediate logout invalidation | Done | Logout revokes the refresh-token family, increments `token_version`, closes authenticated WebSockets, and stops the account's active realtime session. |
+| Refresh/close termination | Done | Authenticated pages send a same-origin `pagehide` beacon and clear local auth state. Page reload no longer restores authentication or reconnects an old session. |
+| Single active interpretation | Done | Interpretation start locks the user row and rejects creation when that user already owns a `running` session. |
+| Restart reconciliation | Done | Backend startup marks database sessions left `running` by an earlier process as stopped because their capture/ASR connection cannot survive a backend restart. |
+| Regression coverage | Done | Added focused tests for duplicate login, logout cleanup, cross-origin rejection, and duplicate interpretation start. |
+
+### Affected Modules
+
+- Backend authentication: `AuthController`, `AuthFacade`, `AuthService`, `AuthSessionService`, `AuthSessionMapper`, `UserMapper`.
+- Backend interpretation lifecycle: `InterpretationSessionService`, `InterpretationSessionMapper`.
+- Frontend lifecycle: `App.tsx`, `api/index.ts`.
+- Tests: authentication controller/service/facade and interpretation single-active tests.
+
+### Acceptance Criteria
+
+- A second browser/device receives a clear rejection while the first login is active.
+- Explicit logout and real page unload stop the account's running interpretation, revoke credentials, close its control WebSocket, and release the login lock.
+- Reloading an authenticated page returns to login and does not resume `CURRENT_SESSION_ID`.
+- Two concurrent interpretation-start requests for one account cannot create two running rows.
+- Different accounts remain able to log in and run one interpretation each.
+
+### Residual Issues
+
+- Abrupt device power loss can prevent the unload beacon. The login remains protected until its existing absolute/idle expiry; this change does not add a separate administrative force-logout operation.
+- Deployments must occur while no live meeting is running because backend restart intentionally closes realtime processing and reconciles orphaned `running` rows.

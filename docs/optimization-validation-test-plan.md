@@ -2406,3 +2406,57 @@ Pass criteria:
 - Browser state validation passed for loading, empty, saved, load-failure, and constrained 320 px layouts; controls did not overflow, loading controls remained disabled, and the production login build rendered normally.
 - Two-account persistence boundaries were verified at controller/facade/service tests. A live account-switch check against the production database was intentionally not performed because this version was not deployed.
 - No server deployment performed.
+
+## Weekly Validation Record: 2026-W39 Single Login and Single Active Interpretation
+
+### Matching Optimization Scope
+
+- Matches `docs/optimization-implementation-plan.md` section `Weekly Optimization Record: 2026-W39 Single Login and Single Active Interpretation`.
+
+### Validation Goals
+
+- Prove login and interpretation-start decisions are serialized per user.
+- Prove logout/page unload terminates realtime work and invalidates all credentials for that login.
+- Prove refresh no longer restores the authenticated workspace.
+
+### Log / API / Database Validation First
+
+1. Log in as account A, then attempt the same credentials from another browser. Confirm the second response is rejected and only one unexpired `ACTIVE` auth family exists.
+2. Start an interpretation as A and issue a second start request. Confirm the second request returns code `4002` and only one `running` row exists.
+3. Refresh the authenticated page. Confirm logs contain `reason=PAGE_UNLOAD`, the interpretation row becomes `stopped`, the auth family is revoked, `token_version` increments, and the control WebSocket closes.
+4. Log in again after termination and confirm it succeeds.
+5. Log in as account B while A is active and confirm B remains independent.
+
+### Automated Tests
+
+```powershell
+cd si-backend
+mvn -q "-Dtest=AuthSessionServiceTest,AuthControllerSecurityTest,AuthFacadeTest,InterpretationSessionServiceSingleActiveTest" test
+mvn clean test
+
+cd ..\si-frontend
+npm ci
+npm run build
+```
+
+Pass criteria:
+
+- Duplicate active login is rejected without inserting another auth session.
+- Logout stops the owned active interpretation, closes share audio/control connections, broadcasts `stopped`, and invalidates access tokens.
+- Cross-origin refresh/logout requests are rejected.
+- Duplicate interpretation start does not insert a new session.
+- Full backend tests and frontend production build pass.
+
+### Browser Workflow Validation
+
+- Desktop and narrow viewport: login succeeds and the authenticated workspace renders normally.
+- Refresh: browser returns to login and the previous credentials cannot continue calling protected APIs.
+- Explicit logout: login page renders and another browser can then log in.
+- Duplicate login/start errors are readable and do not leave the primary Start/Login button stuck disabled.
+
+### Result Record
+
+- Focused backend authentication and interpretation lifecycle tests passed locally.
+- Full backend verification passed: `mvn clean test`; 490 tests, 0 failures, 0 errors, 0 skipped.
+- Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
+- Browser workflow, deployment, database, and production log results remain pending production verification.

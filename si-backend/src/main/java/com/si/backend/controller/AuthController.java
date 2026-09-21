@@ -81,8 +81,11 @@ public class AuthController {
             expectedStatuses = {200})
     @PostMapping("/logout")
     public Result<Void> logout(@CookieValue(value = REFRESH_COOKIE, required = false) String refreshToken,
+                               @RequestParam(value = "reason", required = false) String reason,
+                               HttpServletRequest httpRequest,
                                HttpServletResponse httpResponse) {
-        facade.logout(refreshToken);
+        requireSameOrigin(httpRequest);
+        facade.logout(refreshToken, reason);
         clearRefreshCookie(httpResponse);
         return Result.ok();
     }

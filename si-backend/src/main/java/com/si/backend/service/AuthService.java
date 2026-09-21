@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Slf4j
 @Service
@@ -21,6 +22,7 @@ public class AuthService {
     private final AuthSessionService authSessionService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
+    @Transactional
     public AuthSessionService.IssuedAuth login(String username, String password, String clientIp,
                                                String captchaId, String captchaAnswer) {
         log.info("[AuthService] login start, username={}, ip={}", username, clientIp);
@@ -43,8 +45,12 @@ public class AuthService {
             auditService.recordActor("USER", String.valueOf(user.getId()), user.getRole(), "LOGIN", "FAIL", "USER", String.valueOf(user.getId()), "account disabled");
             throw BizException.of(ErrorCode.FORBIDDEN, "账号已停用");
         }
+        SiUser lockedUser = userMapper.findByIdForUpdate(user.getId());
+        if (lockedUser == null || "DISABLED".equalsIgnoreCase(lockedUser.getStatus())) {
+            throw BizException.of(ErrorCode.FORBIDDEN, "账号已停用");
+        }
         loginThrottleService.onSuccessfulLogin(clientIp, username);
-        AuthSessionService.IssuedAuth issued = authSessionService.issueForUser(user);
+        AuthSessionService.IssuedAuth issued = authSessionService.issueForUser(lockedUser);
         auditService.recordActor("USER", String.valueOf(user.getId()), user.getRole(), "LOGIN", "SUCCESS", "USER", String.valueOf(user.getId()), null);
         log.info("[AuthService] login end, username={}, userId={}", username, user.getId());
         return issued;

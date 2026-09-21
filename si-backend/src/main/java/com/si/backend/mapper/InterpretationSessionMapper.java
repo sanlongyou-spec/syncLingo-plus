@@ -66,6 +66,9 @@ public interface InterpretationSessionMapper {
     @Update("UPDATE interpretation_session SET status = #{status}, end_time = #{endTime} WHERE session_id = #{sessionId}")
     int updateStatus(@Param("sessionId") String sessionId, @Param("status") String status, @Param("endTime") java.time.LocalDateTime endTime);
 
+    @Update("UPDATE interpretation_session SET status = 'stopped', end_time = COALESCE(end_time, NOW()) WHERE status = 'running'")
+    int stopOrphanedRunningSessions();
+
     @Update("UPDATE interpretation_session SET asr_audio_ms = COALESCE(asr_audio_ms, 0) + #{delta} WHERE session_id = #{sessionId}")
     int addAsrAudioMs(@Param("sessionId") String sessionId, @Param("delta") long delta);
 

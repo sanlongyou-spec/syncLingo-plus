@@ -250,15 +250,26 @@ export const refreshAuth = async (): Promise<Result<LoginResult>> => {
   return result
 }
 
-export const logout = async (): Promise<Result<void>> => {
+export const logout = async (reason = 'EXPLICIT_LOGOUT'): Promise<Result<void>> => {
   try {
-    return await client.post<Result<void>>('/api/auth/logout', {}).then(r => r.data)
+    return await client.post<Result<void>>('/api/auth/logout', {}, { params: { reason } }).then(r => r.data)
   } finally {
     clearAccessToken()
     localStorage.removeItem(STORAGE_KEYS.TOKEN)
     localStorage.removeItem(STORAGE_KEYS.USER_ID)
     localStorage.removeItem(STORAGE_KEYS.ROLE)
   }
+}
+
+export const terminateAuthOnPageUnload = () => {
+  const endpoint = new URL('/api/auth/logout', window.location.origin)
+  endpoint.searchParams.set('reason', 'PAGE_UNLOAD')
+  navigator.sendBeacon(endpoint.toString(), new Blob([], { type: 'application/json' }))
+  clearAccessToken()
+  localStorage.removeItem(STORAGE_KEYS.TOKEN)
+  localStorage.removeItem(STORAGE_KEYS.USER_ID)
+  localStorage.removeItem(STORAGE_KEYS.ROLE)
+  localStorage.removeItem(STORAGE_KEYS.CURRENT_SESSION_ID)
 }
 
 export const getTerminologies = (keyword = '', enabled?: boolean): Promise<Result<Terminology[]>> =>
