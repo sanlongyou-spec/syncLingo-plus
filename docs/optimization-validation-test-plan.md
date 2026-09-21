@@ -2517,4 +2517,8 @@ Pass criteria:
 - Full backend verification passed: `mvn clean test`; 492 tests, 0 failures, 0 errors, 0 skipped.
 - Frontend tests passed: 8 tests, 0 failures.
 - Frontend production build passed: TypeScript compilation and Vite build completed with 123 transformed modules.
-- Production runtime and live audible switching results are recorded after deployment.
+- Production deployed from commit `f6bd554c2310bbaf331d3697700539b7c957d5b8`; backend image `si-backend:f6bd554c2310` and frontend asset `index-FFa2WP3K.js` are active.
+- Loopback and public `/api/health` checks returned `UP`; the production login page loaded in a real browser with no console errors.
+- The deployed frontend bundle contains the `tts_reset` handler and the running backend uses `--add-host si-mysql:127.0.0.1` required by the host-network database configuration.
+- Rollback remains available as backend image `si-backend:rollback-bb5907923cd2` and the timestamped frontend backup under `/opt/backups/si-frontend-bb5907923cd2-*`.
+- A live audible Chinese/English/Indonesian switch through physical VoiceMeeter and Teams channels remains for the user's meeting test; automated concurrency and protocol tests prove the cancellation boundaries.
